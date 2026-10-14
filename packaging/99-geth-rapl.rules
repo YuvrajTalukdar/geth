@@ -1,0 +1,16 @@
+# GETH — make RAPL "package" energy counters world-readable.
+#
+# Since kernel 5.10 the powercap energy_uj files are 0400 root:root, so
+# user-space tools cannot report CPU package power without root. This rule
+# chmods energy_uj on every powercap device whose domain name starts with
+# "package" (exactly the domains GETH sums across sockets).
+#
+# Install:
+#   sudo cp 99-geth-rapl.rules /etc/udev/rules.d/
+#   sudo udevadm trigger --subsystem-match=powercap
+#
+# Verify:
+#   udevadm test "$(udevadm info -q path -n powercap/intel-rapl:0)" | grep MODE
+#   ls -l /sys/class/powercap/intel-rapl:*/energy_uj   # should be 0644
+
+ACTION=="add|change", SUBSYSTEM=="powercap", ATTR{name}=="package-*", ATTR{energy_uj}, MODE="0644"

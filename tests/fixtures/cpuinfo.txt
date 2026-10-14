@@ -1,0 +1,10 @@
+processor	: 0
+vendor_id	: AuthenticAMD
+model name	: AMD Ryzen 5 5600H with Radeon Graphics
+cpu MHz		: 4191.154
+cache size	: 512 KB
+bogomips	: 4380.31
+processor	: 1
+vendor_id	: AuthenticAMD
+cpu MHz		: 3900.000
+cache size	: 512 KB

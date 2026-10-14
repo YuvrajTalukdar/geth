@@ -1,0 +1,14 @@
+#
+#	List of PCI IDs (fixture subset)
+#
+#
+1002  Advanced Micro Devices, Inc. [AMD/ATI]
+	1638  Cezanne [Radeon Vega Series / Radeon Vega Mobile Series]
+	1681  Radeon Graphics [Radeon 780M]
+		17aa 3988  Z50-75
+10de  NVIDIA Corporation
+	25a2  GA107M [GeForce RTX 3050 Mobile]
+C03   Display controller
+R01   Rev
+10ec  Intel Corporation
+	1234  I219-LM
