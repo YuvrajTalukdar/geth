@@ -45,7 +45,7 @@ struct ScaleSpec {
     kTemperature,   // 0-100, growing to 110/120
     kAbsolute,      // 0..absolute_max (RAM/VRAM total)
     kWatts,         // auto-scale, nice 1/2/2.5/5×10ⁿ, floor 30 W
-    kBytesPerSec,   // auto-scale, nice 1/2/5×1024ⁿ, floor per source
+    kBytesPerSec,   // auto-scale, nice power of two ×1024ⁿ, floor per source
   } kind = Kind::kPercent;
   double absolute_max = 0;  // kAbsolute only
   // kWatts/kBytesPerSec: the minimum ceiling (30 W / 64 KiB/s / 1 MiB/s).

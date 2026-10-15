@@ -31,7 +31,14 @@ SourceStatus DemoSource::probe() {
 }
 
 void DemoSource::sample(Snapshot& out) {
-  const TimePoint now = Clock::now();
+  // Follow the collector's clock (out.time): the --render-frame demo warm-up
+  // stamps its back-to-back samples --interval apart (virtual clock), and the
+  // wave functions below must advance with that clock or every graph column
+  // would show the same value. A direct sample() (tests) has no collector
+  // stamp and falls back to real time.
+  const TimePoint now = out.time.time_since_epoch().count() != 0
+                            ? out.time
+                            : Clock::now();
   if (!_started) {
     _t0 = now;
     _started = true;
@@ -109,6 +116,10 @@ void DemoSource::sample(Snapshot& out) {
   amd.reset();
   amd.usage_pct = 100.0 * clamp01(0.04 + 0.12 * std::abs(wave(t, 31, 0.8)));
   amd.vram_used_bytes = (0.4 + 0.1 * wave(t, 43, 0.3)) * kGiB;
+  // The iGPU VRAM panel also plots the GTT aperture; many real APUs don't
+  // expose it, but the demo supplies values so that series is exercised.
+  amd.gtt_used_bytes = (0.30 + 0.08 * wave(t, 51, 0.1)) * kGiB;
+  amd.gtt_total_bytes = 0.5 * kGiB;
   amd.core_clock_mhz = 1100.0 + 200.0 * wave(t, 19, 0.5);
   amd.mem_clock_mhz = 1600.0;
   // Integrated: the PPT reading is whole-package power (CPU + iGPU), so it

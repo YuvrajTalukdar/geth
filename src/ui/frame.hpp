@@ -24,6 +24,35 @@
 
 namespace geth::ui {
 
+// -- Braille dot encoding (exposed for the unit tests) ------------------------
+// The braille bit of dot (col 0/1, row 0..3 top->bottom) in one 2x4 cell:
+// col 0 -> bits {0,1,2,6}, col 1 -> bits {3,4,5,7}, so all eight dots set the
+// mask 0xFF and the full cell is U+28FF (⣿).
+int braille_bit(int col, int row);
+
+// U+2800|mask as UTF-8.
+std::string braille_char(std::uint8_t mask);
+
+// -- Y-axis scales (exposed for the unit tests) --------------------------------
+// Round up to a nice power-of-two multiple (1/2/4/8/16/32/64/128 x 1024^n):
+// 15 MiB -> 16 MiB, 100 MiB -> 128 MiB (binary units are powers of two).
+double nice_bytes(double v);
+// Round up to a nice number: 1 / 2 / 2.5 / 5 x 10^n.
+double nice_watts(double v);
+
+// -- Geometry self-check -------------------------------------------------------
+// Line numbers (1-based) of lines whose DISPLAY width (ftxui::string_width,
+// i.e. wcwidth — columns, not bytes or code points) is not `want_cols`. A
+// single trailing newline does not start an extra line.
+struct GeometryReport {
+  int lines = 0;
+  std::vector<int> bad_lines;
+  bool ok(int want_lines) const {
+    return lines == want_lines && bad_lines.empty();
+  }
+};
+GeometryReport check_geometry(const std::string& text, int want_cols);
+
 // --stats bookkeeping (steady_clock, printed on exit).
 struct FrameStats {
   unsigned long long frames = 0, samples = 0;
@@ -61,6 +90,11 @@ struct FrameState {
   };
   std::map<std::string, Auto> auto_scale;  // keyed by panel id
 };
+
+// The y-axis max for this frame, updating the sticky/hysteresis state.
+// (Declared here, after FrameState; the definition is in frame.cpp.)
+double panel_y_max(const PanelSpec& p, double visible_max, FrameState& st,
+                   TimePoint now);
 
 // A frozen copy of the display window, taken on pause so the display freezes
 // while sampling continues.

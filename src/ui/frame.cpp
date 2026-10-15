@@ -6,10 +6,112 @@
 #include <cstring>
 #include <ctime>
 
+#include "ftxui/screen/string.hpp"  // string_width (wcwidth)
+
 #include "util/format.hpp"
 #include "util/names.hpp"
 
 namespace geth::ui {
+
+// ---------------------------------------------------------------------------
+// braille dot encoding (exported for the unit tests)
+// ---------------------------------------------------------------------------
+
+int braille_bit(int col, int row) {
+  // (col 0, rows 0..3 top->bottom) -> bits 0,1,2,6; (col 1) -> bits 3,4,5,7.
+  // All eight dots set mask 0xFF, so a full cell is U+28FF.
+  static const int kBits[2][4] = {{0, 1, 2, 6}, {3, 4, 5, 7}};
+  return kBits[col][row];
+}
+
+std::string braille_char(std::uint8_t mask) {
+  return std::string({'\xE2', static_cast<char>(0xA0 | (mask >> 6)),
+                      static_cast<char>(0x80 | (mask & 0x3F))});
+}
+
+// ---------------------------------------------------------------------------
+// y-axis scales (exported for the unit tests)
+// ---------------------------------------------------------------------------
+
+// Round up to a "nice" number: 1 / 2 / 2.5 / 5 x 10^n.
+double nice_watts(double v) {
+  if (v <= 0) return 0;
+  const double p = std::pow(10.0, std::floor(std::log10(v)));
+  for (double m : {1.0, 2.0, 2.5, 5.0, 10.0})
+    if (v <= m * p + 1e-9) return m * p;
+  return 10.0 * p;
+}
+
+// Binary units are powers of two, so the nice steps are powers of two too:
+// 15 MiB -> 16 MiB, 100 MiB -> 128 MiB, 64 KiB -> 64 KiB (NOT 15 MiB -> 1 GiB).
+double nice_bytes(double v) {
+  if (v <= 0) return 0;
+  double k = 1;
+  for (;;) {
+    for (double m : {1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0})
+      if (v <= m * k + 1e-9) return m * k;
+    k *= 1024.0;
+  }
+}
+
+// Grow immediately; shrink only after 10 s below 50 % of the current scale.
+double update_auto_scale(FrameState::Auto& a, double target, double visible,
+                         TimePoint now) {
+  if (a.max <= 0 || target > a.max) {
+    a.max = target;
+    a.below = false;
+  } else if (visible < 0.5 * a.max) {
+    if (!a.below) {
+      a.below = true;
+      a.below_since = now;
+    } else if (now - a.below_since >= std::chrono::seconds(10))
+      a.max = target;
+  } else {
+    a.below = false;
+  }
+  return a.max;
+}
+
+// The y-axis max for this frame, updating the sticky/hysteresis state.
+double panel_y_max(const PanelSpec& p, double vm, FrameState& st, TimePoint now) {
+  switch (p.y_scale.kind) {
+    case ScaleSpec::Kind::kPercent: return 100.0;
+    case ScaleSpec::Kind::kTemperature:
+      if (vm > 100.0) st.temp_max = vm > 110.0 ? 120.0 : 110.0;
+      return st.temp_max;
+    case ScaleSpec::Kind::kAbsolute:
+      return p.y_scale.absolute_max > 0 ? p.y_scale.absolute_max : 1.0;
+    case ScaleSpec::Kind::kWatts:
+      return update_auto_scale(st.auto_scale[p.id],
+                               std::max(nice_watts(vm), p.y_scale.floor_), vm, now);
+    case ScaleSpec::Kind::kBytesPerSec:
+      return update_auto_scale(st.auto_scale[p.id],
+                               std::max(nice_bytes(vm), p.y_scale.floor_), vm, now);
+  }
+  return 100.0;
+}
+
+// ---------------------------------------------------------------------------
+// geometry self-check (exported for the unit tests)
+// ---------------------------------------------------------------------------
+
+GeometryReport check_geometry(const std::string& text, int want_cols) {
+  GeometryReport r;
+  std::string t = text;
+  if (!t.empty() && t.back() == '\n') t.pop_back();  // trailing NL = no new line
+  std::size_t start = 0;
+  for (;;) {
+    const std::size_t nl = t.find('\n', start);
+    const std::string line =
+        t.substr(start, nl == std::string::npos ? nl : nl - start);
+    ++r.lines;
+    // string_width is wcwidth-based: display columns, not bytes or code points.
+    if (ftxui::string_width(line) != want_cols) r.bad_lines.push_back(r.lines);
+    if (nl == std::string::npos) break;
+    start = nl + 1;
+  }
+  return r;
+}
 
 namespace {
 
@@ -176,46 +278,9 @@ double value_at(const Decimated& d, double t) {
 }
 
 // ---------------------------------------------------------------------------
-// scales
+// scales (nice_watts / nice_bytes / update_auto_scale / panel_y_max are the
+// exported versions above the anonymous namespace)
 // ---------------------------------------------------------------------------
-
-// Round up to a "nice" number: 1 / 2 / 2.5 / 5 x 10^n.
-double nice_watts(double v) {
-  if (v <= 0) return 0;
-  const double p = std::pow(10.0, std::floor(std::log10(v)));
-  for (double m : {1.0, 2.0, 2.5, 5.0, 10.0})
-    if (v <= m * p + 1e-9) return m * p;
-  return 10.0 * p;
-}
-
-// Round up to a "nice" number: 1 / 2 / 5 x 1024^n.
-double nice_bytes(double v) {
-  if (v <= 0) return 0;
-  double k = 1;
-  for (;;) {
-    for (double m : {1.0, 2.0, 5.0})
-      if (v <= m * k + 1e-9) return m * k;
-    k *= 1024.0;
-  }
-}
-
-// Grow immediately; shrink only after 10 s below 50 % of the current scale.
-double update_auto_scale(FrameState::Auto& a, double target, double visible,
-                         TimePoint now) {
-  if (a.max <= 0 || target > a.max) {
-    a.max = target;
-    a.below = false;
-  } else if (visible < 0.5 * a.max) {
-    if (!a.below) {
-      a.below = true;
-      a.below_since = now;
-    } else if (now - a.below_since >= std::chrono::seconds(10))
-      a.max = target;
-  } else {
-    a.below = false;
-  }
-  return a.max;
-}
 
 double visible_max(const std::vector<RawWindow>& raws) {
   double m = 0;
@@ -225,59 +290,29 @@ double visible_max(const std::vector<RawWindow>& raws) {
   return m;
 }
 
-// The y-axis max for this frame, updating the sticky/hysteresis state.
-double panel_y_max(const PanelSpec& p, double vm, FrameState& st, TimePoint now) {
-  switch (p.y_scale.kind) {
-    case ScaleSpec::Kind::kPercent: return 100.0;
-    case ScaleSpec::Kind::kTemperature:
-      if (vm > 100.0) st.temp_max = vm > 110.0 ? 120.0 : 110.0;
-      return st.temp_max;
-    case ScaleSpec::Kind::kAbsolute:
-      return p.y_scale.absolute_max > 0 ? p.y_scale.absolute_max : 1.0;
-    case ScaleSpec::Kind::kWatts:
-      return update_auto_scale(st.auto_scale[p.id],
-                               std::max(nice_watts(vm), p.y_scale.floor_), vm, now);
-    case ScaleSpec::Kind::kBytesPerSec:
-      return update_auto_scale(st.auto_scale[p.id],
-                               std::max(nice_bytes(vm), p.y_scale.floor_), vm, now);
-  }
-  return 100.0;
-}
-
+// Compact tick labels: no trailing zeros, a space before the unit, °C for
+// temperature — "100 %", "75 %", "0 %", "100 °C", "32 GiB", "30 W", "5 MiB/s".
+// The legend keeps the full-precision formatters (format::bytes/watts/...).
 std::string tick_label(ScaleSpec::Kind k, double f, double vmax) {
-  char b[16];
   switch (k) {
-    case ScaleSpec::Kind::kPercent:
-      std::snprintf(b, sizeof(b), "%d%%", static_cast<int>(std::lround(f * 100)));
-      return b;
-    case ScaleSpec::Kind::kTemperature:
-      std::snprintf(b, sizeof(b), "%d", static_cast<int>(std::lround(f * vmax)));
-      return b;
-    case ScaleSpec::Kind::kAbsolute: return format::bytes(f * vmax);
-    case ScaleSpec::Kind::kWatts: return format::watts(f * vmax);
-    case ScaleSpec::Kind::kBytesPerSec: return format::rate(f * vmax);
+    case ScaleSpec::Kind::kPercent: return format::compact_percent(f * vmax);
+    case ScaleSpec::Kind::kTemperature: return format::compact_celsius(f * vmax);
+    case ScaleSpec::Kind::kAbsolute: return format::compact_bytes(f * vmax);
+    case ScaleSpec::Kind::kWatts: return format::compact_watts(f * vmax);
+    case ScaleSpec::Kind::kBytesPerSec: return format::compact_rate(f * vmax);
   }
   return "0";
 }
 
 // ---------------------------------------------------------------------------
-// braille graph
+// braille graph (braille_bit / braille_char are the exported versions above)
 // ---------------------------------------------------------------------------
-
-// Braille bit for (col_in_cell 0/1, row_in_cell 0..3, row 0 = top):
-// col 0 takes bits 0-3 top->bottom, col 1 takes bits 3-6.
-int braille_bit(int col, int row) { return col == 0 ? row : 3 + row; }
-
-// U+2800|mask as UTF-8.
-std::string braille_char(std::uint8_t mask) {
-  return std::string({'\xE2', static_cast<char>(0xA0 | (mask >> 6)),
-                      static_cast<char>(0x80 | (mask & 0x3F))});
-}
 
 struct Cell {
   std::uint8_t mask = 0;
   int series = -1;   // last series that wrote into this cell
-  int top_row = 99;  // highest dot row written by that series
+  int prio = -1;     // winning dot's kind: 0 = fill, 1 = line (line wins)
+  int top_row = 99;  // winning dot's row within its cell
   ftxui::Color color;
 };
 
@@ -289,8 +324,10 @@ struct GraphSeries {
 };
 
 // Fill `cells` (Wg x Hg) from all series. Drawn in legend order; when two
-// series share a cell the later one wins, and within a series the topmost dot
-// sets the cell color (the line wins over its own fill).
+// series share a cell the later one wins. Within one series the topmost dot
+// sets the cell color, and the LINE dot (prio 1) beats its own fill dot
+// (prio 0) when they land in the same cell — the line is always drawn in the
+// full series color, the fill in the derived fill color.
 void draw_graph_cells(std::vector<Cell>& cells, int Wg, int Hg,
                       const std::vector<GraphSeries>& gs,
                       const std::vector<RawWindow>& raws, double vmax) {
@@ -298,12 +335,15 @@ void draw_graph_cells(std::vector<Cell>& cells, int Wg, int Hg,
   const int dot_rows = 4 * Hg;
   if (dot_cols < 2 || dot_rows < 4 || vmax <= 0) return;
 
-  auto set_dot = [&](int xc, int yd, int sidx, const ftxui::Color& c) {
+  auto set_dot = [&](int xc, int yd, int sidx, const ftxui::Color& c, int prio) {
     Cell& cell = cells[static_cast<std::size_t>(yd / 4) * Wg + (xc / 2)];
     const bool later = cell.series < 0 || sidx > cell.series;
-    const bool higher = sidx == cell.series && yd % 4 < cell.top_row;
+    const bool higher = sidx == cell.series &&
+                        (prio > cell.prio ||
+                         (prio == cell.prio && yd % 4 < cell.top_row));
     if (later || higher) {
       cell.color = c;
+      cell.prio = prio;
       cell.top_row = yd % 4;
     }
     cell.series = std::max(cell.series, sidx);
@@ -316,6 +356,8 @@ void draw_graph_cells(std::vector<Cell>& cells, int Wg, int Hg,
     if (!g.d || g.d->t.empty() || !raws[si].valid()) continue;
     const RawWindow& w = raws[si];
     for (int xc = 0; xc < dot_cols; ++xc) {
+      // The time under this dot column: real history over the 60 s window,
+      // newest at the right edge.
       const double t =
           w.t_start + w.span_ns * (dot_cols > 1 ? xc / (double)(dot_cols - 1) : 1.0);
       const double v = value_at(*g.d, t);
@@ -324,8 +366,8 @@ void draw_graph_cells(std::vector<Cell>& cells, int Wg, int Hg,
       int y = static_cast<int>(std::lround((1.0 - clamped / vmax) * (dot_rows - 1)));
       y = std::clamp(y, 0, dot_rows - 1);
       if (g.filled)
-        for (int y2 = y; y2 < dot_rows; ++y2) set_dot(xc, y2, (int)si, g.fill);
-      set_dot(xc, y, (int)si, g.line);
+        for (int y2 = y; y2 < dot_rows; ++y2) set_dot(xc, y2, (int)si, g.fill, 0);
+      set_dot(xc, y, (int)si, g.line, 1);
     }
   }
 }
@@ -393,8 +435,9 @@ bool series_sleeping(const Snapshot& snap, const SeriesId& id) {
 // panel
 // ---------------------------------------------------------------------------
 
-// One value row: [▌ label ... value] (bar or aligned space, label truncated
-// with "…" — never the value — value right-aligned in the slot).
+// One value row: [▌label ... value] (bar or blank column, label truncated
+// with "…" — never the value — value right-aligned in the slot). The label
+// starts directly after "▌" (no space); bar-less rows align to the same x.
 void draw_value_row(ftxui::Screen& s, int x, int y, int slot_w, bool has_bar,
                     const ftxui::Color& bar_c, const std::string& label,
                     const std::string& value, const ftxui::Color& text_c,
@@ -403,7 +446,7 @@ void draw_value_row(ftxui::Screen& s, int x, int y, int slot_w, bool has_bar,
   const int vlen = utf8_cols(value);
   int vstart = x + slot_w - vlen;
   if (vstart < x + 1) vstart = x + 1;
-  const int lx = x + 2;  // "▌ " or the aligned "  "
+  const int lx = x + 1;  // "▌label" or the aligned " label"
   int lmax = vstart - lx - 1;  // one gap column before the value
   if (lmax < 0) lmax = 0;
   if (has_bar) put_px(s, x, y, "▌", bar_c);
@@ -509,23 +552,34 @@ void draw_panel(ftxui::Screen& s, int x0, int y0, int W, int H, const PanelSpec&
     }
   }
 
-  // --- y axis: labels right-aligned in the tick column, "┤" separator ----------
-  if (have_graph)
+  // --- y axis: the data area starts at gx on EVERY graph row; the separator
+  //     column is grid-color "│", tick rows carry the right-aligned label and
+  //     a border-color "┤" ("label ┤"), non-tick rows a blank label.
+  if (have_graph) {
+    for (int ry = 0; ry < Hg; ++ry) put_px(s, ix0 + L + 1, iy0 + ry, "│", c.grid);
     for (std::size_t i = 0; i < fracs.size(); ++i) {
       const int ry = static_cast<int>(std::lround((1.0 - fracs[i]) * (Hg - 1)));
       const std::string& lab = ticks[i];
       put_str(s, ix0 + (L - utf8_cols(lab)), iy0 + ry, lab, c.axis_text);
       put_px(s, ix0 + L + 1, iy0 + ry, "┤", c.border);
     }
+  }
 
   // --- legend rows (below the graph) ---------------------------------------------
+  // Two columns: each value is right-aligned inside its own half, and at
+  // least two blank columns separate the halves, so a value can never run
+  // into the other column's "▌" ("12.00 GiB▌ Swap" is impossible).
   {
+    const int gutter = 2;
+    const int w0 = (ipr == 2) ? (iw - gutter) / 2 : iw;
+    const int w1 = (ipr == 2) ? iw - gutter - w0 : iw;
     int y = iy0 + Hg;
     for (int k = 0; k < (int)legend_idx.size(); ++k) {
       const int si = legend_idx[k];
-      const int slot_w = iw / ipr;
-      const int sx = ix0 + (ipr == 2 ? (k % 2) * slot_w : 0);
-      draw_value_row(s, sx, y + k / ipr, slot_w, true,
+      const int col = k % ipr;
+      const int sx = ix0 + (ipr == 2 ? col * (w0 + gutter) : 0);
+      const int sw = (ipr == 2) ? (col == 0 ? w0 : w1) : iw;
+      draw_value_row(s, sx, y + k / ipr, sw, true,
                      c.series[p.series[si].color_index], p.series[si].label,
                      legend_values[si], c.text, c.accent);
     }

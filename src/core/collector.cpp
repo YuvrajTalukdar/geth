@@ -28,7 +28,11 @@ bool Collector::any_available() const {
 }
 
 const Snapshot& Collector::sample() {
-  _snap.time = Clock::now();
+  // A fixed timestamp (set_sample_time, demo virtual clock) is consumed once;
+  // otherwise sample at the real steady clock.
+  const TimePoint now = _fixed_time ? *_fixed_time : Clock::now();
+  _fixed_time.reset();
+  _snap.time = now;
   for (auto& src : _sources) src->sample(_snap);
   apply_apu_package_power(_snap);
   _store.begin_tick(_snap.time);

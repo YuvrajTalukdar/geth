@@ -151,7 +151,9 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
     const std::string bus = g.bus_id;
     PanelSpec p;
     p.id = "gpu." + bus + ".vram";
-    p.title = title;
+    // Distinguished from the usage panel, which carries the bare GPU short
+    // name: "RTX 3050 Laptop · Memory".
+    p.title = title + " \xC2\xB7 Memory";
     p.gpu_bus = bus;
     p.series = {{.id = SeriesId("gpu." + bus + ".vram"), .label = title, .color_index = ci,
                  .fill = true,

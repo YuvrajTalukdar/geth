@@ -12,6 +12,7 @@
 #include "core/source.hpp"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -41,6 +42,13 @@ class Collector {
   // and records it into the SeriesStore.
   const Snapshot& sample();
 
+  // Override the timestamp of the NEXT sample() only (consumed once). The
+  // demo's --render-frame warm-up uses this as a virtual clock: the samples
+  // run back-to-back in wall time but are stamped --interval apart, so 60 of
+  // them fill the whole 60 s graph window instead of one millisecond of it.
+  // Sources that read out.time (the demo) follow the virtual clock too.
+  void set_sample_time(TimePoint t) { _fixed_time = t; }
+
   const SeriesStore& store() const { return _store; }
   const Snapshot& latest() const { return _snap; }
 
@@ -65,6 +73,8 @@ class Collector {
   std::vector<SeriesId> _net_rx, _net_tx;     // aligned with _snap.net.interfaces
   std::vector<SeriesId> _disk_r, _disk_w;     // aligned with _snap.disk.devices
   bool _series_inited = false;
+  // Timestamp for the next sample() (see set_sample_time); nullopt = Clock::now().
+  std::optional<TimePoint> _fixed_time;
 };
 
 }  // namespace geth

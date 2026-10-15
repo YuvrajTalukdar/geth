@@ -151,12 +151,25 @@ int run_render_frame(Collector& collector, const Hardware& hw, int W, int H,
   const std::vector<PanelSpec> page = build_default_page(hw);
   FrameState state;
 
-  // Collect warmup samples: no sleep in demo mode, the real interval
-  // otherwise.
-  for (unsigned long long i = 0; i < warmup; ++i) {
-    collector.sample();
-    if (!opts.demo && i + 1 < warmup)
-      std::this_thread::sleep_for(std::chrono::milliseconds(opts.interval_ms));
+  // Collect warmup samples. Demo mode sleeps nowhere: instead each sample is
+  // stamped on a VIRTUAL clock spaced by --interval, so 60 samples fill the
+  // whole 60 s graph window (back-to-back wall-time samples would all land
+  // within one millisecond and every graph column would show the same value;
+  // the demo source follows out.time, so its waves advance too). Real
+  // hardware sleeps the real interval.
+  if (opts.demo) {
+    TimePoint vnow = collector.latest().time;  // the probe's warm-up sample
+    for (unsigned long long i = 0; i < warmup; ++i) {
+      vnow += std::chrono::milliseconds(opts.interval_ms);
+      collector.set_sample_time(vnow);
+      collector.sample();
+    }
+  } else {
+    for (unsigned long long i = 0; i < warmup; ++i) {
+      collector.sample();
+      if (i + 1 < warmup)
+        std::this_thread::sleep_for(std::chrono::milliseconds(opts.interval_ms));
+    }
   }
 
   FrameStats stats;
@@ -172,10 +185,26 @@ int run_render_frame(Collector& collector, const Hardware& hw, int W, int H,
                         .count(),
                     alloc_count() - a0);
 
+  const std::string text = screen_to_text(screen);
+
+  // Geometry self-check: before anything is printed, verify the frame is
+  // exactly H lines, each exactly W DISPLAY columns wide (wcwidth, not bytes
+  // or code points). A layout bug must fail loudly, not print a broken frame.
+  const GeometryReport geom = check_geometry(text, W);
+  if (!geom.ok(H)) {
+    std::fprintf(stderr,
+                 "geth: geometry check failed at %dx%d: got %d lines; "
+                 "wrong-width lines:",
+                 W, H, geom.lines);
+    for (int ln : geom.bad_lines) std::fprintf(stderr, " %d", ln);
+    std::fprintf(stderr, "\n");
+    return 1;
+  }
+
   if (opts.ansi)
     std::fputs(screen.ToString().c_str(), stdout);  // SGR + style reset, no NUL
   else
-    std::fputs(screen_to_text(screen).c_str(), stdout);
+    std::fputs(text.c_str(), stdout);
   std::fputc('\n', stdout);
   std::fflush(stdout);
 
