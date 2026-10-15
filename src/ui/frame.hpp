@@ -19,6 +19,7 @@
 #include "ftxui/dom/elements.hpp"
 #include "ftxui/screen/screen.hpp"
 
+#include "ui/layout.hpp"
 #include "ui/panel_spec.hpp"
 #include "ui/theme.hpp"
 
@@ -37,6 +38,12 @@ std::string braille_char(std::uint8_t mask);
 // Round up to a nice power-of-two multiple (1/2/4/8/16/32/64/128 x 1024^n):
 // 15 MiB -> 16 MiB, 100 MiB -> 128 MiB (binary units are powers of two).
 double nice_bytes(double v);
+// Absolute scales (RAM/VRAM totals): the smallest value >= v from the
+// sequence {1, 1.5} x 2^k, so the top tick lands on a round number in the
+// display unit — 22.8 GiB -> 24 GiB, 15.4 GiB -> 16 GiB, 4 GiB -> 4 GiB,
+// 512 MiB -> 512 MiB. (1024^n is itself a power of two, so computing the
+// ceiling on raw bytes gives the same value as rounding in the display unit.)
+double nice_bytes_max(double v);
 // Round up to a nice number: 1 / 2 / 2.5 / 5 x 10^n.
 double nice_watts(double v);
 
@@ -96,6 +103,25 @@ struct FrameState {
 double panel_y_max(const PanelSpec& p, double visible_max, FrameState& st,
                    TimePoint now);
 
+// The computed Layout, cached by terminal size. Recomputes ONLY when (W, H)
+// changes — i.e. on a resize — and reuses the stored vectors otherwise, so a
+// frame at an unchanged size allocates nothing for the layout (spec). The app
+// loop owns one and points it at the page; render_frame pulls from it.
+struct LayoutCache {
+  const std::vector<PanelSpec>* page = nullptr;
+  LayoutPrefs prefs;
+  Layout layout;
+  int w = -1, h = -1;
+  const Layout& get(int W, int H) {
+    if (page && (W != w || H != h)) {
+      layout = compute_layout(W, H, *page, prefs);
+      w = W;
+      h = H;
+    }
+    return layout;
+  }
+};
+
 // A frozen copy of the display window, taken on pause so the display freezes
 // while sampling continues.
 struct FrozenFrame {
@@ -116,17 +142,21 @@ struct FrozenFrame {
 };
 
 FrozenFrame capture_frozen(const std::vector<PanelSpec>& page,
-                           const SeriesStore& store, const Snapshot& latest);
+                           const SeriesStore& store, const Snapshot& latest,
+                           int64_t window_ns);
 
 // Draws one complete frame into `screen` (which must already be sized
 // W x H — use screen.dimx()/dimy()). `frozen` (when paused) overrides the
-// live store/snapshot. `state` is updated (scale hysteresis). Never writes
+// live store/snapshot. `state` is updated (scale hysteresis). Panels are laid
+// out by `cache` (recomputed only on a size change) and drawn from `top_row`
+// (the scroll position, a row index); graphs cover `window_ns`. Never writes
 // outside the screen; below 40x12 it draws the "terminal too small" notice.
 void render_frame(ftxui::Screen& screen, const Hardware& hw,
                   const std::vector<PanelSpec>& page, const SeriesStore& store,
                   const Snapshot& latest, const FrozenFrame* frozen,
                   FrameState& state, const Theme& theme, ColorMode mode,
-                  bool paused, long long interval_ms);
+                  bool paused, long long interval_ms, LayoutCache& cache,
+                  int top_row, int64_t window_ns);
 
 // The Element form of the above, for the ScreenInteractive loop.
 ftxui::Element build_frame_element(const Hardware& hw,
@@ -134,7 +164,8 @@ ftxui::Element build_frame_element(const Hardware& hw,
                                    const SeriesStore& store, const Snapshot& latest,
                                    const FrozenFrame* frozen, FrameState& state,
                                    const Theme& theme, ColorMode mode, bool paused,
-                                   long long interval_ms);
+                                   long long interval_ms, LayoutCache& cache,
+                                   int top_row, int64_t window_ns);
 
 // Plain UTF-8 text of a rendered screen (for --render-frame without --ansi).
 std::string screen_to_text(const ftxui::Screen& screen);

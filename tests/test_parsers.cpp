@@ -34,6 +34,7 @@
 #include "sources/memory.hpp"
 #include "sources/net.hpp"
 #include "sources/temps.hpp"
+#include "ui/panel_spec.hpp"
 #include "util/format.hpp"
 #include "util/pci_ids.hpp"
 
@@ -1059,6 +1060,32 @@ TEST_SUITE("apu_package_power") {
     const auto s = c.sample();
     CHECK(s.cpu.package_power_w.has_value() == false);
     CHECK(s.cpu.package_power_source.has_value() == false);
+  }
+
+  // The full startup chain from main.cpp — the regression this test exists
+  // for. Phase 2.1's probe_all() never lifted the PPT, so
+  // hardware_from(collector.latest()) saw no package power and
+  // build_default_page() dropped the CPU line from the Power panel on
+  // machines where RAPL is unreadable (EACCES). The cases above call
+  // sample() directly, which always lifts — so they could not catch it.
+  TEST_CASE("regression: probe_all -> hardware_from -> build_default_page keeps the APU PPT CPU line") {
+    Collector c;
+    c.add(std::make_unique<FakeApuGpuSource>());  // no preset: no counter won
+    c.probe_all(/*warm_up=*/true);
+    const ui::Hardware hw = ui::hardware_from(c.latest(), "Fake APU");
+    CHECK_EQ(hw.cpu_power_label, std::string("APU Package (PPT)"));
+
+    const std::vector<ui::PanelSpec> page = ui::build_default_page(hw);
+    const ui::PanelSpec* power = nullptr;
+    for (const auto& p : page)
+      if (p.id == "power") power = &p;
+    REQUIRE(power != nullptr);
+    REQUIRE(!power->series.empty());
+    // The CPU line is pushed before any GPU line; the fake iGPU never
+    // reports card power, so it is also the only line.
+    const ui::SeriesSpec& cpu_series = power->series.front();
+    CHECK_EQ(cpu_series.label, std::string("APU Package (PPT)"));
+    CHECK_EQ(cpu_series.value_fn(c.latest()), std::string("47.0 W"));
   }
 
 }  // TEST_SUITE

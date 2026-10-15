@@ -33,7 +33,7 @@ struct Rgb {
 
 constexpr Rgb rgb(std::uint8_t r, std::uint8_t g, std::uint8_t b) { return {r, g, b}; }
 
-// Component-wise darken. fill(i) = series[i] × 0.35 (spec).
+// Component-wise darken. fill(i) = series[i] × 0.45 (spec).
 Rgb scale(Rgb c, double f);
 
 // Nearest xterm-256 palette index for c.
@@ -56,8 +56,9 @@ struct Theme {
   Rgb warn;        // PAUSED, error-ish
   Rgb series[6];   // line colors, in legend order
 
-  // Fill colors are derived per series as a darker mix (series × 0.35).
-  Rgb fill(int i) const { return scale(series[i], 0.35); }
+  // Fill colors are derived per series as a tint (series × 0.45), so fills
+  // read as a shade of the series color rather than grey. Phase 5 tunable.
+  Rgb fill(int i) const { return scale(series[i], 0.45); }
 
   static Theme cyberpunk_blue();
 };

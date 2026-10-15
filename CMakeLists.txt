@@ -4,7 +4,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(geth
-  VERSION 0.2.1
+  VERSION 0.3.0
   DESCRIPTION "GETH — Geth Engine for Tracking Hardware"
   LANGUAGES CXX)
 
@@ -66,6 +66,7 @@ set(GETH_SOURCES
   src/sources/temps.cpp
   src/ui/app.cpp
   src/ui/frame.cpp
+  src/ui/layout.cpp
   src/ui/panel_spec.cpp
   src/ui/theme.cpp
   src/util/alloc_count.cpp
@@ -141,6 +142,7 @@ if(GETH_BUILD_TESTS)
     tests/test_parsers.cpp
     tests/test_names.cpp
     tests/test_ui.cpp
+    tests/test_layout.cpp
     ${GETH_SOURCES})
   target_include_directories(geth_tests PRIVATE src)
   # Absolute path so the test binary can find the fixture files from anywhere.

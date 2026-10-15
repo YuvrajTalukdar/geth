@@ -18,6 +18,12 @@ void Collector::probe_all(bool warm_up) {
   // GPU identity (id, is_integrated, integrated_method) is a property of the
   // hardware, not of a tick: decide it once here, never per tick.
   finalize_gpus(_snap.gpus);
+  // The probe snapshot must be as consistent as a real tick: lift the APU PPT
+  // (or keep the RAPL/counter value if one won) so a caller that builds the UI
+  // page from latest() — hardware_from() — sees the same cpu.package_power_* a
+  // live frame would. Without this, the Power panel's CPU line is missing on a
+  // machine where RAPL is unreadable and only the integrated GPU's PPT exists.
+  apply_apu_package_power(_snap);
   init_series();
 }
 

@@ -1,6 +1,7 @@
 // GETH — Geth Engine for Tracking Hardware
 // Phase 1: data collection layer with text + JSON output (no UI yet).
 
+#include <algorithm>
 #include <atomic>
 #include <csignal>
 #include <cstdio>
@@ -8,10 +9,13 @@
 #include <cstring>
 #include <ctime>
 #include <cerrno>
+#include <chrono>
 #include <fstream>
+#include <random>
 #include <string>
 #include <sys/utsname.h>
 #include <unistd.h>
+#include <vector>
 
 #include "core/collector.hpp"
 #include "sources/cpu.hpp"
@@ -23,7 +27,9 @@
 #include "sources/net.hpp"
 #include "sources/temps.hpp"
 #include "ui/app.hpp"
+#include "ui/layout.hpp"
 #include "ui/panel_spec.hpp"
+#include "util/alloc_count.hpp"
 #include "util/format.hpp"
 #include "util/parse.hpp"
 
@@ -52,6 +58,10 @@ struct Options {
   bool render_frame = false;  // --render-frame COLSxROWS
   std::string render_size;    // "COLSxROWS"
   std::string color_mode;     // "" = auto, else truecolor|256|16
+  int columns = 0;            // --columns N: pin the layout column count (0 = auto)
+  bool layout_report = false;  // --layout-report COLSxROWS
+  std::string layout_size;    // "COLSxROWS" for --layout-report
+  bool perf = false;          // --perf: relayout + layout-cache benchmarks
 };
 
 void print_help() {
@@ -71,6 +81,10 @@ void print_help() {
       "      [--warmup <n>]  samples to collect first (default 60; no sleep in\n"
       "                      --demo, real interval otherwise)\n"
       "      [--ansi]        emit full SGR escape codes instead of plain text\n"
+      "  --layout-report COLSxROWS  Print the layout decision (candidates, per-\n"
+      "                             panel rects/modes) at that size and exit\n"
+      "  --perf            Benchmark relayout + layout-cache reuse and exit\n"
+      "  --columns <n>       Pin the layout column count (UI/render/report)\n"
       "  --stats             Print render/perf statistics on exit\n"
       "  --color <mode>      truecolor | 256 | 16 (default: auto-detect)\n"
       "  --help            Show this help\n"
@@ -137,6 +151,18 @@ int parse_args(int argc, char** argv, Options& o) {
       const char* v = need_value("--color");
       if (!v) return -1;
       o.color_mode = v;
+    } else if (a == "--columns") {
+      unsigned long long n = 0;
+      const char* v = need_value("--columns");
+      if (!v || !parse_u64_arg(v, n)) return -1;
+      o.columns = static_cast<int>(n);
+    } else if (a == "--layout-report") {
+      const char* v = need_value("--layout-report");
+      if (!v) return -1;
+      o.layout_report = true;
+      o.layout_size = v;
+    } else if (a == "--perf") {
+      o.perf = true;
     } else if (a == "--help" || a == "-h") {
       print_help();
       std::exit(0);
@@ -525,6 +551,106 @@ int run_probe(Collector& collector, GpuRegistrySource* gpu_registry) {
   return 0;
 }
 
+// --layout-report COLSxROWS: the layout engine's decision, in text. The
+// candidate table is scored by the SAME code compute_layout uses, so the
+// "<-- chosen" row is exactly what the UI will render at this size.
+int run_layout_report(const ui::Hardware& hw, int W, int H, const Options& opts) {
+  const std::vector<ui::PanelSpec> page = ui::build_default_page(hw);
+  ui::LayoutPrefs prefs;
+  if (opts.columns > 0) prefs.columns = opts.columns;
+
+  const ui::Layout lo = ui::compute_layout(W, H, page, prefs);
+  const std::vector<ui::CandidateReport> cands =
+      ui::score_layout_candidates(W, H, page, prefs);
+
+  const std::string pin = opts.columns > 0
+                              ? "  (--columns " + std::to_string(opts.columns) + ")"
+                              : "";
+  std::printf("== GETH layout report: %dx%d, %zu panels%s ==\n", W, H, page.size(),
+              pin.c_str());
+
+  std::printf("\nfeasible candidates (ascending column count):\n");
+  std::printf("  cols  mode      valid  min_graph_h  total_graph_area\n");
+  for (const auto& cr : cands) {
+    const char* mode = !cr.valid ? "invalid" : (cr.all_full ? "all-full" : "mixed");
+    std::printf("  %4d  %-8s  %-5s  %11d  %16lld%s\n", cr.columns, mode,
+                cr.valid ? "yes" : "no", cr.min_graph_h, cr.total_graph_area,
+                cr.columns == lo.columns ? "   <-- chosen" : "");
+  }
+
+  bool all_full = !lo.panels.empty();
+  for (const auto& pl : lo.panels)
+    if (pl.mode != ui::PanelMode::kFull) {
+      all_full = false;
+      break;
+    }
+  std::printf("\nchosen: %d column%s, mode=%s, scrolling=%s, page_height=%d "
+              "content_height=%d\n",
+              lo.columns, lo.columns == 1 ? "" : "s",
+              all_full ? "all-Full" : (lo.scrolling ? "compact" : "mixed"),
+              lo.scrolling ? "yes" : "no", lo.page_height, lo.content_height);
+
+  std::printf("\npanels (reading order; rect x,y is content-relative, 0 = the "
+              "top row under the header):\n");
+  std::printf("  %-22s %4s %4s %4s %4s  %-8s  graph\n", "id", "x", "y", "w", "h",
+              "mode");
+  for (std::size_t i = 0; i < page.size(); ++i) {
+    const ui::LayoutRect& r = lo.panels[i].rect;
+    const bool full = lo.panels[i].mode == ui::PanelMode::kFull;
+    const int gw = ui::graph_w(page[i], r.w);
+    const int gh = full ? ui::full_graph_h(page[i], r.w, r.h) : ui::compact_graph_h(r.h);
+    std::printf("  %-22s %4d %4d %4d %4d  %-8s  %dx%d\n", page[i].id.c_str(), r.x, r.y,
+                r.w, r.h, full ? "full" : "compact", gw, gh);
+  }
+  return 0;
+}
+
+// --perf: the Done-criterion performance evidence, reproducible. Two
+// benchmarks: (1) relayout cost over 50 random terminal sizes, and (2) the
+// layout-cache zero-allocation guarantee when the size is unchanged. The
+// per-frame RENDER cost and allocation count are measured separately with
+// `--render-frame COLSxROWS --stats` (FrameStats), which prints render
+// time and allocations for one full frame.
+int run_perf(const ui::Hardware& hw, const Options& opts) {
+  const std::vector<ui::PanelSpec> page = ui::build_default_page(hw);
+  std::printf("== GETH perf (%s), %zu panels ==\n",
+              opts.demo ? "demo" : "real hardware", page.size());
+
+  // --- (1) relayout over 50 random sizes -------------------------------------
+  // Fixed seed: reproducible across runs. The size range spans the test matrix
+  // (60x20 .. 320x90) plus a little margin.
+  std::mt19937 rng(20261015u);
+  std::uniform_int_distribution<int> dw(60, 320), dh(20, 100);
+  constexpr int kIters = 50;
+  double mn = 1e30, mx = 0.0, sum = 0.0;
+  for (int i = 0; i < kIters; ++i) {
+    const int W = dw(rng), H = dh(rng);
+    const auto t0 = std::chrono::steady_clock::now();
+    ui::Layout lo = ui::compute_layout(W, H, page, ui::LayoutPrefs{});
+    (void)lo;
+    const auto t1 = std::chrono::steady_clock::now();
+    const double us = std::chrono::duration<double, std::micro>(t1 - t0).count();
+    mn = std::min(mn, us);
+    mx = std::max(mx, us);
+    sum += us;
+  }
+  std::printf("\nrelayout over %d random sizes (60x20 .. 320x100):\n", kIters);
+  std::printf("  min %9.2f us   avg %9.2f us   max %9.2f us\n", mn, sum / kIters, mx);
+
+  // --- (2) layout cache reuse: zero allocations when the size is unchanged ---
+  ui::LayoutCache cache;
+  cache.page = &page;
+  cache.get(250, 70);  // one-time compute (allocates the layout vectors)
+  set_alloc_counting(true);
+  const long long abase = alloc_count();
+  for (int i = 0; i < 1000; ++i) cache.get(250, 70);  // same size: reuse
+  const long long reused = alloc_count() - abase;
+  set_alloc_counting(false);
+  std::printf("\nlayout cache reuse (1000 gets at 250x70, size unchanged):\n");
+  std::printf("  allocations: %lld   (spec: 0)\n", reused);
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -577,6 +703,18 @@ int main(int argc, char** argv) {
   const std::string cpu_name = read_cpu_model(opts.demo);
   const ui::Hardware hw = ui::hardware_from(collector.latest(), cpu_name);
 
+  if (opts.layout_report) {
+    int W = 0, H = 0;
+    if (!parse_size(opts.layout_size, W, H)) {
+      std::fprintf(stderr, "geth: --layout-report needs COLSxROWS, got '%s'\n",
+                   opts.layout_size.c_str());
+      return 2;
+    }
+    return run_layout_report(hw, W, H, opts);
+  }
+
+  if (opts.perf) return run_perf(hw, opts);
+
   if (opts.render_frame) {
     int W = 0, H = 0;
     if (!parse_size(opts.render_size, W, H)) {
@@ -590,6 +728,7 @@ int main(int argc, char** argv) {
     u.demo = opts.demo;
     u.ansi = opts.ansi;
     u.stats = opts.stats;
+    u.columns = opts.columns;
     return ui::run_render_frame(collector, hw, W, H, opts.warmup, u);
   }
 
@@ -599,6 +738,7 @@ int main(int argc, char** argv) {
     u.count = opts.count;
     u.color_mode = opts.color_mode;
     u.stats = opts.stats;
+    u.columns = opts.columns;
     return ui::run_ui(collector, hw, u);
   }
 

@@ -19,10 +19,23 @@
 #include "ui/frame.hpp"
 #include "ui/panel_spec.hpp"
 #include "ui/theme.hpp"
+#include "util/alloc_count.hpp"
 
 using namespace geth;
 
 namespace {
+
+// The Phase 3 default graph window (1 m). The tests predate the t-cycle; a
+// fixed 60 s window keeps their data geometry identical to before.
+constexpr int64_t kWinNs = 60LL * 1000000000LL;
+
+// A LayoutCache pointed at `page` (what the app does). render_frame takes the
+// cache by non-const reference, so each call site builds its own.
+ui::LayoutCache cache_for(const std::vector<ui::PanelSpec>& page) {
+  ui::LayoutCache c;
+  c.page = &page;
+  return c;
+}
 
 // Builds a demo collector with a populated 60 s window, plus the matching
 // Hardware + page the UI would render.
@@ -92,10 +105,11 @@ bool has_forbidden_style(const std::string& s) {
 void render_at(int W, int H, const UiFixture& fx, const ui::Theme& theme,
                ui::ColorMode mode) {
   ui::FrameState state;
+  ui::LayoutCache cache = cache_for(fx.page);
   ftxui::Screen screen(W, H);
   screen.Clear();
   ui::render_frame(screen, fx.hw, fx.page, fx.c.store(), fx.c.latest(), nullptr, state,
-                   theme, mode, /*paused=*/false, 1000);
+                   theme, mode, /*paused=*/false, 1000, cache, 0, kWinNs);
   (void)screen.ToString();  // must not throw / crash
 }
 
@@ -128,10 +142,11 @@ struct RampSource : Source {
   bool started = false;
 };
 
-// Renders a single CPU panel on a 138x12 screen: the panel fills (0,1) at
-// 69x10, its graph area is exactly 60 braille columns x 7 rows (120 x 28
-// dots), with gx = 8, gy = 2, and "100 %" as the widest tick label (L = 5:
-// Wg = (69-2) - 5 - 2 = 60).
+// Renders a single CPU panel on a 138x12 screen. The Phase 3 layout puts a
+// lone panel in a 1-column grid at the full width: the panel fills (0,1) at
+// 138x10, its graph area is 129 braille columns x 7 rows (258 x 28 dots),
+// with gx = 8, gy = 2, and "100 %" as the widest tick label (L = 5:
+// Wg = (138-2) - 5 - 2 = 129).
 void render_ramp(bool gap, ftxui::Screen& screen) {
   Collector c;
   auto rs = std::make_unique<RampSource>();
@@ -159,9 +174,10 @@ void render_ramp(bool gap, ftxui::Screen& screen) {
   p.series.push_back(sr);
   std::vector<ui::PanelSpec> page{p};
   ui::FrameState state;
+  ui::LayoutCache cache = cache_for(page);
   ui::render_frame(screen, hw, page, c.store(), c.latest(), nullptr, state,
                    ui::Theme::cyberpunk_blue(), ui::ColorMode::TrueColor,
-                   /*paused=*/false, 1000);
+                   /*paused=*/false, 1000, cache, 0, kWinNs);
 }
 
 // The braille dot mask of the cell at dot-column cc, dot-row cy/4 (graph
@@ -199,10 +215,11 @@ TEST_CASE("no background color is ever emitted (160x48, all color modes)") {
                                  ui::ColorMode::Color16};
   for (auto mode : modes) {
     ui::FrameState state;
+    ui::LayoutCache cache = cache_for(fx.page);
     ftxui::Screen screen(160, 48);
     screen.Clear();
     ui::render_frame(screen, fx.hw, fx.page, fx.c.store(), fx.c.latest(), nullptr, state,
-                     theme, mode, /*paused=*/false, 1000);
+                     theme, mode, /*paused=*/false, 1000, cache, 0, kWinNs);
     const std::string out = screen.ToString();
     // Sanity: a frame was actually drawn (borders, title, footer).
     CHECK(!out.empty());
@@ -228,19 +245,21 @@ TEST_CASE("below 40x12 shows the too-small notice, at 40x12 shows the frame") {
   const ui::Theme theme = ui::Theme::cyberpunk_blue();
   {
     ui::FrameState state;
+    ui::LayoutCache cache = cache_for(fx.page);
     ftxui::Screen screen(39, 11);
     screen.Clear();
     ui::render_frame(screen, fx.hw, fx.page, fx.c.store(), fx.c.latest(), nullptr, state,
-                     theme, ui::ColorMode::TrueColor, false, 1000);
+                     theme, ui::ColorMode::TrueColor, false, 1000, cache, 0, kWinNs);
     const std::string out = ui::screen_to_text(screen);
     CHECK(out.find("terminal too small") != std::string::npos);
   }
   {
     ui::FrameState state;
+    ui::LayoutCache cache = cache_for(fx.page);
     ftxui::Screen screen(40, 12);
     screen.Clear();
     ui::render_frame(screen, fx.hw, fx.page, fx.c.store(), fx.c.latest(), nullptr, state,
-                     theme, ui::ColorMode::TrueColor, false, 1000);
+                     theme, ui::ColorMode::TrueColor, false, 1000, cache, 0, kWinNs);
     const std::string out = ui::screen_to_text(screen);
     CHECK(out.find("terminal too small") == std::string::npos);
   }
@@ -252,10 +271,12 @@ TEST_CASE("geometry self-check: exactly ROWS lines, each COLS display cols wide"
   const int sizes[][2] = {{160, 48}, {120, 40}, {100, 30}, {80, 24}, {200, 60}};
   for (const auto& sz : sizes) {
     ui::FrameState state;
+    ui::LayoutCache cache = cache_for(fx.page);
     ftxui::Screen screen(sz[0], sz[1]);
     screen.Clear();
     ui::render_frame(screen, fx.hw, fx.page, fx.c.store(), fx.c.latest(), nullptr,
-                     state, theme, ui::ColorMode::TrueColor, false, 1000);
+                     state, theme, ui::ColorMode::TrueColor, false, 1000, cache, 0,
+                     kWinNs);
     const ui::GeometryReport rep =
         ui::check_geometry(ui::screen_to_text(screen), sz[0]);
     CHECK_EQ(rep.lines, sz[1]);
@@ -298,7 +319,7 @@ TEST_CASE("braille: all eight dots is U+28FF, each single dot is distinct") {
 TEST_CASE("graph history: 0->100% ramp over 60 s at 60 columns is monotonic") {
   ftxui::Screen screen(138, 12);
   render_ramp(/*gap=*/false, screen);
-  const int gx = 8, gy = 2, Wg = 60, Hg = 7;
+  const int gx = 8, gy = 2, Wg = 129, Hg = 7;
   const int dot_cols = 2 * Wg, dot_rows = 4 * Hg;
   CHECK_EQ(top_dot(screen, gx, gy, 0, Hg), dot_rows - 1);  // 0 % -> bottom
   CHECK_EQ(top_dot(screen, gx, gy, dot_cols - 1, Hg), 0);  // 100 % -> top
@@ -311,16 +332,16 @@ TEST_CASE("graph history: a NaN gap renders as empty columns, never 0") {
   ftxui::Screen screen(138, 12);
   render_ramp(/*gap=*/true, screen);
   const int gx = 8, gy = 2, Hg = 7;
-  // Gap el 25..35 s of the 59 s span -> dot columns ~49..69.
-  for (int xc = 50; xc <= 68; ++xc) CHECK_EQ(top_dot(screen, gx, gy, xc, Hg), -1);
-  CHECK(top_dot(screen, gx, gy, 45, Hg) >= 0);  // data before the gap
-  CHECK(top_dot(screen, gx, gy, 72, Hg) >= 0);  // data after the gap
+  // Gap el 25..35 s of the 59 s span -> dot columns ~109..153 (of 258).
+  for (int xc = 115; xc <= 148; ++xc) CHECK_EQ(top_dot(screen, gx, gy, xc, Hg), -1);
+  CHECK(top_dot(screen, gx, gy, 90, Hg) >= 0);  // data before the gap
+  CHECK(top_dot(screen, gx, gy, 175, Hg) >= 0);  // data after the gap
 }
 
 TEST_CASE("filled graph: line in series color, fill below in the derived color") {
   ftxui::Screen screen(138, 12);
   render_ramp(/*gap=*/false, screen);
-  const int gx = 8, gy = 2, Wg = 60, Hg = 7;
+  const int gx = 8, gy = 2, Wg = 129, Hg = 7;
   const int dot_cols = 2 * Wg;
   const ui::Theme theme = ui::Theme::cyberpunk_blue();
   const ftxui::Color line_c = ui::to_ftxui(theme.series[0], ui::ColorMode::TrueColor);
@@ -365,6 +386,26 @@ TEST_CASE("bytes/sec auto-scale: 15 MiB/s -> 16 MiB/s, not 1 GiB/s") {
   CHECK_EQ(ui::panel_y_max(p, 15.0 * MiB, st, Clock::now()), 16.0 * MiB);
 }
 
+TEST_CASE("absolute scale (RAM/VRAM): max is {1, 1.5} x 2^k above the total") {
+  const double KiB = 1024.0, MiB = 1024.0 * KiB, GiB = 1024.0 * MiB;
+  // The spec examples, plus exact hits on both sequence members.
+  CHECK_EQ(ui::nice_bytes_max(22.8 * GiB), 24.0 * GiB);    // 1.5 x 2^4 GiB
+  CHECK_EQ(ui::nice_bytes_max(15.4 * GiB), 16.0 * GiB);    // 1 x 2^4 GiB
+  CHECK_EQ(ui::nice_bytes_max(4.0 * GiB), 4.0 * GiB);      // exact power of two
+  CHECK_EQ(ui::nice_bytes_max(512.0 * MiB), 512.0 * MiB);  // exact power of two
+  CHECK_EQ(ui::nice_bytes_max(12.0 * GiB), 12.0 * GiB);    // 1.5 x 2^3 GiB, exact
+  CHECK_EQ(ui::nice_bytes_max(1.2 * GiB), 1.5 * GiB);      // smallest member above
+  CHECK_EQ(ui::nice_bytes_max(24.1 * GiB), 32.0 * GiB);    // just above 24 -> next
+  CHECK_EQ(ui::nice_bytes_max(0.0), 0.0);
+  // Through the real axis-max path (Memory/VRAM panels use kAbsolute).
+  ui::PanelSpec p;
+  p.id = "mem";
+  p.y_scale.kind = ui::ScaleSpec::Kind::kAbsolute;
+  p.y_scale.absolute_max = 22.8 * GiB;
+  ui::FrameState st;
+  CHECK_EQ(ui::panel_y_max(p, 1.0, st, Clock::now()), 24.0 * GiB);
+}
+
 TEST_CASE("VRAM panel titles are '<GPU short> \xC2\xB7 Memory'") {
   const UiFixture fx;  // demo hardware: RTX 3050 Laptop dGPU + Cezanne iGPU
   const ui::PanelSpec* vram = nullptr;
@@ -385,6 +426,22 @@ TEST_CASE("demo supplies GTT values for the iGPU") {
   CHECK(s.gpus[1].gtt_total_bytes.has_value());
   if (s.gpus[1].gtt_used_bytes && s.gpus[1].gtt_total_bytes)
     CHECK(*s.gpus[1].gtt_used_bytes <= *s.gpus[1].gtt_total_bytes);
+}
+
+TEST_CASE("layout cache: zero heap allocations when the size is unchanged") {
+  // The Phase 3 spec: the layout is recomputed ONLY on a resize. A frame at an
+  // unchanged terminal size must reuse the stored layout and allocate nothing
+  // for it (the renderer's per-frame strings/vectors are a separate budget).
+  const UiFixture fx;
+  ui::LayoutCache cache;
+  cache.page = &fx.page;
+  cache.get(250, 70);  // one-time compute (allocates the layout vectors)
+
+  geth::set_alloc_counting(true);
+  const long long base = geth::alloc_count();
+  for (int i = 0; i < 2000; ++i) cache.get(250, 70);  // same size: reuse
+  CHECK_EQ(geth::alloc_count(), base);
+  geth::set_alloc_counting(false);
 }
 
 }  // TEST_SUITE

@@ -54,6 +54,19 @@ double nice_bytes(double v) {
   }
 }
 
+// Absolute scales (RAM/VRAM totals): the smallest value >= v from the
+// sequence {1, 1.5} x 2^k. 1024^n is a power of two, so the ceiling in raw
+// bytes equals the ceiling in whatever display unit compact_bytes would pick:
+// 22.8 GiB -> 24 GiB, 15.4 GiB -> 16 GiB, 4 GiB -> 4 GiB, 512 MiB -> 512 MiB.
+double nice_bytes_max(double v) {
+  if (v <= 0) return 0;
+  for (double k = 1.0;; k *= 2.0)
+    for (double m : {1.0, 1.5}) {
+      const double cand = m * k;
+      if (v <= cand + cand * 1e-9) return cand;  // relative eps: v is in bytes
+    }
+}
+
 // Grow immediately; shrink only after 10 s below 50 % of the current scale.
 double update_auto_scale(FrameState::Auto& a, double target, double visible,
                          TimePoint now) {
@@ -80,7 +93,10 @@ double panel_y_max(const PanelSpec& p, double vm, FrameState& st, TimePoint now)
       if (vm > 100.0) st.temp_max = vm > 110.0 ? 120.0 : 110.0;
       return st.temp_max;
     case ScaleSpec::Kind::kAbsolute:
-      return p.y_scale.absolute_max > 0 ? p.y_scale.absolute_max : 1.0;
+      // Round the total up to {1, 1.5} x 2^k so the top tick is a round
+      // number in the display unit (22.8 GiB -> 24 GiB, ticks 0/6/12/18/24).
+      return p.y_scale.absolute_max > 0 ? nice_bytes_max(p.y_scale.absolute_max)
+                                        : 1.0;
     case ScaleSpec::Kind::kWatts:
       return update_auto_scale(st.auto_scale[p.id],
                                std::max(nice_watts(vm), p.y_scale.floor_), vm, now);
@@ -114,8 +130,6 @@ GeometryReport check_geometry(const std::string& text, int want_cols) {
 }
 
 namespace {
-
-constexpr int64_t kWindowNs = 60LL * 1000000000LL;  // fixed 60 s graph window
 
 // ---------------------------------------------------------------------------
 // pixel / text primitives (bounds-checked; the screen is the hard boundary)
@@ -200,9 +214,11 @@ struct RawWindow {
 };
 
 // Fill `t`/`v` (and point `w` at them) with one series' in-window points
-// from the live store.
+// from the live store. The window is the newest `window_ns` of history
+// (the graph time window: 30 s .. 10 m, cycled with t); the ring holds a
+// full hour, so every window is a slice of it.
 void load_live(RawWindow& w, std::vector<int64_t>& t, std::vector<float>& v,
-               const SeriesStore& store, const SeriesId& id) {
+               const SeriesStore& store, const SeriesId& id, int64_t window_ns) {
   w = RawWindow{};
   t.clear();
   v.clear();
@@ -212,7 +228,7 @@ void load_live(RawWindow& w, std::vector<int64_t>& t, std::vector<float>& v,
   const std::size_t n = times->size();
   if (n == 0 || vals->size() != n) return;
   const int64_t t_end = times->at(n - 1);
-  const int64_t span = std::min<int64_t>(kWindowNs, t_end - times->at(0));
+  const int64_t span = std::min<int64_t>(window_ns, t_end - times->at(0));
   if (span <= 0) return;
   const int64_t t_start = t_end - span;
   t.reserve(n);
@@ -454,8 +470,88 @@ void draw_value_row(ftxui::Screen& s, int x, int y, int slot_w, bool has_bar,
   put_str(s, vstart, y, value, accent_c);
 }
 
+// ---------------------------------------------------------------------------
+// Compact-mode title + legend
+// ---------------------------------------------------------------------------
+
+// Short form of a series label for a Compact title: a power-source label
+// ("APU Package (PPT)") keeps its first token ("APU"); a GPU name keeps its
+// first two tokens ("RTX 3050 Laptop" -> "RTX 3050").
+std::string short_title_label(const std::string& label) {
+  if (label.find("Package") != std::string::npos) {
+    const auto sp = label.find(' ');
+    return sp == std::string::npos ? label : label.substr(0, sp);
+  }
+  int tokens = 0, i = 0;
+  while (i < (int)label.size() && tokens < 2) {
+    if (label[i] == ' ') ++tokens;
+    ++i;
+  }
+  std::string t = label.substr(0, i);
+  while (!t.empty() && t.back() == ' ') t.pop_back();
+  return t;
+}
+
+// The Compact title: "<title> · <key1> · <key2> …" (the caller truncates it).
+// Multi-series panels show "short label + value" per series; single-series
+// panels (CPU, GPU) carry their key values in the info rows, which are appended
+// here (duplicates of an earlier key are dropped).
+std::string compact_title(const PanelSpec& p,
+                          const std::vector<std::string>& legend_values,
+                          const Snapshot& snap) {
+  int n_leg = 0;
+  for (const auto& s : p.series)
+    if (s.in_legend) ++n_leg;
+  const bool multi = n_leg >= 2;
+  std::string t = p.title;
+  for (std::size_t i = 0; i < p.series.size(); ++i) {
+    if (!p.series[i].in_legend) continue;
+    const std::string v = legend_values[i];
+    t += " \xC2\xB7 " + (multi ? short_title_label(p.series[i].label) + " " + v : v);
+  }
+  if (n_leg <= 1)
+    for (const auto& r : p.info_rows) {
+      if (!r.value_fn) continue;
+      const std::string v = r.value_fn(snap);
+      bool dup = false;
+      for (std::size_t i = 0; i < p.series.size(); ++i)
+        if (p.series[i].in_legend && legend_values[i] == v) dup = true;
+      if (dup) continue;
+      t += " \xC2\xB7 " + v;
+    }
+  return t;
+}
+
+// The Compact legend: every series on ONE line, "▌label value" entries
+// separated by two columns, the tail truncated with "…" when it does not fit.
+void draw_compact_legend(ftxui::Screen& s, int x, int y, int iw,
+                         const PanelSpec& p,
+                         const std::vector<std::string>& legend_values,
+                         const Colors& c) {
+  int cx = x;
+  const int xend = x + iw;
+  for (std::size_t i = 0; i < p.series.size(); ++i) {
+    if (!p.series[i].in_legend) continue;
+    const SeriesSpec& sr = p.series[i];
+    const std::string& val = legend_values[i];
+    const int entry = 1 + utf8_cols(sr.label) + 1 + utf8_cols(val);
+    if (cx + entry > xend) {
+      // Truncate the entry to the remaining room and stop.
+      if (xend - cx >= 2) {
+        put_px(s, cx, y, "▌", c.series[sr.color_index]);
+        put_str(s, cx + 1, y, truncate(sr.label + " " + val, xend - cx - 1), c.text);
+      }
+      break;
+    }
+    put_px(s, cx, y, "▌", c.series[sr.color_index]);
+    put_str(s, cx + 1, y, sr.label, c.text);
+    put_str(s, cx + 1 + utf8_cols(sr.label) + 1, y, val, c.accent);
+    cx += entry + 2;
+  }
+}
+
 void draw_panel(ftxui::Screen& s, int x0, int y0, int W, int H, const PanelSpec& p,
-                bool sleeping, const std::vector<RawWindow>& raws,
+                PanelMode mode, bool sleeping, const std::vector<RawWindow>& raws,
                 const std::vector<std::string>& legend_values,
                 const Snapshot& snap, double vmax, const Colors& c) {
   if (W < 4 || H < 2) return;
@@ -474,13 +570,12 @@ void draw_panel(ftxui::Screen& s, int x0, int y0, int W, int H, const PanelSpec&
     put_px(s, x0 + W - 1, y0 + y, "│", c.border);
   }
 
-  std::string title = truncate(p.title, std::max(0, W - 8));
-  std::string suffix = sleeping ? " · sleeping" : "";
-  if (!suffix.empty()) {
-    const int room = std::max(0, W - 8 - utf8_cols(suffix));
-    title = truncate(p.title, room);
-    if (title.empty()) suffix = "";  // keep the border clean
-  }
+  // Full: the panel title. Compact: the title plus the key values.
+  std::string title =
+      (mode == PanelMode::kCompact) ? compact_title(p, legend_values, snap)
+                                    : p.title;
+  const std::string suffix = sleeping ? " \xC2\xB7 sleeping" : "";
+  title = truncate(title, std::max(0, W - 8 - utf8_cols(suffix)));
   if (W >= 8 && !title.empty()) {
     put_px(s, x0 + 2, y0, " ", c.border);
     put_str(s, x0 + 3, y0, title, c.title);
@@ -500,9 +595,11 @@ void draw_panel(ftxui::Screen& s, int x0, int y0, int W, int H, const PanelSpec&
       legend_idx.push_back((int)i);
       ++n_legend;
     }
-  const int ipr = (iw >= 56) ? 2 : 1;
-  const int legend_rows = (n_legend + ipr - 1) / ipr;
-  const int info_n = static_cast<int>(p.info_rows.size());
+  const bool compact = (mode == PanelMode::kCompact);
+  const int ipr = legend_cols(iw);  // 3 at >=96, 2 at >=56, else 1
+  // Compact: exactly one legend line, no info rows. Full: legend rows + info rows.
+  const int legend_rows = compact ? 1 : (n_legend + ipr - 1) / ipr;
+  const int info_n = compact ? 0 : static_cast<int>(p.info_rows.size());
   int Hg = ih - legend_rows - info_n;
   if (Hg < 3) Hg = 0;  // not enough room: legend only, never overflow
 
@@ -566,27 +663,38 @@ void draw_panel(ftxui::Screen& s, int x0, int y0, int W, int H, const PanelSpec&
   }
 
   // --- legend rows (below the graph) ---------------------------------------------
-  // Two columns: each value is right-aligned inside its own half, and at
-  // least two blank columns separate the halves, so a value can never run
-  // into the other column's "▌" ("12.00 GiB▌ Swap" is impossible).
+  // Full: 1/2/3 columns; each value is right-aligned inside its own column and
+  // two blank columns separate the columns, so a value can never run into the
+  // neighbour's "▌" ("12.00 GiB▌ Swap" is impossible). Compact: all series on
+  // one line.
   {
-    const int gutter = 2;
-    const int w0 = (ipr == 2) ? (iw - gutter) / 2 : iw;
-    const int w1 = (ipr == 2) ? iw - gutter - w0 : iw;
-    int y = iy0 + Hg;
-    for (int k = 0; k < (int)legend_idx.size(); ++k) {
-      const int si = legend_idx[k];
-      const int col = k % ipr;
-      const int sx = ix0 + (ipr == 2 ? col * (w0 + gutter) : 0);
-      const int sw = (ipr == 2) ? (col == 0 ? w0 : w1) : iw;
-      draw_value_row(s, sx, y + k / ipr, sw, true,
-                     c.series[p.series[si].color_index], p.series[si].label,
-                     legend_values[si], c.text, c.accent);
+    const int y0leg = iy0 + Hg;
+    if (compact) {
+      draw_compact_legend(s, ix0, y0leg, iw, p, legend_values, c);
+    } else {
+      const int gutter = 2;
+      std::vector<int> cw(ipr), cx(ipr);
+      const int usable = iw - gutter * (ipr - 1);
+      const int base = usable / ipr;
+      const int extra = usable % ipr;
+      int x = ix0;
+      for (int j = 0; j < ipr; ++j) {
+        cw[j] = base + (j < extra ? 1 : 0);
+        cx[j] = x;
+        x += cw[j] + gutter;
+      }
+      for (int k = 0; k < (int)legend_idx.size(); ++k) {
+        const int si = legend_idx[k];
+        const int col = k % ipr;
+        draw_value_row(s, cx[col], y0leg + k / ipr, cw[col], true,
+                       c.series[p.series[si].color_index], p.series[si].label,
+                       legend_values[si], c.text, c.accent);
+      }
     }
   }
 
-  // --- info rows -------------------------------------------------------------------
-  {
+  // --- info rows (Full mode only; Compact drops them) -----------------------------
+  if (!compact) {
     int y = iy0 + Hg + legend_rows;
     for (std::size_t i = 0; i < p.info_rows.size(); ++i) {
       const InfoRow& r = p.info_rows[i];
@@ -599,6 +707,13 @@ void draw_panel(ftxui::Screen& s, int x0, int y0, int W, int H, const PanelSpec&
   }
 }
 
+// The graph window, for the header ("30s", "1m", "2m", "5m", "10m").
+std::string window_str(int64_t window_ns) {
+  const int s = (int)(window_ns / 1000000000LL);
+  if (s < 60) return std::to_string(s) + "s";
+  return std::to_string(s / 60) + "m";
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -609,7 +724,8 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
                   const std::vector<PanelSpec>& page, const SeriesStore& store,
                   const Snapshot& latest, const FrozenFrame* frozen,
                   FrameState& state, const Theme& theme, ColorMode mode,
-                  bool paused, long long interval_ms) {
+                  bool paused, long long interval_ms, LayoutCache& cache,
+                  int top_row, int64_t window_ns) {
   screen.Clear();
   const int W = screen.dimx(), H = screen.dimy();
   const Colors c = build_colors(theme, mode);
@@ -622,43 +738,26 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
     return;
   }
 
-  // --- header: <CPU> & <primary dGPU>  [PAUSED] <interval> <time> -------------
-  std::string htitle = names::short_cpu(hw.cpu_name);
-  for (const auto& g : hw.gpus) {
-    if (!g.is_integrated) {
-      htitle += " & " + names::short_gpu(g.name, false, g.product_name);
-      break;  // primary dGPU only
-    }
-  }
-  const std::string rtime = time_str();
-  const std::string rmid = interval_str(interval_ms) + " ";
-  const std::string rpaused = paused ? "PAUSED " : "";
-  {
-    int x = W - utf8_cols(rtime);
-    put_str(screen, x, 0, rtime, c.label_dim);
-    x -= utf8_cols(rmid);
-    put_str(screen, x, 0, rmid, c.label_dim);
-    if (!rpaused.empty()) {
-      x -= utf8_cols(rpaused);
-      put_str(screen, x, 0, rpaused, c.warn);
-    }
-    put_str(screen, 0, 0, truncate(htitle, x - 1), c.title, true);
-  }
-
-  // --- footer ---------------------------------------------------------------------
-  put_str(screen, 0, H - 1, truncate("q quit · space pause", W), c.label_dim);
-
-  // --- panel grid: 2 equal-width columns, equal row heights -----------------------
+  // Responsive layout: recomputed only when the terminal size changed.
+  const Layout& lo = cache.get(W, H);
   const int content_h = H - 2;
-  const int n_rows = (int)((page.size() + 1) / 2);
-  if (n_rows == 0) return;
-  const int row_base = content_h / n_rows;
-  const int row_extra = content_h % n_rows;
-  const int left_w = W / 2;
-  const int right_w = W - left_w;
+  const int tr =
+      lo.scrolling ? std::clamp(top_row, 0, max_top_row(lo, content_h)) : 0;
+  int scroll_top = 0;
+  for (int r = 0; r < tr; ++r) scroll_top += lo.row_heights[r];
+  // The rows drawn are those whose top edge is above the bottom of the
+  // visible content area (a bottom row may be cut off by the footer).
+  int last_visible = tr - 1;
+  for (int r = tr; r < lo.rows(); ++r) {
+    int ry = 0;
+    for (int q = 0; q < r; ++q) ry += lo.row_heights[q];
+    if (ry < scroll_top + content_h) last_visible = r;
+    else break;
+  }
+
   const TimePoint now = Clock::now();
 
-  auto render_one = [&](int pi, int px, int py, int pw, int ph) {
+  auto render_one = [&](int pi, int px, int py, int pw, int ph, PanelMode pm) {
     const PanelSpec& p = page[pi];
     std::vector<std::vector<int64_t>> ts(p.series.size());
     std::vector<std::vector<float>> vs(p.series.size());
@@ -670,7 +769,7 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
                               w->t_end, w->span_ns};
     } else {
       for (std::size_t i = 0; i < p.series.size(); ++i)
-        load_live(raws[i], ts[i], vs[i], store, p.series[i].id);
+        load_live(raws[i], ts[i], vs[i], store, p.series[i].id, window_ns);
     }
 
     bool sleeping = false;
@@ -691,16 +790,67 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
       else if (p.series[i].value_fn)
         legend_values[i] = p.series[i].value_fn(snap);
 
-    draw_panel(screen, px, py, pw, ph, p, sleeping, raws, legend_values, snap, vmax, c);
+    draw_panel(screen, px, py, pw, ph, p, pm, sleeping, raws, legend_values, snap,
+               vmax, c);
   };
 
-  int y = 1;
-  for (int r = 0; r < n_rows; ++r) {
-    const int rh = row_base + (r < row_extra ? 1 : 0);
-    const int pi0 = r * 2;
-    if (pi0 < (int)page.size()) render_one(pi0, 0, y, left_w, rh);
-    if (pi0 + 1 < (int)page.size()) render_one(pi0 + 1, left_w, y, right_w, rh);
-    y += rh;
+  // --- panel grid: the visible rows of the layout -------------------------------
+  for (int r = tr; r <= last_visible && r < lo.rows(); ++r)
+    for (int i = 0; i < (int)lo.panels.size(); ++i)
+      if (lo.panels[i].rect.row == r) {
+        const auto& pl = lo.panels[i];
+        render_one(i, pl.rect.x, 1 + pl.rect.y - scroll_top, pl.rect.w, pl.rect.h,
+                   pl.mode);
+      }
+
+  // --- header: <CPU> & <dGPU>  [PAUSED] <interval> <window> <time> --------------
+  // Painted AFTER the panels so a row cut off at the top can never bleed into it.
+  std::string htitle = names::short_cpu(hw.cpu_name);
+  for (const auto& g : hw.gpus) {
+    if (!g.is_integrated) {
+      htitle += " & " + names::short_gpu(g.name, false, g.product_name);
+      break;  // primary dGPU only
+    }
+  }
+  {
+    for (int x = 0; x < W; ++x) put_px(screen, x, 0, " ", c.label_dim);
+    const std::string rtime = time_str();
+    const std::string rmid =
+        interval_str(interval_ms) + " \xC2\xB7 " + window_str(window_ns) + " ";
+    const std::string rpaused = paused ? "PAUSED " : "";
+    int x = W - utf8_cols(rtime);
+    put_str(screen, x, 0, rtime, c.label_dim);
+    x -= utf8_cols(rmid);
+    put_str(screen, x, 0, rmid, c.label_dim);
+    if (!rpaused.empty()) {
+      x -= utf8_cols(rpaused);
+      put_str(screen, x, 0, rpaused, c.warn);
+    }
+    put_str(screen, 0, 0, truncate(htitle, x - 1), c.title, true);
+  }
+
+  // --- footer --------------------------------------------------------------------
+  {
+    for (int x = 0; x < W; ++x) put_px(screen, x, H - 1, " ", c.label_dim);
+    std::string foot = "q quit \xC2\xB7 space pause \xC2\xB7 t window";
+    if (lo.scrolling) {
+      foot += " \xC2\xB7 \xE2\x86\x91\xE2\x86\x93 scroll";  // "· ↑↓ scroll"
+      // Rows out of sight: every row above the current top row (tr — we snap
+      // to row boundaries, so rows < tr are fully above the fold) PLUS any row
+      // at or below it whose BOTTOM edge is past the visible area (partially
+      // clipped by the footer). The page is taller than the content area, so
+      // at least one row is always hidden.
+      int hidden = tr;
+      for (int r = tr; r < lo.rows(); ++r) {
+        int ry = 0;
+        for (int q = 0; q < r; ++q) ry += lo.row_heights[q];
+        if (ry + lo.row_heights[r] > scroll_top + content_h) ++hidden;
+      }
+      if (hidden > 0)
+        foot += " \xC2\xB7 \xE2\x96\xB2 " + std::to_string(hidden) +
+                " more \xE2\x96\xBC";  // "· ▲ N more ▼"
+    }
+    put_str(screen, 0, H - 1, truncate(foot, W), c.label_dim);
   }
 }
 
@@ -728,12 +878,13 @@ ftxui::Element build_frame_element(const Hardware& hw,
                                    const SeriesStore& store, const Snapshot& latest,
                                    const FrozenFrame* frozen, FrameState& state,
                                    const Theme& theme, ColorMode mode, bool paused,
-                                   long long interval_ms) {
+                                   long long interval_ms, LayoutCache& cache,
+                                   int top_row, int64_t window_ns) {
   return std::make_shared<FrameNode>(
       [&hw, &page, &store, &latest, frozen, &state, &theme, mode, paused,
-       interval_ms](ftxui::Screen& screen) {
+       interval_ms, &cache, top_row, window_ns](ftxui::Screen& screen) {
         render_frame(screen, hw, page, store, latest, frozen, state, theme, mode,
-                     paused, interval_ms);
+                     paused, interval_ms, cache, top_row, window_ns);
       });
 }
 
@@ -760,7 +911,8 @@ void FrameStats::print() const {
 }
 
 FrozenFrame capture_frozen(const std::vector<PanelSpec>& page,
-                           const SeriesStore& store, const Snapshot& latest) {
+                           const SeriesStore& store, const Snapshot& latest,
+                           int64_t window_ns) {
   FrozenFrame f;
   f.snap = latest;
   for (const auto& p : page)
@@ -769,7 +921,7 @@ FrozenFrame capture_frozen(const std::vector<PanelSpec>& page,
       FrozenFrame::Window w;
       w.id = sr.id;
       RawWindow raw;
-      load_live(raw, w.t, w.v, store, sr.id);
+      load_live(raw, w.t, w.v, store, sr.id, window_ns);
       if (!raw.valid()) continue;
       w.t_start = raw.t_start;
       w.t_end = raw.t_end;

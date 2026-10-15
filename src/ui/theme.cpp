@@ -119,12 +119,14 @@ Theme Theme::cyberpunk_blue() {
   t.grid = rgb(0x0A, 0x3A, 0x42);      // #0A3A42
   t.axis_text = rgb(0x3E, 0x8C, 0x99);  // #3E8C99
   t.warn = rgb(0xFF, 0x3B, 0x5C);      // #FF3B5C
-  t.series[0] = rgb(0x00, 0xE5, 0xFF);  // #00E5FF
-  t.series[1] = rgb(0x4D, 0xA3, 0xFF);  // #4DA3FF
-  t.series[2] = rgb(0x39, 0xFF, 0x88);  // #39FF88
-  t.series[3] = rgb(0xFF, 0x3B, 0x5C);  // #FF3B5C
-  t.series[4] = rgb(0xFF, 0xD2, 0x3F);  // #FFD23F
-  t.series[5] = rgb(0xC7, 0x7D, 0xFF);  // #C77DFF
+  // New order, for maximum contrast between the first three series
+  // (cyan / green / pink). Phase 5 makes this tunable.
+  t.series[0] = rgb(0x00, 0xE5, 0xFF);  // #00E5FF cyan
+  t.series[1] = rgb(0x39, 0xFF, 0x88);  // #39FF88 green
+  t.series[2] = rgb(0xFF, 0x4F, 0xD8);  // #FF4FD8 pink
+  t.series[3] = rgb(0xFF, 0xD2, 0x3F);  // #FFD23F amber
+  t.series[4] = rgb(0x4D, 0xA3, 0xFF);  // #4DA3FF blue
+  t.series[5] = rgb(0xC7, 0x7D, 0xFF);  // #C77DFF violet
   return t;
 }
 

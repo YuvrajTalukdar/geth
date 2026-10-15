@@ -15,6 +15,7 @@ struct UiOptions {
   std::string color_mode;        // "" = auto-detect, else truecolor|256|16
   bool demo = false;             // --demo: no sleep in --render-frame
   bool ansi = false;             // --render-frame: emit full SGR codes
+  int columns = 0;               // --columns N: pin the layout column count (0 = auto)
 };
 
 // Validate `opts.color_mode` and resolve the effective color mode.
