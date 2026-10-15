@@ -294,18 +294,24 @@ void GpuNvidiaBackend::sample(const PciDevice& dev, GpuSample& out) {
   Card* c = card(dev);
   if (!c) return;  // not ours (defensive)
 
-  GpuSample g;
-  g.vendor = GpuVendor::kNvidia;
-  g.name = c->name;
-  g.pci_bus_id = dev.bus_id;
-  g.is_integrated = false;  // NVIDIA has no consumer iGPU
-  g.integrated_method = "always discrete (no NVIDIA iGPUs)";
+  // Identity: written on the first fill (empty pci_bus_id). NVML's name can
+  // only replace the pci.ids fallback once the session matches, so refresh
+  // it while it differs — a one-time change, not per-tick churn.
+  if (out.pci_bus_id.empty()) {
+    out.vendor = GpuVendor::kNvidia;
+    out.name = c->name;
+    out.pci_bus_id = dev.bus_id;
+    out.is_integrated = false;  // NVIDIA has no consumer iGPU
+    out.integrated_method = "always discrete (no NVIDIA iGPUs)";
+  } else if (out.name != c->name) {
+    out.name = c->name;
+  }
 
   const auto rs = parse_runtime_status(runtime_state(dev));
   switch (rs) {
-    case RuntimeState::kSleeping: g.state = GpuState::kSleeping; break;
-    case RuntimeState::kError: g.state = GpuState::kError; break;
-    default: g.state = GpuState::kActive; break;
+    case RuntimeState::kSleeping: out.state = GpuState::kSleeping; break;
+    case RuntimeState::kError: out.state = GpuState::kError; break;
+    default: out.state = GpuState::kActive; break;
   }
 
   const bool awake =
@@ -320,33 +326,31 @@ void GpuNvidiaBackend::sample(const PciDevice& dev, GpuSample& out) {
   if (awake && _nvml_up && (c = card(dev)) && c->handle) {
     NvmlUtil u{};
     if (_api.get_util && _api.get_util(c->handle, &u.gpu, &u.memory) == kNvmlSuccess)
-      g.usage_pct = static_cast<double>(u.gpu);
+      out.usage_pct = static_cast<double>(u.gpu);
 
     NvmlMemory m{};
     if (_api.get_mem &&
         _api.get_mem(c->handle, &m.total, &m.free_, &m.used) == kNvmlSuccess) {
-      g.vram_used_bytes = static_cast<double>(m.used);
-      g.vram_total_bytes = static_cast<double>(m.total);
+      out.vram_used_bytes = static_cast<double>(m.used);
+      out.vram_total_bytes = static_cast<double>(m.total);
     }
 
     unsigned clk = 0;
     if (_api.get_clock &&
         _api.get_clock(c->handle, kClockGraphics, &clk) == kNvmlSuccess)
-      g.core_clock_mhz = static_cast<double>(clk);
+      out.core_clock_mhz = static_cast<double>(clk);
     if (_api.get_clock &&
         _api.get_clock(c->handle, kClockMemory, &clk) == kNvmlSuccess)
-      g.mem_clock_mhz = static_cast<double>(clk);
+      out.mem_clock_mhz = static_cast<double>(clk);
 
     int mw = 0;
     if (_api.get_power && _api.get_power(c->handle, &mw) == kNvmlSuccess)
-      g.power_w = static_cast<double>(mw) / 1000.0;  // NVML reports milliwatts
+      out.power_w = static_cast<double>(mw) / 1000.0;  // NVML reports milliwatts
 
     unsigned t = 0;
     if (_api.get_temp && _api.get_temp(c->handle, kTempGpu, &t) == kNvmlSuccess)
-      g.temp_c = static_cast<double>(t);
+      out.temp_c = static_cast<double>(t);
   }
-
-  out = std::move(g);
 }
 
 SourceStatus GpuNvidiaBackend::probe_info() {

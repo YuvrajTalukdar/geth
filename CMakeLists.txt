@@ -28,6 +28,7 @@ option(GETH_BUILD_TESTS "Build the unit tests (fetches doctest)" ON)
 # ---------------------------------------------------------------------------
 set(GETH_SOURCES
   src/core/collector.cpp
+  src/core/series_store.cpp
   src/sources/cpu.cpp
   src/sources/cpu_power.cpp
   src/sources/demo.cpp
@@ -83,6 +84,7 @@ if(GETH_BUILD_TESTS)
   target_include_directories(doctest INTERFACE ${doctest_SOURCE_DIR}/doctest)
 
   add_executable(geth_tests
+    tests/alloc_count.cpp  # counting operator new (test binary only)
     tests/test_main.cpp
     tests/test_parsers.cpp
     ${GETH_SOURCES})

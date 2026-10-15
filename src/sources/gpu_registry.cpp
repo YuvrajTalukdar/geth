@@ -111,10 +111,26 @@ void GpuRegistrySource::sample(Snapshot& out) {
   // Per-tick housekeeping first (the NVIDIA backend's suspend streak).
   for (auto& b : _backends) b->begin_tick();
 
-  for (const auto& cl : _claims) {
-    GpuSample g;
+  if (!_gpus_sized) {
+    // One-time: the reused Snapshot's gpus vector is filled in place every
+    // tick, so the slot -> claim order is fixed here, in PCI bus order
+    // (matching finalize_gpus, which then only assigns the gpuN ids).
+    out.gpus.resize(_claims.size());
+    _order.resize(_claims.size());
+    for (std::size_t i = 0; i < _claims.size(); ++i) _order[i] = i;
+    std::stable_sort(_order.begin(), _order.end(),
+                     [&](std::size_t a, std::size_t b) {
+                       return _devices[_claims[a].device_index].bus_id <
+                              _devices[_claims[b].device_index].bus_id;
+                     });
+    _gpus_sized = true;
+  }
+
+  for (std::size_t slot = 0; slot < _order.size(); ++slot) {
+    const Claim& cl = _claims[_order[slot]];
+    GpuSample& g = out.gpus[slot];
+    g.reset();  // numeric fields only; identity strings are kept
     cl.backend->sample(_devices[cl.device_index], g);
-    out.gpus.push_back(std::move(g));
   }
 }
 

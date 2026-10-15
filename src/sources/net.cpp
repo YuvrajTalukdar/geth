@@ -76,6 +76,34 @@ NetFilterResult net_iface_included(const std::string& root, const std::string& n
   return r;
 }
 
+namespace {
+
+// Reads field 0 (RX bytes) and field 8 (TX bytes) of the text after the
+// ':' of a /proc/net/dev line. Hand-tokenized: the per-tick hot path must
+// not build intermediate token vectors.
+bool netdev_counters(std::string_view s, unsigned long long& rx,
+                     unsigned long long& tx) {
+  unsigned long long f[9];
+  int nf = 0;
+  while (nf < 9) {
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s = s.substr(1);
+    std::size_t i = 0;
+    while (i < s.size() && s[i] != ' ' && s[i] != '\t') ++i;
+    const std::string_view tok = s.substr(0, i);
+    const auto v = parse::to_u64(tok);
+    if (!v) return false;
+    f[nf++] = *v;
+    if (i >= s.size()) break;
+    s = s.substr(i);
+  }
+  if (nf != 9) return false;
+  rx = f[0];
+  tx = f[8];
+  return true;
+}
+
+}  // namespace
+
 SourceStatus NetSource::probe() {
   SourceStatus st;
   st.description = name();
@@ -86,13 +114,19 @@ SourceStatus NetSource::probe() {
   }
   st.paths.push_back("/proc/net/dev");
 
-  // Report the filter decision for every interface the kernel knows.
+  // Report the filter decision for every interface the kernel knows, and
+  // fix the sampled set: the per-tick path only fills values for these.
+  // (An interface hot-plugged after probe shows up on the next geth run.)
   std::string inc, exc;
+  _ifs.clear();
   for (const auto& row : parse_netdev(_netdev.read())) {
     const auto res = net_iface_included(_sysfs_root, row.name);
     if (res.included) {
       if (!inc.empty()) inc += ", ";
       inc += row.name;
+      NetIf if_;
+      if_.name = row.name;
+      _ifs.push_back(std::move(if_));
     } else {
       if (!exc.empty()) exc += "; ";
       exc += row.name + " (" + res.reason + ")";
@@ -106,48 +140,68 @@ SourceStatus NetSource::probe() {
 }
 
 void NetSource::sample(Snapshot& out) {
-  const auto rows = parse_netdev(_netdev.read());
+  const TimePoint now = Clock::now();
+  const double dt = std::chrono::duration<double>(now - _prev_tp).count();
+  const bool usable = _have_prev && dt > 0.0 && dt < 604800.0;
 
-  if (!_have_prev) {
-    _prev = rows;
-    _have_prev = true;
-    _prev_tp = Clock::now();
-    return;
+  if (!_sized) {
+    // One-time: size the reused Snapshot's interface slots + names.
+    out.net.interfaces.assign(_ifs.size(), NetIfSample{});
+    for (std::size_t i = 0; i < _ifs.size(); ++i)
+      out.net.interfaces[i].name = _ifs[i].name;
+    _sized = true;
   }
 
-  const double dt = std::chrono::duration<double>(Clock::now() - _prev_tp).count();
-  const bool usable = dt > 0.0 && dt < 604800.0;
+  // Interfaces missing from this tick's /proc/net/dev get a gap (nullopt),
+  // never a stale or fake 0.
+  for (auto& n : out.net.interfaces) {
+    n.rx_bytes_per_s.reset();
+    n.tx_bytes_per_s.reset();
+  }
+  out.net.total_rx_bytes_per_s.reset();
+  out.net.total_tx_bytes_per_s.reset();
 
   double tot_rx = 0.0, tot_tx = 0.0;
   bool any = false;
-  for (const auto& r : rows) {
-    // Re-checked each tick: interfaces can appear/disappear at runtime.
-    if (!net_iface_included(_sysfs_root, r.name).included) continue;
-    NetIfSample n;
-    n.name = r.name;
-    if (usable) {
-      const auto prev = std::find_if(_prev.begin(), _prev.end(),
-                                     [&](const NetRow& p) { return p.name == r.name; });
-      if (prev != _prev.end()) {
-        // Unsigned: byte counters are monotonic (they only reset on ifdown).
-        const unsigned long long drx = r.rx_bytes - prev->rx_bytes;
-        const unsigned long long dtx = r.tx_bytes - prev->tx_bytes;
-        n.rx_bytes_per_s = static_cast<double>(drx) / dt;
-        n.tx_bytes_per_s = static_cast<double>(dtx) / dt;
-        tot_rx += *n.rx_bytes_per_s;
-        tot_tx += *n.tx_bytes_per_s;
-        any = true;
+  const std::string& text = _netdev.read();
+  parse::for_each_line(text, [&](std::string_view line) {
+    const auto colon = line.find(':');
+    if (colon == std::string_view::npos) return true;  // the two header lines
+    const std::string_view name = parse::trim(line.substr(0, colon));
+    int idx = -1;
+    for (std::size_t i = 0; i < _ifs.size(); ++i)
+      if (name == std::string_view(_ifs[i].name)) {
+        idx = static_cast<int>(i);
+        break;
       }
+    if (idx < 0) return true;  // not in the probed set: ignore
+    unsigned long long rx = 0, tx = 0;
+    if (!netdev_counters(line.substr(colon + 1), rx, tx)) return true;
+    NetIf& if_ = _ifs[static_cast<std::size_t>(idx)];
+    if (usable && if_.have_prev) {
+      // Unsigned: byte counters are monotonic (they only reset on ifdown).
+      const unsigned long long drx = rx - if_.prev_rx;
+      const unsigned long long dtx = tx - if_.prev_tx;
+      out.net.interfaces[static_cast<std::size_t>(idx)].rx_bytes_per_s =
+          static_cast<double>(drx) / dt;
+      out.net.interfaces[static_cast<std::size_t>(idx)].tx_bytes_per_s =
+          static_cast<double>(dtx) / dt;
+      tot_rx += static_cast<double>(drx) / dt;
+      tot_tx += static_cast<double>(dtx) / dt;
+      any = true;
     }
-    out.net.interfaces.push_back(std::move(n));
-  }
+    if_.prev_rx = rx;
+    if_.prev_tx = tx;
+    if_.have_prev = true;
+    return true;
+  });
   if (any) {
     out.net.total_rx_bytes_per_s = tot_rx;
     out.net.total_tx_bytes_per_s = tot_tx;
   }
 
-  _prev = rows;
-  _prev_tp = Clock::now();
+  _prev_tp = now;
+  _have_prev = true;
 }
 
 }  // namespace geth

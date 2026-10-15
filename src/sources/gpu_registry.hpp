@@ -61,6 +61,10 @@ class GpuRegistrySource : public Source {
   std::vector<PciDevice> _devices;
   std::vector<Claim> _claims;
   std::vector<const PciDevice*> _unclaimed;
+  // The reused Snapshot's gpus vector is filled in place every tick, so the
+  // registry fixes the slot->claim order (PCI bus order) once:
+  std::vector<std::size_t> _order;
+  bool _gpus_sized = false;
 };
 
 }  // namespace geth

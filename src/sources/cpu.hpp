@@ -33,14 +33,29 @@ struct CpuTimes {
 };
 
 // Parses the aggregate "cpu" line and the per-core "cpuN" lines of /proc/stat,
-// in file order (index 0 = aggregate). Pure over string_view for testing.
-std::vector<CpuTimes> parse_proc_stat(std::string_view text);
+// in file order (index 0 = aggregate), into `out` (cleared first; the caller
+// keeps the vector alive so capacity survives — the per-tick hot path).
+void parse_proc_stat(std::string_view text, std::vector<CpuTimes>& out);
+
+// One-shot convenience for tests/probes.
+inline std::vector<CpuTimes> parse_proc_stat(std::string_view text) {
+  std::vector<CpuTimes> out;
+  parse_proc_stat(text, out);
+  return out;
+}
 
 // Usage % between two consecutive samples of one CPU.
 std::optional<double> usage_pct_between(const CpuTimes& prev, const CpuTimes& now);
 
-// "cpu MHz" values of /proc/cpuinfo, one per line (frequency fallback).
-std::vector<double> parse_cpuinfo_mhz(std::string_view text);
+// "cpu MHz" values of /proc/cpuinfo, one per line (frequency fallback),
+// into `out` (see parse_proc_stat for why the out-parameter form exists).
+void parse_cpuinfo_mhz(std::string_view text, std::vector<double>& out);
+
+inline std::vector<double> parse_cpuinfo_mhz(std::string_view text) {
+  std::vector<double> out;
+  parse_cpuinfo_mhz(text, out);
+  return out;
+}
 
 // The first "model name" value of /proc/cpuinfo (hardware label, e.g.
 // "AMD Ryzen 5 5600H with Radeon Graphics"). The probe prints it so the
@@ -54,10 +69,15 @@ class CpuSource : public Source {
   void sample(Snapshot& out) override;
 
  private:
+  std::size_t read_frequency();  // fills _mhz, returns count
+
   SysfsFile _stat;                 // /proc/stat
   SysfsFile _cpuinfo;              // /proc/cpuinfo (fallback only)
   std::vector<SysfsFile> _cores;   // scaling_cur_freq (kHz), one per online core
   std::vector<CpuTimes> _prev;     // last tick's counters, aligned with lines
+  std::vector<CpuTimes> _cur;      // this tick's parse target (capacity kept)
+  std::vector<double> _mhz;        // frequency scratch (capacity kept)
+  bool _sized = false;             // first sample done: containers sized once
 };
 
 }  // namespace geth

@@ -39,10 +39,18 @@ class DiskSource : public Source {
   void sample(Snapshot& out) override;
 
  private:
-  SysfsFile _diskstats;  // /proc/diskstats
-  std::vector<DiskRow> _prev;
+  struct DiskDev {
+    std::string name;
+    unsigned long long prev_r = 0;
+    unsigned long long prev_w = 0;
+    bool have_prev = false;
+  };
+
+  SysfsFile _diskstats;         // /proc/diskstats
+  std::vector<DiskDev> _devs;   // whole disks, fixed at probe
   TimePoint _prev_tp;
   bool _have_prev = false;
+  bool _sized = false;  // snapshot's device slots sized once
 };
 
 }  // namespace geth

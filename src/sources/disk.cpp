@@ -46,6 +46,38 @@ bool skip_disk_device(const std::string& n) {
   return false;
 }
 
+namespace {
+
+// Tokenizes the first 10 fields of one /proc/diskstats line and returns the
+// device name (field 2) plus sectors_read (5) and sectors_written (9).
+// Hand-tokenized: the per-tick hot path must not build token vectors.
+bool diskstat_row(std::string_view line, std::string_view& name,
+                  unsigned long long& sr, unsigned long long& sw) {
+  std::string_view tok[10];
+  int n = 0;
+  while (n < 10) {
+    while (!line.empty() && (line.front() == ' ' || line.front() == '\t'))
+      line = line.substr(1);
+    std::size_t i = 0;
+    while (i < line.size() && line[i] != ' ' && line[i] != '\t') ++i;
+    if (i == 0) break;  // ran out of input
+    tok[n] = line.substr(0, i);
+    ++n;
+    if (i >= line.size()) break;
+    line = line.substr(i);
+  }
+  if (n != 10) return false;
+  name = tok[2];
+  const auto r = parse::to_u64(tok[5]);
+  const auto w = parse::to_u64(tok[9]);
+  if (!r || !w) return false;
+  sr = *r;
+  sw = *w;
+  return true;
+}
+
+}  // namespace
+
 SourceStatus DiskSource::probe() {
   SourceStatus st;
   st.description = name();
@@ -56,62 +88,83 @@ SourceStatus DiskSource::probe() {
   }
   st.paths.push_back("/proc/diskstats");
   st.detail = "per-device read/write rates from sector counters (x512)";
+
+  // Fix the whole-disk set (cold path): partitions, loop/ram/zram/dm-*/sr*/
+  // md* are noise and would double-count the data.
+  const auto rows = parse_diskstats(_diskstats.read());
+  std::vector<std::string> names;
+  names.reserve(rows.size());
+  for (const auto& r : rows) names.push_back(r.name);
+  _devs.clear();
+  for (const auto& r : rows) {
+    if (skip_disk_device(r.name) || is_partition(r.name, names)) continue;
+    DiskDev d;
+    d.name = r.name;
+    _devs.push_back(std::move(d));
+  }
   st.available = true;
   return st;
 }
 
 void DiskSource::sample(Snapshot& out) {
-  const auto rows = parse_diskstats(_diskstats.read());
+  const TimePoint now = Clock::now();
+  const double dt = std::chrono::duration<double>(now - _prev_tp).count();
+  const bool usable = _have_prev && dt > 0.0 && dt < 604800.0;
 
-  std::vector<std::string> names;
-  names.reserve(rows.size());
-  for (const auto& r : rows) names.push_back(r.name);
-
-  // Keep whole disks only, in file order (stable: sorted by major/minor).
-  std::vector<const DiskRow*> keep;
-  for (const auto& r : rows) {
-    if (skip_disk_device(r.name) || is_partition(r.name, names)) continue;
-    keep.push_back(&r);
+  if (!_sized) {
+    // One-time: size the reused Snapshot's device slots + names.
+    out.disk.devices.assign(_devs.size(), DiskDeviceSample{});
+    for (std::size_t i = 0; i < _devs.size(); ++i)
+      out.disk.devices[i].name = _devs[i].name;
+    _sized = true;
   }
 
-  if (!_have_prev) {
-    _prev = rows;
-    _have_prev = true;
-    _prev_tp = Clock::now();
-    return;  // first sample: nothing to diff against
+  // Devices missing from this tick's /proc/diskstats get a gap (nullopt),
+  // never a stale or fake 0.
+  for (auto& d : out.disk.devices) {
+    d.read_bytes_per_s.reset();
+    d.write_bytes_per_s.reset();
   }
-
-  const double dt = std::chrono::duration<double>(Clock::now() - _prev_tp).count();
-  const bool usable = dt > 0.0 && dt < 604800.0;
+  out.disk.total_read_bytes_per_s.reset();
+  out.disk.total_write_bytes_per_s.reset();
 
   double tot_r = 0.0, tot_w = 0.0;
   bool any_r = false, any_w = false;
-  for (const auto* r : keep) {
-    DiskDeviceSample d;
-    d.name = r->name;
-    if (usable) {
-      const auto prev = std::find_if(_prev.begin(), _prev.end(),
-                                     [&](const DiskRow& p) { return p.name == r->name; });
-      if (prev != _prev.end()) {
-        // Unsigned: sector counters are monotonic; a delta of 0 means idle.
-        const unsigned long long dr = r->sectors_read - prev->sectors_read;
-        const unsigned long long dw = r->sectors_written - prev->sectors_written;
-        d.read_bytes_per_s = static_cast<double>(dr) * 512.0 / dt;
-        d.write_bytes_per_s = static_cast<double>(dw) * 512.0 / dt;
-        tot_r += *d.read_bytes_per_s;
-        tot_w += *d.write_bytes_per_s;
-        any_r = any_w = true;
+  const std::string& text = _diskstats.read();
+  parse::for_each_line(text, [&](std::string_view line) {
+    std::string_view name;
+    unsigned long long sr = 0, sw = 0;
+    if (!diskstat_row(line, name, sr, sw)) return true;
+    int idx = -1;
+    for (std::size_t i = 0; i < _devs.size(); ++i)
+      if (name == std::string_view(_devs[i].name)) {
+        idx = static_cast<int>(i);
+        break;
       }
-      // A newly appeared device (e.g. a USB stick) has no baseline yet:
-      // report nothing for this tick rather than a fake 0.
+    if (idx < 0) return true;  // partition / virtual / not probed: ignore
+    DiskDev& dv = _devs[static_cast<std::size_t>(idx)];
+    if (usable && dv.have_prev) {
+      // Unsigned: sector counters are monotonic; a delta of 0 means idle.
+      const unsigned long long dr = sr - dv.prev_r;
+      const unsigned long long dw = sw - dv.prev_w;
+      out.disk.devices[static_cast<std::size_t>(idx)].read_bytes_per_s =
+          static_cast<double>(dr) * 512.0 / dt;
+      out.disk.devices[static_cast<std::size_t>(idx)].write_bytes_per_s =
+          static_cast<double>(dw) * 512.0 / dt;
+      tot_r += static_cast<double>(dr) * 512.0 / dt;
+      tot_w += static_cast<double>(dw) * 512.0 / dt;
+      any_r = any_w = true;
     }
-    out.disk.devices.push_back(std::move(d));
-  }
+    dv.prev_r = sr;
+    dv.prev_w = sw;
+    dv.have_prev = true;
+    return true;
+  });
   if (any_r) out.disk.total_read_bytes_per_s = tot_r;
   if (any_w) out.disk.total_write_bytes_per_s = tot_w;
 
-  _prev = rows;
-  _prev_tp = Clock::now();
+  _prev_tp = now;
+  _have_prev = true;
 }
 
 }  // namespace geth

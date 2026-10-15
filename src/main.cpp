@@ -167,11 +167,15 @@ void print_dump(const Snapshot& s) {
       tag += ", " + g.integrated_method;
     std::printf("GPU %-4s %s   %s   [%s]\n", g.id.c_str(), g.name.c_str(), to_string(g.state),
                 tag.c_str());
-    std::printf("         usage %-6s  VRAM %-9s/%-9s  clocks %s / %s   %s   %s\n",
+    // GTT is printed only when the driver exposes it (absent on many APUs).
+    std::string gtt;
+    if (g.gtt_used_bytes || g.gtt_total_bytes)
+      gtt = "  GTT " + or_na(g.gtt_used_bytes, bytes) + "/" + or_na(g.gtt_total_bytes, bytes);
+    std::printf("         usage %-6s  VRAM %-9s/%-9s%s  clocks %s / %s   %s   %s\n",
                 or_na(g.usage_pct, percent).c_str(), or_na(g.vram_used_bytes, bytes).c_str(),
-                or_na(g.vram_total_bytes, bytes).c_str(), or_na(g.core_clock_mhz, freq).c_str(),
-                or_na(g.mem_clock_mhz, freq).c_str(), or_na(g.power_w, watts).c_str(),
-                or_na(g.temp_c, celsius).c_str());
+                or_na(g.vram_total_bytes, bytes).c_str(), gtt.c_str(),
+                or_na(g.core_clock_mhz, freq).c_str(), or_na(g.mem_clock_mhz, freq).c_str(),
+                or_na(g.power_w, watts).c_str(), or_na(g.temp_c, celsius).c_str());
   }
 
   if (!s.disk.devices.empty()) {
@@ -306,7 +310,7 @@ std::string to_json(const Snapshot& s) {
     o += json_escape(g.name);
     o += ",\"vendor\":";
     o += json_escape(to_string(g.vendor));
-    o += ",\"pci\":";
+    o += ",\"pci_bus_id\":";
     o += json_escape(g.pci_bus_id);
     o += ",\"integrated\":";
     o += g.is_integrated ? "true" : "false";
@@ -318,6 +322,8 @@ std::string to_json(const Snapshot& s) {
     jopt(o, "usage_pct", g.usage_pct, true);
     jbytes(o, "vram_used_bytes", g.vram_used_bytes, true);
     jbytes(o, "vram_total_bytes", g.vram_total_bytes, true);
+    jbytes(o, "gtt_used_bytes", g.gtt_used_bytes, true);
+    jbytes(o, "gtt_total_bytes", g.gtt_total_bytes, true);
     jopt(o, "core_clock_mhz", g.core_clock_mhz, true);
     jopt(o, "mem_clock_mhz", g.mem_clock_mhz, true);
     jopt(o, "power_w", g.power_w, true);
@@ -481,7 +487,9 @@ int main(int argc, char** argv) {
 
   unsigned long long done = 0;
   while (!g_stop && (opts.count == 0 || done < opts.count)) {
-    const Snapshot snap = collector.sample();
+    // A reference, not a copy: sample() fills the Collector's reused Snapshot
+    // in place, so copying it here would allocate (strings/vectors) every tick.
+    const Snapshot& snap = collector.sample();
     if (opts.json) {
       std::printf("%s\n", to_json(snap).c_str());
       std::fflush(stdout);

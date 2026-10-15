@@ -56,6 +56,26 @@ inline std::vector<std::string_view> split_lines(std::string_view text) {
   return lines;
 }
 
+// Non-allocating line iteration for the per-tick hot path: `f` receives each
+// line as a view into `text` (trailing '\r' stripped, same semantics as
+// split_lines) and may stop early by returning false.
+template <typename F>
+inline bool for_each_line(std::string_view text, F&& f) {
+  if (!text.empty() && text.back() == '\n') text.remove_suffix(1);  // like split_lines
+  std::size_t start = 0;
+  while (true) {
+    const std::size_t nl = text.find('\n', start);
+    std::string_view line =
+        nl == std::string_view::npos ? text.substr(start)
+                                     : text.substr(start, nl - start);
+    if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+    if (!f(line)) return false;
+    if (nl == std::string_view::npos) break;
+    start = nl + 1;
+  }
+  return true;
+}
+
 // Strict unsigned 64-bit parse: every character must be a digit. Callers pass
 // pre-tokenized fields, so strictness is deliberate — a partial parse would
 // silently turn "123abc" into 123.

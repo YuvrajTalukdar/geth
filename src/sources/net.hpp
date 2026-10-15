@@ -54,11 +54,19 @@ class NetSource : public Source {
   void sample(Snapshot& out) override;
 
  private:
-  SysfsFile _netdev;  // /proc/net/dev
+  struct NetIf {
+    std::string name;
+    unsigned long long prev_rx = 0;
+    unsigned long long prev_tx = 0;
+    bool have_prev = false;
+  };
+
+  SysfsFile _netdev;                 // /proc/net/dev
   std::string _sysfs_root = "/sys/class/net";
-  std::vector<NetRow> _prev;
+  std::vector<NetIf> _ifs;           // included interfaces, fixed at probe
   TimePoint _prev_tp;
   bool _have_prev = false;
+  bool _sized = false;  // snapshot's interface slots sized once
 };
 
 }  // namespace geth

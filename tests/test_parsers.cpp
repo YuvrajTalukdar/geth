@@ -1,5 +1,5 @@
-// Unit tests for the pure parsing/formatting helpers, the History ring
-// buffer, the PCI id database and the GPU id/integration finalizer.
+// Unit tests for the pure parsing/formatting helpers, the SeriesStore rings,
+// the PCI id database and the GPU id/integration finalizer.
 // Fixtures live in tests/fixtures (path passed via GETH_TEST_FIXTURES).
 
 #include <doctest.h>
@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -14,8 +15,10 @@
 #include <memory>
 #include <sstream>
 
+#include "alloc_count.hpp"
 #include "core/collector.hpp"
-#include "core/history.hpp"
+#include "core/ring_buffer.hpp"
+#include "core/series_store.hpp"
 #include "core/snapshot.hpp"
 #include "sources/cpu.hpp"
 #include "sources/cpu_power.hpp"
@@ -322,26 +325,74 @@ TEST_SUITE("net") {
 }  // TEST_SUITE
 
 // ---------------------------------------------------------------------------
-// History ring buffer
+// Series store (per-series rings: floats + one shared timestamp ring)
 // ---------------------------------------------------------------------------
 
-TEST_SUITE("history") {
+TEST_SUITE("series_store") {
   TEST_CASE("ring buffer overwrites oldest and keeps order") {
-    History<double> h(4);
-    for (int i = 0; i < 10; ++i) h.push(std::chrono::steady_clock::now(), static_cast<double>(i));
+    RingBuffer<double> h(4);
+    for (int i = 0; i < 10; ++i) h.push(static_cast<double>(i));
     CHECK(h.size() == 4);
-    CHECK(h.at(0).value == 6.0);  // 0..5 were evicted
-    CHECK(h.at(3).value == 9.0);
+    CHECK(h.at(0) == 6.0);  // 0..5 were evicted
+    CHECK(h.at(3) == 9.0);
   }
 
   TEST_CASE("ring buffer clear/empty") {
-    History<double> h(3);
+    RingBuffer<double> h(3);
     CHECK(h.empty());
-    h.push(std::chrono::steady_clock::now(), 1.0);
+    h.push(1.0);
     CHECK(!h.empty());
     h.clear();
     CHECK(h.empty());
     CHECK(h.size() == 0);
+  }
+
+  TEST_CASE("missing samples are stored as NaN, never as 0") {
+    SeriesStore s;
+    s.init({"x"});
+    s.begin_tick(Clock::now());
+    s.put("x", 1.0);
+    s.begin_tick(Clock::now());
+    s.put("x", std::nullopt);
+    const auto* v = s.values("x");
+    REQUIRE(v != nullptr);
+    CHECK(v->size() == 2);
+    CHECK(v->at(0) == 1.0f);
+    CHECK(std::isnan(v->at(1)));
+  }
+
+  TEST_CASE("shared timestamp ring advances once per tick") {
+    SeriesStore s;
+    s.init({"x", "y"});
+    s.begin_tick(Clock::now());
+    s.begin_tick(Clock::now());
+    CHECK(s.times()->size() == 2);
+  }
+
+  TEST_CASE("unknown ids are dropped without growing the store") {
+    SeriesStore s;
+    s.init({"x"});
+    s.begin_tick(Clock::now());
+    s.put("never-seen", 1.0);  // hardware that appeared after init
+    CHECK(s.series_count() == 1);
+    CHECK(s.has("never-seen") == false);
+    CHECK(s.values("never-seen") == nullptr);
+    CHECK(s.values("x")->size() == 1);  // the known series still took its tick
+  }
+
+  TEST_CASE("sampling path: zero heap allocations per tick after warm-up") {
+    // The whole point of the reused-Snapshot + SeriesStore design: after the
+    // first tick the sampling path (source fill + APU lift + store puts)
+    // performs no heap allocations at all.
+    geth::set_alloc_counting(true);
+    Collector c;
+    c.add(std::make_unique<DemoSource>());
+    c.probe_all(/*warm_up=*/true);  // one-time allocations (sizing, series ids)
+    for (int i = 0; i < 5; ++i) c.sample();  // a few warm ticks
+    const long long base = geth::alloc_count();
+    for (int i = 0; i < 500; ++i) c.sample();
+    CHECK(geth::alloc_count() == base);
+    geth::set_alloc_counting(false);
   }
 
 }  // TEST_SUITE
@@ -958,14 +1009,18 @@ struct FakeApuGpuSource : Source {
   }
   void sample(Snapshot& out) override {
     if (preset_cpu_power) out.cpu.package_power_w = preset_cpu_power;
-    GpuSample g;
-    g.vendor = GpuVendor::kAmd;
-    g.name = "Fake iGPU";
-    g.pci_bus_id = "0000:07:00.0";
-    g.is_integrated = true;
+    // The Collector reuses one Snapshot, so fill in place (identity once).
+    if (out.gpus.size() != 1) out.gpus.resize(1);
+    GpuSample& g = out.gpus[0];
+    if (g.pci_bus_id.empty()) {
+      g.vendor = GpuVendor::kAmd;
+      g.name = "Fake iGPU";
+      g.pci_bus_id = "0000:07:00.0";
+      g.is_integrated = true;
+    }
     g.state = gpu_active ? GpuState::kActive : GpuState::kSleeping;
-    if (gpu_active) g.ppt_w = 47.0;
-    out.gpus.push_back(std::move(g));
+    g.ppt_w = gpu_active ? std::optional<double>(47.0) : std::nullopt;
+    g.power_w = std::nullopt;  // the fake card reports no card power
   }
 };
 

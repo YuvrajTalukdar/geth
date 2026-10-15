@@ -69,6 +69,14 @@ struct AmdIntegratedDecision {
   unsigned device_id = 0;       // set when method == kApuDeviceId
   // "gpu_metrics (format 2)", "APU device id 0x1638", ...
   std::string describe() const;
+
+  // Struct equality (no strings): lets the backend re-evaluate the decision
+  // every tick and touch the describe() string only when it actually
+  // changes — the per-tick path must not allocate.
+  bool operator==(const AmdIntegratedDecision& o) const {
+    return integrated == o.integrated && method == o.method &&
+           metrics_format == o.metrics_format && device_id == o.device_id;
+  }
 };
 
 // Specified decision order:
@@ -131,10 +139,16 @@ class GpuAmdBackend : public GpuBackend {
     SysfsFile pp_dpm_sclk;  // current sclk level (APUs)
     SysfsFile pp_dpm_mclk;  // current mclk level (APUs)
     SysfsFile gpu_metrics;  // APU/dGPU format_revision (read once, when active)
+    SysfsFile gtt_used;     // mem_info_gtt_used (bytes) — absent on many APUs
+    SysfsFile gtt_total;    // mem_info_gtt_total (bytes)
     SysfsFile hwmon_power;   // power1_input (microwatts, PPT)
     SysfsFile hwmon_power_avg;  // power1_average (microwatts)
     SysfsFile hwmon_temp;   // temp1_input (millidegrees)
     SysfsFile hwmon_freq;   // freq1_input (Hz) — core-clock fallback
+    // Integrated decision, cached so the per-tick path re-evaluates (cheap,
+    // struct compare) but only touches the describe() string on a change.
+    AmdIntegratedDecision decision;
+    std::string method_str;
   };
 
   Card* card(const PciDevice& dev);

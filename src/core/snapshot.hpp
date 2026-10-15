@@ -69,6 +69,10 @@ struct GpuSample {
   std::optional<double> usage_pct;
   std::optional<double> vram_used_bytes;
   std::optional<double> vram_total_bytes;
+  // GTT (Graphics Translation Table) aperture. Discrete AMD GPUs expose
+  // mem_info_gtt_used/total; many APUs do not (nullopt -> "—", never 0).
+  std::optional<double> gtt_used_bytes;
+  std::optional<double> gtt_total_bytes;
   std::optional<double> core_clock_mhz;
   std::optional<double> mem_clock_mhz;
   // Power of the card itself. On integrated AMD GPUs this is nullopt: the
@@ -82,6 +86,22 @@ struct GpuSample {
   // Owns the BIOS framebuffer. Extra (beyond the base data model) because it
   // feeds the is_integrated heuristic and is useful to the UI later.
   bool boot_vga = false;
+
+  // Clears the per-tick numeric fields, keeping identity (strings set once:
+  // id, name, bus id, vendor, is_integrated, integrated_method, vram_total).
+  // The reused-Snapshot design fills the same GpuSample every tick.
+  void reset() {
+    state = GpuState::kActive;
+    usage_pct.reset();
+    vram_used_bytes.reset();
+    gtt_used_bytes.reset();
+    gtt_total_bytes.reset();
+    core_clock_mhz.reset();
+    mem_clock_mhz.reset();
+    power_w.reset();
+    ppt_w.reset();
+    temp_c.reset();
+  }
 };
 
 struct DiskDeviceSample {

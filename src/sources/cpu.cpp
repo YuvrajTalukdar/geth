@@ -8,38 +8,49 @@
 
 namespace geth {
 
-std::vector<CpuTimes> parse_proc_stat(std::string_view text) {
-  std::vector<CpuTimes> out;
-  for (const std::string_view line : parse::split_lines(text)) {
+void parse_proc_stat(std::string_view text, std::vector<CpuTimes>& out) {
+  out.clear();
+  parse::for_each_line(text, [&](std::string_view line) {
     // Only the aggregate ("cpu ") and per-core ("cpu0", ...) lines; this
     // skips "ctxt", "intr", etc.
-    if (line.size() < 4 || !line.starts_with("cpu")) continue;
+    if (line.size() < 4 || !line.starts_with("cpu")) return true;
     const char c = line[3];
     const bool aggregate = (c == ' ');
     const bool core = (c >= '0' && c <= '9');
-    if (!aggregate && !core) continue;
+    if (!aggregate && !core) return true;
 
-    const auto toks = parse::tokens(line);
-    if (toks.size() < 9) continue;  // "cpu" + 8 time fields
+    // "cpu"/"cpuN" + 8 time fields, hand-tokenized: no intermediate vectors
+    // on the per-tick hot path.
+    std::string_view rest = line;
+    const auto sp0 = rest.find(' ');
+    if (sp0 == std::string_view::npos) return true;
+    rest = rest.substr(sp0 + 1);
+    unsigned long long f[8];
+    int nf = 0;
+    while (nf < 8) {
+      while (!rest.empty() && rest.front() == ' ') rest = rest.substr(1);
+      const auto sp = rest.find(' ');
+      const std::string_view tok =
+          (sp == std::string_view::npos) ? rest : rest.substr(0, sp);
+      const auto v = parse::to_u64(tok);
+      if (!v) return true;  // malformed line: skip
+      f[nf++] = *v;
+      if (sp == std::string_view::npos) break;
+      rest = rest.substr(sp + 1);
+    }
+    if (nf != 8) return true;
     CpuTimes t;
-    bool ok = true;
-    auto get = [&](std::size_t i) -> unsigned long long {
-      const auto v = parse::to_u64(toks[i]);
-      if (!v) ok = false;
-      return v ? *v : 0;
-    };
-    t.user = get(1);
-    t.nice = get(2);
-    t.system = get(3);
-    t.idle = get(4);
-    t.iowait = get(5);
-    t.irq = get(6);
-    t.softirq = get(7);
-    t.steal = get(8);
-    if (!ok) continue;
+    t.user = f[0];
+    t.nice = f[1];
+    t.system = f[2];
+    t.idle = f[3];
+    t.iowait = f[4];
+    t.irq = f[5];
+    t.softirq = f[6];
+    t.steal = f[7];
     out.push_back(t);
-  }
-  return out;
+    return true;
+  });
 }
 
 std::optional<double> usage_pct_between(const CpuTimes& prev, const CpuTimes& now) {
@@ -52,16 +63,15 @@ std::optional<double> usage_pct_between(const CpuTimes& prev, const CpuTimes& no
   return 100.0 * static_cast<double>(dbusy) / static_cast<double>(dtotal);
 }
 
-std::vector<double> parse_cpuinfo_mhz(std::string_view text) {
-  std::vector<double> out;
-  for (const std::string_view line : parse::split_lines(text)) {
-    if (!line.starts_with("cpu MHz")) continue;
+void parse_cpuinfo_mhz(std::string_view text, std::vector<double>& out) {
+  out.clear();
+  parse::for_each_line(text, [&](std::string_view line) {
+    if (!line.starts_with("cpu MHz")) return true;
     const auto colon = line.find(':');
-    if (colon == std::string_view::npos) continue;
-    const auto v = parse::to_double(line.substr(colon + 1));
-    if (v) out.push_back(*v);
-  }
-  return out;
+    if (colon == std::string_view::npos) return true;
+    if (const auto v = parse::to_double(line.substr(colon + 1))) out.push_back(*v);
+    return true;
+  });
 }
 
 std::optional<std::string> parse_cpuinfo_model_name(std::string_view text) {
@@ -146,37 +156,54 @@ SourceStatus CpuSource::probe() {
   return st;
 }
 
+std::size_t CpuSource::read_frequency() {
+  // Fills the first n entries of _mhz (compact: only readable cores),
+  // returns n. _mhz keeps its capacity, so this never allocates after the
+  // first tick.
+  std::size_t n = 0;
+  if (!_cores.empty()) {
+    if (_mhz.size() < _cores.size()) _mhz.resize(_cores.size());
+    for (auto& f : _cores) {
+      const auto v = parse::to_u64(parse::trim(f.read()));
+      if (v) _mhz[n++] = static_cast<double>(*v) / 1000.0;
+    }
+  } else if (_cpuinfo.valid()) {
+    parse_cpuinfo_mhz(_cpuinfo.read(), _mhz);
+    n = _mhz.size();
+  }
+  return n;
+}
+
 void CpuSource::sample(Snapshot& out) {
-  const auto now = parse_proc_stat(_stat.read());
-  if (!now.empty() && _prev.size() == now.size()) {
-    for (std::size_t i = 0; i < now.size(); ++i) {
-      const auto pct = usage_pct_between(_prev[i], now[i]);
+  parse_proc_stat(_stat.read(), _cur);
+  if (_cur.empty()) return;  // unreadable this tick: keep the previous values
+  if (!_sized) {
+    // One-time: baseline counters, per-core slots in the reused Snapshot.
+    _prev = _cur;
+    out.cpu.per_core_pct.resize(_cur.size() - 1);
+    _sized = true;
+  }
+  if (_prev.size() == _cur.size()) {
+    for (std::size_t i = 0; i < _cur.size(); ++i) {
+      const auto pct = usage_pct_between(_prev[i], _cur[i]);
       if (i == 0)
         out.cpu.usage_pct = pct;
       else
-        out.cpu.per_core_pct.push_back(pct);
+        out.cpu.per_core_pct[i - 1] = pct;
     }
+    std::swap(_prev, _cur);
   }
-  _prev = now;
 
   // Frequency: prefer per-core scaling_cur_freq (kHz); fall back to cpuinfo.
-  std::vector<double> mhz;
-  if (!_cores.empty()) {
-    for (auto& f : _cores) {
-      const auto v = parse::to_u64(parse::trim(f.read()));
-      if (v) mhz.push_back(static_cast<double>(*v) / 1000.0);
-    }
-  } else if (_cpuinfo.valid()) {
-    mhz = parse_cpuinfo_mhz(_cpuinfo.read());
-  }
-  if (!mhz.empty()) {
+  const std::size_t n = read_frequency();
+  if (n > 0) {
     double sum = 0.0;
     double mx = 0.0;
-    for (double x : mhz) {
-      sum += x;
-      mx = std::max(mx, x);
+    for (std::size_t i = 0; i < n; ++i) {
+      sum += _mhz[i];
+      mx = std::max(mx, _mhz[i]);
     }
-    out.cpu.freq_avg_mhz = sum / static_cast<double>(mhz.size());
+    out.cpu.freq_avg_mhz = sum / static_cast<double>(n);
     out.cpu.freq_max_mhz = mx;
   }
 }

@@ -211,6 +211,8 @@ void GpuAmdBackend::attach(const PciDevice& dev) {
       {"gpu_busy_percent", &c.busy},
       {"mem_info_vram_used", &c.vram_used},
       {"mem_info_vram_total", &c.vram_total},
+      {"mem_info_gtt_used", &c.gtt_used},
+      {"mem_info_gtt_total", &c.gtt_total},
       {"gpu_clock", &c.gpu_clock},
       {"mem_clock", &c.mem_clock},
       {"pp_dpm_sclk", &c.pp_dpm_sclk},
@@ -301,18 +303,22 @@ void GpuAmdBackend::sample(const PciDevice& dev, GpuSample& out) {
   Card* c = card(dev);
   if (!c) return;  // not ours (defensive)
 
-  GpuSample g;
-  g.vendor = GpuVendor::kAmd;
-  g.name = c->name;
-  g.pci_bus_id = dev.bus_id;
-  g.boot_vga = c->dev.boot_vga;
+  // Identity strings are written once (the first fill, when pci_bus_id is
+  // empty); afterwards the per-tick path touches only numeric fields.
+  if (out.pci_bus_id.empty()) {
+    out.vendor = GpuVendor::kAmd;
+    out.name = c->name;
+    out.pci_bus_id = dev.bus_id;
+    out.boot_vga = c->dev.boot_vga;
+    if (c->vram_total_bytes) out.vram_total_bytes = c->vram_total_bytes;
+  }
 
   const auto rs = parse_runtime_status(runtime_state(dev));
   // "unsupported" = runtime PM disabled = always awake -> active.
   switch (rs) {
-    case RuntimeState::kSleeping: g.state = GpuState::kSleeping; break;
-    case RuntimeState::kError: g.state = GpuState::kError; break;
-    default: g.state = GpuState::kActive; break;
+    case RuntimeState::kSleeping: out.state = GpuState::kSleeping; break;
+    case RuntimeState::kError: out.state = GpuState::kError; break;
+    default: out.state = GpuState::kActive; break;
   }
 
   // Queries only while awake; "resuming" counts as active but the driver
@@ -322,18 +328,24 @@ void GpuAmdBackend::sample(const PciDevice& dev, GpuSample& out) {
   if (query) {
     if (c->busy.valid()) {
       if (const auto b = parse::to_u64(parse::trim(c->busy.read()))) {
-        g.usage_pct = static_cast<double>(*b);
+        out.usage_pct = static_cast<double>(*b);
       } else {
-        g.state = GpuState::kError;  // counter unreadable: something is off
+        out.state = GpuState::kError;  // counter unreadable: something is off
       }
     }
     if (c->vram_used.valid()) {
       if (const auto v = parse::to_u64(parse::trim(c->vram_used.read())))
-        g.vram_used_bytes = static_cast<double>(*v);
+        out.vram_used_bytes = static_cast<double>(*v);
     }
-    if (c->vram_total.valid()) {
-      if (const auto v = parse::to_u64(parse::trim(c->vram_total.read())))
-        g.vram_total_bytes = static_cast<double>(*v);
+
+    // GTT aperture (absent on many APUs -> nullopt, never 0).
+    if (c->gtt_used.valid()) {
+      if (const auto v = parse::to_u64(parse::trim(c->gtt_used.read())))
+        out.gtt_used_bytes = static_cast<double>(*v);
+    }
+    if (c->gtt_total.valid()) {
+      if (const auto v = parse::to_u64(parse::trim(c->gtt_total.read())))
+        out.gtt_total_bytes = static_cast<double>(*v);
     }
 
     // Core clock: prefer the device-level gpu_clock (MHz). APUs (iGPUs)
@@ -359,15 +371,15 @@ void GpuAmdBackend::sample(const PciDevice& dev, GpuSample& out) {
         have_core = true;
       }
     }
-    if (have_core) g.core_clock_mhz = core;
+    if (have_core) out.core_clock_mhz = core;
 
     // Memory clock: mem_clock (MHz) -> pp_dpm_mclk.
     if (c->mem_clock.valid()) {
       if (const auto v = parse::to_u64(parse::trim(c->mem_clock.read())))
-        g.mem_clock_mhz = static_cast<double>(*v);
+        out.mem_clock_mhz = static_cast<double>(*v);
     } else if (c->pp_dpm_mclk.valid()) {
       if (const auto v = parse_pp_dpm_mhz(c->pp_dpm_mclk.read()))
-        g.mem_clock_mhz = *v;
+        out.mem_clock_mhz = *v;
     }
 
     // Power: amdgpu hwmon power1_* values are instantaneous microwatts (PPT),
@@ -381,10 +393,10 @@ void GpuAmdBackend::sample(const PciDevice& dev, GpuSample& out) {
       if (const auto v = parse::to_u64(parse::trim(c->hwmon_power_avg.read())))
         ppt = static_cast<double>(*v) / 1e6;
     }
-    if (ppt) g.ppt_w = *ppt;  // always kept, raw, for --probe/debugging
+    if (ppt) out.ppt_w = *ppt;  // always kept, raw, for --probe/debugging
 
     if (c->hwmon_temp.valid()) {
-      g.temp_c = parse_millidegrees(c->hwmon_temp.read());
+      out.temp_c = parse_millidegrees(c->hwmon_temp.read());
     }
 
     // One-time gpu_metrics read: only while active (reading can wake the
@@ -395,21 +407,27 @@ void GpuAmdBackend::sample(const PciDevice& dev, GpuSample& out) {
     }
   }
 
-  const auto dec = decide(*c, g.vram_total_bytes);
-  g.is_integrated = dec.integrated;
-  g.integrated_method = dec.describe();
+  // Re-evaluate the decision every tick (cheap struct compare); the
+  // describe() string is rebuilt only when it changes, so the steady-state
+  // per-tick path stays allocation-free.
+  const auto dec = decide(*c, out.vram_total_bytes);
+  if (dec != c->decision) {
+    c->decision = dec;
+    c->method_str = dec.describe();
+  }
+  out.is_integrated = c->decision.integrated;
+  if (out.integrated_method != c->method_str)
+    out.integrated_method = c->method_str;
 
   // APU split: the PPT reading of an integrated GPU is WHOLE-PACKAGE power
   // (CPU + iGPU + SoC), so it must not be reported as this card's power.
   // It is lifted into CpuSample::package_power_w by the Collector; here
   // power_w stays nullopt and the raw value remains in ppt_w.
-  if (g.is_integrated) {
-    g.power_w = std::nullopt;
-  } else if (g.ppt_w) {
-    g.power_w = g.ppt_w;  // discrete card: PPT is the card's power
+  if (out.is_integrated) {
+    out.power_w = std::nullopt;
+  } else if (out.ppt_w) {
+    out.power_w = out.ppt_w;  // discrete card: PPT is the card's power
   }
-
-  out = std::move(g);
 }
 
 SourceStatus GpuAmdBackend::probe_info() {
@@ -434,6 +452,8 @@ SourceStatus GpuAmdBackend::probe_info() {
       if (!f.valid()) st.detail += std::string("\n    ") + label + ": absent";
       // open failures already reported above; present files are unremarkable.
     };
+    line("mem_info_gtt_used", c.gtt_used);
+    line("mem_info_gtt_total", c.gtt_total);
     line("gpu_clock", c.gpu_clock);
     line("mem_clock", c.mem_clock);
     line("pp_dpm_sclk", c.pp_dpm_sclk);

@@ -6,7 +6,7 @@ namespace geth {
 
 Meminfo parse_meminfo(std::string_view text) {
   Meminfo mi;
-  for (const std::string_view line : parse::split_lines(text)) {
+  parse::for_each_line(text, [&](std::string_view line) {
     auto value_of = [&](const char* key) -> std::optional<unsigned long long> {
       const std::string_view k(key);
       if (!line.starts_with(k)) return std::nullopt;
@@ -29,7 +29,8 @@ Meminfo parse_meminfo(std::string_view text) {
     } else if (auto v = value_of("SwapFree:")) {
       mi.swap_free_kb = *v;
     }
-  }
+    return true;
+  });
   return mi;
 }
 
