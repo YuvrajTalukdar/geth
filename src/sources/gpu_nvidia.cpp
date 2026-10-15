@@ -322,6 +322,10 @@ void GpuNvidiaBackend::sample(const PciDevice& dev, GpuSample& out) {
     ensure_session();
     _ensured_this_tick = true;
   }
+  // ensure_session() may have just replaced the pci.ids name with the
+  // authoritative NVML one — refresh it here as well, so even the warm-up
+  // sample (the one main() snapshots to build the UI's Hardware) carries it.
+  if (out.name != c->name) out.name = c->name;
 
   if (awake && _nvml_up && (c = card(dev)) && c->handle) {
     NvmlUtil u{};
@@ -364,6 +368,20 @@ SourceStatus GpuNvidiaBackend::probe_info() {
 
   st.available = true;
   st.detail = std::to_string(_cards.size()) + " NVIDIA device(s)";
+
+  if (!_probe_mode) {
+    // UI/dump startup: a brief NVML enumeration session may NOT run here —
+    // even one nvmlInit can keep the driver (and the GPU) awake. List the
+    // cards by PCI identity only; the sample-time session opens lazily on
+    // the first tick where a card is not suspended.
+    for (const auto& c : _cards)
+      st.detail += "\n  " + c.dev.bus_id + "  " + c.name;
+    st.detail +=
+        "\n  NVML session opened lazily on first active sample, dropped after " +
+        std::to_string(kShutdownStreak) + " suspended ticks"
+        " (enumeration only in --probe)";
+    return st;
+  }
 
   Enum e;
   if (open_session(e)) {

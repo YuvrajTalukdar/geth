@@ -122,6 +122,11 @@ class GpuAmdBackend : public GpuBackend {
   struct Card {
     PciDevice dev;
     std::string name;
+    // amdgpu sysfs "product_name" (kernel >= 6.6, amdgpu_sysfs.c),
+    // VBIOS-derived. Read once at attach (driver memory only — safe while
+    // suspended). Empty on older kernels / when the attribute is absent.
+    // The UI prefers it over the pci.ids string for dGPU short names.
+    std::string product_name;
     // Read once at attach (driver memory only — safe while suspended); used
     // by the VRAM-based integrated fallback on every tick.
     std::optional<double> vram_total_bytes;

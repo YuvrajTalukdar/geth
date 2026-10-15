@@ -13,6 +13,7 @@
 
 #include "core/source.hpp"
 #include "sources/gpu_backend.hpp"
+#include "sources/gpu_nvidia.hpp"  // nvidia_backend() test seam
 #include "sources/pci_discovery.hpp"
 #include "util/pci_ids.hpp"
 
@@ -42,6 +43,20 @@ class GpuRegistrySource : public Source {
     _drm_root = std::move(drm_root);
   }
   void set_pci_ids_path(std::string path) { _pci_ids_path = std::move(path); }
+
+  // Forwarded to every backend: true only for --probe, so the NVIDIA backend
+  // runs its brief NVML enumeration session there and never at UI/dump start.
+  void set_probe_mode(bool on) {
+    for (auto& b : _backends) b->set_probe_mode(on);
+  }
+
+  // For the A5 test: reach the NVIDIA backend to install a fake NVML table
+  // with call counters (returns nullptr if there is no NVIDIA backend).
+  GpuNvidiaBackend* nvidia_backend() {
+    for (auto& b : _backends)
+      if (const auto* n = dynamic_cast<GpuNvidiaBackend*>(b.get())) return const_cast<GpuNvidiaBackend*>(n);
+    return nullptr;
+  }
 
   // For tests: what was discovered, and what no backend claimed.
   const std::vector<PciDevice>& devices() const { return _devices; }

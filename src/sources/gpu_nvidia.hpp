@@ -95,6 +95,8 @@ class GpuNvidiaBackend : public GpuBackend {
   void attach(const PciDevice& dev) override;
   void sample(const PciDevice& dev, GpuSample& out) override;
   SourceStatus probe_info() override;
+  // The brief NVML enumeration session runs ONLY in probe mode.
+  void set_probe_mode(bool on) override { _probe_mode = on; }
   void begin_tick() override;
   std::string driver_version() const override;
 
@@ -126,6 +128,7 @@ class GpuNvidiaBackend : public GpuBackend {
 
   std::vector<Card> _cards;
   const PciIds* _ids;
+  bool _probe_mode = false;  // true only in --probe: enumerate via NVML
   void* _lib = nullptr;
   NvmlApi _api;
   NvmlApi _fake_api;

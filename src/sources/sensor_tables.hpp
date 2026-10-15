@@ -53,6 +53,9 @@ inline const std::vector<TempPreference>& cpu_temp_preferences() {
 //
 // The counter-based sources (rapl, amd_energy, zenpower) are probed by
 // CpuPowerSource itself, in this order; the first readable one wins.
+// amd_energy was removed from mainline kernels but is still present in some
+// distro kernels, so it stays in the table; zenpower is an out-of-tree
+// module (its presence is fine, but --probe never suggests loading it).
 // kApuPpt is NOT probed there: on AMD APUs the amdgpu hwmon PPT reading is
 // the *whole-package* power (CPU + iGPU + SoC), so it can only be used once
 // the Collector knows an integrated GPU exists — the Collector injects it as

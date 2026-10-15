@@ -6,6 +6,8 @@
 
 #include <unistd.h>
 
+#include <sys/stat.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -14,8 +16,9 @@
 #include <fstream>
 #include <memory>
 #include <sstream>
+#include <thread>
 
-#include "alloc_count.hpp"
+#include "util/alloc_count.hpp"
 #include "core/collector.hpp"
 #include "core/ring_buffer.hpp"
 #include "core/series_store.hpp"
@@ -1058,4 +1061,236 @@ TEST_SUITE("apu_package_power") {
     CHECK(s.cpu.package_power_source.has_value() == false);
   }
 
+}  // TEST_SUITE
+
+// ---------------------------------------------------------------------------
+// CPU package power sources (fixture sysfs trees under GETH_TEST_FIXTURES)
+//
+// The fixtures mirror the REAL driver layouts, not an assumed one:
+//   sys_zenpower/     hwmon "zenpower"   — instantaneous power1/2_input (µW)
+//   sys_amd_energy/   hwmon "amd_energy" — cumulative energyN_input (µJ),
+//                     Esocket* + Ecore* labels
+//   sys_rapl/         powercap "package-0" — energy_uj + max_energy_range_uj
+//   sys_rapl_eacces/  powercap "package-0" — energy_uj mode 000 (root-only)
+//   sys_bad/          hwmon "amd_energy" — ONLY a power1_raw file (wrong
+//                     layout; the old, incorrect assumption) -> must reject
+// ---------------------------------------------------------------------------
+
+TEST_SUITE("cpu_power_sources") {
+  const std::string fix = std::string(GETH_TEST_FIXTURES);
+
+  TEST_CASE("zenpower: instantaneous core + SoC microwatts are summed") {
+    CpuPowerSource src(fix + "/sys_zenpower");
+    const auto st = src.probe();
+    DOCTEST_REQUIRE(st.available);
+    CHECK(st.detail.find("zenpower") != std::string::npos);
+    CHECK(st.detail.find("SVI2_P_Core") != std::string::npos);
+
+    Snapshot snap;
+    src.sample(snap);  // instantaneous: no baseline needed
+    DOCTEST_REQUIRE(snap.cpu.package_power_w.has_value());
+    CHECK(snap.cpu.package_power_w.value() == 20.0);  // 15 W core + 5 W SoC
+    CHECK(snap.cpu.package_power_source == CpuPackagePowerSource::kZenpower);
+  }
+
+  TEST_CASE("amd_energy: only Esocket* counters are summed, delta over time") {
+    CpuPowerSource src(fix + "/sys_amd_energy");
+    const auto st = src.probe();
+    DOCTEST_REQUIRE(st.available);
+    CHECK(st.detail.find("1 Esocket*") != std::string::npos);  // Ecore* ignored
+
+    Snapshot base, second;
+    src.sample(base);  // first sample: baseline only
+    CHECK(base.cpu.package_power_w.has_value() == false);
+    src.sample(second);  // static fixture: counter unchanged -> 0 W
+    DOCTEST_REQUIRE(second.cpu.package_power_w.has_value());
+    CHECK(second.cpu.package_power_w.value() == 0.0);
+    CHECK(second.cpu.package_power_source == CpuPackagePowerSource::kAmdEnergy);
+  }
+
+  TEST_CASE("amd_energy: a real delta yields power over elapsed time") {
+    // Live tree (temp dir) so the counter can advance between samples.
+    const auto root = std::filesystem::temp_directory_path() /
+        ("geth_amd_energy_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(root);
+    const auto dev = root / "class/hwmon/hwmon9";
+    auto wf = [&](const char* name, const std::string& v) {
+      std::filesystem::create_directories(dev);
+      std::ofstream f(dev / name);
+      f << v;
+    };
+    wf("name", "amd_energy");
+    wf("energy1_label", "Esocket0");
+    wf("energy1_input", "1000000");   // 1 mJ
+    wf("energy2_label", "Ecore000");   // must be ignored
+    wf("energy2_input", "999");
+
+    {
+      CpuPowerSource src(root.string());
+      const auto st = src.probe();
+      DOCTEST_REQUIRE(st.available);
+      CHECK(st.detail.find("1 Esocket*") != std::string::npos);
+
+      Snapshot base;
+      src.sample(base);  // baseline
+      CHECK(base.cpu.package_power_w.has_value() == false);
+
+      // Advance the Esocket counter by 1 mJ, ~100 ms later => ~10 W.
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      wf("energy1_input", "2000000");
+      Snapshot next;
+      src.sample(next);
+      DOCTEST_REQUIRE(next.cpu.package_power_w.has_value());
+      CHECK(next.cpu.package_power_w.value() > 1.0);
+      CHECK(next.cpu.package_power_w.value() < 100.0);
+    }
+    std::filesystem::remove_all(root);
+  }
+
+  TEST_CASE("amd_energy: a backwards counter is a reset, skipped not wrapped") {
+    const auto root = std::filesystem::temp_directory_path() /
+        ("geth_amd_reset_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(root);
+    const auto dev = root / "class/hwmon/hwmon9";
+    auto wf = [&](const char* name, const std::string& v) {
+      std::filesystem::create_directories(dev);
+      std::ofstream f(dev / name);
+      f << v;
+    };
+    wf("name", "amd_energy");
+    wf("energy1_label", "Esocket0");
+    wf("energy1_input", "1000000");
+
+    {
+      CpuPowerSource src(root.string());
+      DOCTEST_REQUIRE(src.probe().available);
+      Snapshot base;
+      src.sample(base);  // baseline at 1,000,000
+
+      // Counter RESETS to a smaller value (driver re-init) — not a wrap,
+      // because amd_energy publishes no range. This tick must be skipped.
+      wf("energy1_input", "50");
+      Snapshot after_reset;
+      src.sample(after_reset);
+      CHECK(after_reset.cpu.package_power_w.has_value() == false);
+
+      // The baseline re-anchored: the next delta is from 50, producing power.
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      wf("energy1_input", "500050");  // +500,000 µJ
+      Snapshot recovered;
+      src.sample(recovered);
+      CHECK(recovered.cpu.package_power_w.has_value() == true);
+      CHECK(recovered.cpu.package_power_w.value() > 0.0);
+    }
+    std::filesystem::remove_all(root);
+  }
+
+  TEST_CASE("RAPL: package domain is accepted, delta over time") {
+    CpuPowerSource src(fix + "/sys_rapl");
+    const auto st = src.probe();
+    DOCTEST_REQUIRE(st.available);
+    CHECK(st.detail.find("RAPL package domains: 1") != std::string::npos);
+
+    Snapshot base, second;
+    src.sample(base);
+    CHECK(base.cpu.package_power_w.has_value() == false);
+    src.sample(second);  // static: 0 W
+    DOCTEST_REQUIRE(second.cpu.package_power_w.has_value());
+    CHECK(second.cpu.package_power_w.value() == 0.0);
+    CHECK(second.cpu.package_power_source == CpuPackagePowerSource::kRapl);
+  }
+
+  TEST_CASE("RAPL: EACCES reports unavailable with CapEff and the udev fix") {
+    // The fixture's energy_uj ships world-readable (git cannot store a 0000
+    // mode), so force it unreadable here to simulate a non-root process facing
+    // a root-only RAPL counter; the original mode is restored afterwards. As
+    // root, file modes cannot be used to deny access, so the EACCES path is
+    // not reproducible and the case is a documented no-op.
+    const std::string uj =
+        fix + "/sys_rapl_eacces/class/powercap/intel-rapl:0/energy_uj";
+    if (::geteuid() == 0) return;  // root ignores file modes
+    struct stat stb{};
+    const auto old_mode = ::stat(uj.c_str(), &stb) == 0
+                              ? static_cast<mode_t>(stb.st_mode & 07777)
+                              : 0644;
+    ::chmod(uj.c_str(), 0);
+    CpuPowerSource src(fix + "/sys_rapl_eacces");
+    const auto st = src.probe();
+    ::chmod(uj.c_str(), old_mode);
+    CHECK(st.available == false);
+    CHECK(st.detail.find("EACCES") != std::string::npos);
+    CHECK(st.detail.find("CapEff: 0x") != std::string::npos);
+    // The hint names both CMake fix targets (udev rule and setcap).
+    CHECK(st.hint.find("install-udev") != std::string::npos);
+    CHECK(st.hint.find("setcap") != std::string::npos);
+  }
+
+  TEST_CASE("a hwmon dir with only power1_raw is NOT accepted") {
+    // The layout some tools wrongly assume. Neither real driver exposes
+    // power1_raw, so a dir that has ONLY it must be rejected, not adopted.
+    CpuPowerSource src(fix + "/sys_bad");
+    const auto st = src.probe();
+    CHECK(st.available == false);
+    Snapshot snap;
+    src.sample(snap);
+    CHECK(snap.cpu.package_power_w.has_value() == false);
+  }
+
+}  // TEST_SUITE
+
+// ---------------------------------------------------------------------------
+// NVML at startup (A5): the brief enumeration session is a --probe-only
+// feature. At UI/dump startup it must never run — even one nvmlInit can keep
+// the driver (and the GPU) awake.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+int g_nvml_init_calls = 0;
+int g_nvml_shutdown_calls = 0;
+
+int counting_nvml_init() { return ++g_nvml_init_calls, 0; }
+void counting_nvml_shutdown() { ++g_nvml_shutdown_calls; }
+int counting_nvml_get_count(unsigned* c) { *c = 0; return 0; }  // no NVML devices
+int counting_nvml_get_handle(unsigned, void**) { return 1; }  // never called (count 0)
+
+NvmlApi counting_nvml_api() {
+  NvmlApi api{};
+  api.init = counting_nvml_init;
+  api.shutdown = counting_nvml_shutdown;
+  api.get_count = counting_nvml_get_count;
+  api.get_handle = counting_nvml_get_handle;  // must be non-null to pass the ABI check
+  return api;
+}
+
+}  // namespace
+
+TEST_SUITE("nvml_at_startup") {
+  TEST_CASE("UI/dump startup never calls nvmlInit while suspended; --probe does") {
+    g_nvml_init_calls = 0;
+    g_nvml_shutdown_calls = 0;
+
+    FakePciTree tree;
+    tree.add_device("0000:01:00.0", "10de", "25a2", "nvidia", false, "suspended", 0);
+
+    GpuRegistrySource reg;
+    reg.set_sysfs_roots(tree.root.string(), (tree.root / "class/drm").string());
+    reg.set_pci_ids_path(std::string(GETH_TEST_FIXTURES) + "/pci_ids.txt");
+    GpuNvidiaBackend* nv = reg.nvidia_backend();
+    DOCTEST_REQUIRE(nv != nullptr);
+    nv->set_fake_api(counting_nvml_api());
+
+    // --- UI/dump startup: probe + a sample while the card is suspended ---
+    reg.probe();  // default: non-probe mode
+    CHECK(g_nvml_init_calls == 0);
+    Snapshot snap;
+    reg.sample(snap);
+    CHECK(g_nvml_init_calls == 0);  // still no session: the card is asleep
+
+    // --- --probe startup: the brief enumeration runs (init + shutdown) ---
+    reg.set_probe_mode(true);
+    reg.probe();
+    CHECK(g_nvml_init_calls == 1);
+    CHECK(g_nvml_shutdown_calls == 1);  // and it is closed again
+  }
 }  // TEST_SUITE

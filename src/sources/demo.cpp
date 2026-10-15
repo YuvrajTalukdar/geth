@@ -47,7 +47,9 @@ void DemoSource::sample(Snapshot& out) {
     out.gpus.resize(2);
     GpuSample& n = out.gpus[0];
     n.vendor = GpuVendor::kNvidia;
-    n.name = "NVIDIA GeForce RTX 3050 Laptop (demo)";
+    // Realistic pci.ids-style strings so the UI short-name logic produces the
+    // spec examples ("RTX 3050 Laptop" / "Cezanne iGPU").
+    n.name = "NVIDIA GeForce RTX 3050 Laptop GPU";
     n.pci_bus_id = "0000:01:00.0";
     n.boot_vga = false;
     n.is_integrated = false;
@@ -55,7 +57,7 @@ void DemoSource::sample(Snapshot& out) {
     n.vram_total_bytes = 8.0 * kGiB;
     GpuSample& a = out.gpus[1];
     a.vendor = GpuVendor::kAmd;
-    a.name = "AMD Radeon Graphics (Cezanne) (demo)";
+    a.name = "Cezanne [Radeon Vega Series / Radeon Vega Mobile Series]";
     a.pci_bus_id = "0000:07:00.0";
     a.boot_vga = true;
     a.is_integrated = true;

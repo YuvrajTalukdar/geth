@@ -58,6 +58,10 @@ enum class GpuState { kActive, kSleeping, kError };
 struct GpuSample {
   std::string id;  // "gpu0", "gpu1", ... — stable, assigned in PCI bus order
   std::string name;
+  // amdgpu sysfs "product_name" (kernel >= 6.6, VBIOS-derived) when present;
+  // empty on older kernels and on NVIDIA. The UI prefers it over the pci.ids
+  // string for AMD dGPU short names.
+  std::string product_name;
   GpuVendor vendor = GpuVendor::kAmd;
   std::string pci_bus_id;  // "0000:01:00.0"
   bool is_integrated = false;

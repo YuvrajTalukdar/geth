@@ -70,6 +70,13 @@ class GpuBackend {
   // attach() calls.
   virtual SourceStatus probe_info() = 0;
 
+  // Called before probe(): the mode in which the whole run is happening.
+  // Backends whose probe_info() can wake the driver (the NVIDIA backend's
+  // brief NVML enumeration session) run that work ONLY in probe mode —
+  // UI/dump startup must never open an NVML session, even to enumerate.
+  // The default implementation is a no-op.
+  virtual void set_probe_mode(bool) {}
+
   // Once per tick, before any of the backend's sample() calls: per-tick
   // housekeeping (the NVIDIA backend uses it for its NVML suspend streak).
   virtual void begin_tick() {}

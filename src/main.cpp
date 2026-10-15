@@ -22,6 +22,8 @@
 #include "sources/memory.hpp"
 #include "sources/net.hpp"
 #include "sources/temps.hpp"
+#include "ui/app.hpp"
+#include "ui/panel_spec.hpp"
 #include "util/format.hpp"
 #include "util/parse.hpp"
 
@@ -38,35 +40,41 @@ void on_signal(int) {
 
 struct Options {
   bool probe = false;
-  bool dump = false;  // default live mode
+  bool dump = false;  // text samples; the UI is the default when nothing is set
   bool json = false;
   bool demo = false;
-  double interval = 1.0;
+  long long interval_ms = 1000;  // sampling interval in milliseconds
   unsigned long long count = 0;  // 0 = until Ctrl-C
+  // Part B (UI) options
+  bool ansi = false;          // --render-frame: emit full SGR escape codes
+  bool stats = false;         // print render/perf stats on exit
+  unsigned long long warmup = 60;  // --render-frame: samples to collect
+  bool render_frame = false;  // --render-frame COLSxROWS
+  std::string render_size;    // "COLSxROWS"
+  std::string color_mode;     // "" = auto, else truecolor|256|16
 };
 
 void print_help() {
   std::printf("%s %s\n", kFullName, GETH_VERSION);
   std::printf(
       "A fast, lightweight terminal system monitor for Linux.\n"
-      "(Phase 1: data collection layer — no UI yet.)\n\n"
+      "With no mode flag, the interactive UI is started.\n\n"
       "Usage: geth [options]\n"
+      "  (none)            Start the interactive dashboard UI\n"
       "  --probe           List every data source, its availability and fix hints\n"
-      "  --dump            Print human-readable samples (default mode)\n"
+      "  --dump            Print human-readable samples\n"
       "  --json            Print samples as JSON (one object per sample)\n"
       "  --demo            Use synthetic data; no hardware is accessed\n"
-      "  --interval <sec>  Sampling interval in seconds (default 1.0, min 0.1)\n"
+      "  --interval <ms>   Sampling interval in milliseconds (default 1000, min 10)\n"
       "  --count <n>       Stop after n samples (default: run until Ctrl-C)\n"
+      "  --render-frame COLSxROWS   Render one frame at that size and exit\n"
+      "      [--warmup <n>]  samples to collect first (default 60; no sleep in\n"
+      "                      --demo, real interval otherwise)\n"
+      "      [--ansi]        emit full SGR escape codes instead of plain text\n"
+      "  --stats             Print render/perf statistics on exit\n"
+      "  --color <mode>      truecolor | 256 | 16 (default: auto-detect)\n"
       "  --help            Show this help\n"
       "  --version         Print name and version\n");
-}
-
-bool parse_double(const char* s, double& out) {
-  char* end = nullptr;
-  const double v = std::strtod(s, &end);
-  if (end == s || *end != '\0' || v < 0.0) return false;
-  out = v;
-  return true;
 }
 
 bool parse_u64_arg(const char* s, unsigned long long& out) {
@@ -102,12 +110,33 @@ int parse_args(int argc, char** argv, Options& o) {
     } else if (a == "--demo") {
       o.demo = true;
     } else if (a == "--interval") {
+      // Milliseconds (spec): default 1000. --interval 10 == 10 ms.
+      unsigned long long ms = 0;
       const char* v = need_value("--interval");
-      if (!v || !parse_double(v, o.interval)) return -1;
-      if (o.interval < 0.1) o.interval = 0.1;
+      if (!v || !parse_u64_arg(v, ms)) return -1;
+      if (ms < 10) ms = 10;
+      o.interval_ms = static_cast<long long>(ms);
     } else if (a == "--count") {
       const char* v = need_value("--count");
       if (!v || !parse_u64_arg(v, o.count)) return -1;
+    } else if (a == "--ansi") {
+      o.ansi = true;
+    } else if (a == "--stats") {
+      o.stats = true;
+    } else if (a == "--warmup") {
+      unsigned long long n = 0;
+      const char* v = need_value("--warmup");
+      if (!v || !parse_u64_arg(v, n)) return -1;
+      o.warmup = n;
+    } else if (a == "--render-frame") {
+      const char* v = need_value("--render-frame");
+      if (!v) return -1;
+      o.render_frame = true;
+      o.render_size = v;
+    } else if (a == "--color") {
+      const char* v = need_value("--color");
+      if (!v) return -1;
+      o.color_mode = v;
     } else if (a == "--help" || a == "-h") {
       print_help();
       std::exit(0);
@@ -131,6 +160,31 @@ void sleep_interruptible(double seconds) {
     // Interrupted: the kernel left the remaining time in ts; loop unless a
     // signal we care about arrived (g_stop).
   }
+}
+
+// The full "model name" for the UI title. --demo uses the dev machine's own
+// CPU so the header reads like the spec mock.
+std::string read_cpu_model(bool demo) {
+  if (demo) return "AMD Ryzen 5 5600H with Radeon Graphics";
+  std::ifstream f("/proc/cpuinfo");
+  std::string line;
+  while (std::getline(f, line)) {
+    if (const auto m = parse_cpuinfo_model_name(line)) return *m;
+  }
+  return "unknown CPU";
+}
+
+// "COLSxROWS" (a lowercase or uppercase x). Rejects empty/zero/too-large.
+bool parse_size(const std::string& s, int& W, int& H) {
+  const auto x = s.find_first_of("xX");
+  if (x == std::string::npos || x == 0 || x + 1 >= s.size()) return false;
+  unsigned long long wv = 0, hv = 0;
+  if (!parse_u64_arg(s.substr(0, x).c_str(), wv)) return false;
+  if (!parse_u64_arg(s.substr(x + 1).c_str(), hv)) return false;
+  if (wv < 1 || hv < 1 || wv > 10000 || hv > 10000) return false;
+  W = static_cast<int>(wv);
+  H = static_cast<int>(hv);
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -440,6 +494,34 @@ int run_probe(Collector& collector, GpuRegistrySource* gpu_registry) {
       std::printf("\n");
     }
   }
+
+  // Cross-check (A6): when RAPL is actually readable (root, or after the
+  // udev rule), its package power and the APU PPT are two independent
+  // measurements of (nearly) the same thing and should agree within a few
+  // watts. Average RAPL over ~0.7 s and print both, so a freshly installed
+  // rule can be verified at a glance.
+  bool rapl_up = false;
+  for (const auto& s : collector.statuses())
+    if (s.description == "CPU power" && s.available &&
+        s.detail.find("RAPL") != std::string::npos)
+      rapl_up = true;
+  if (rapl_up) {
+    collector.sample();  // baseline for the RAPL counter
+    sleep_interruptible(0.7);
+    const Snapshot& s = collector.sample();
+    if (s.cpu.package_power_w &&
+        s.cpu.package_power_source == CpuPackagePowerSource::kRapl) {
+      for (const auto& g : s.gpus) {
+        if (!g.is_integrated || !g.ppt_w) continue;
+        std::printf("\nCross-check (expect within a few W under load):\n");
+        std::printf("  RAPL package power  %s\n",
+                    format::watts(*s.cpu.package_power_w).c_str());
+        std::printf("  APU PPT (%s)       %s\n", g.pci_bus_id.c_str(),
+                    format::watts(*g.ppt_w).c_str());
+        break;
+      }
+    }
+  }
   return 0;
 }
 
@@ -473,6 +555,10 @@ int main(int argc, char** argv) {
     collector.add(std::make_unique<NetSource>());
   }
 
+  // The brief NVML enumeration session is a --probe-only feature: it must
+  // never run at UI/dump startup (it can keep the GPU awake).
+  if (registry) registry->set_probe_mode(opts.probe);
+
   if (opts.probe) return run_probe(collector, registry);
 
   collector.probe_all(/*warm_up=*/true);
@@ -484,6 +570,37 @@ int main(int argc, char** argv) {
 
   std::signal(SIGINT, on_signal);
   std::signal(SIGTERM, on_signal);
+
+  // Discover the hardware once (from the warm-up sample) and hand it to the
+  // UI. The probe_all(warm_up=true) above already took a reference sample, so
+  // latest() is populated.
+  const std::string cpu_name = read_cpu_model(opts.demo);
+  const ui::Hardware hw = ui::hardware_from(collector.latest(), cpu_name);
+
+  if (opts.render_frame) {
+    int W = 0, H = 0;
+    if (!parse_size(opts.render_size, W, H)) {
+      std::fprintf(stderr, "geth: --render-frame needs COLSxROWS, got '%s'\n",
+                   opts.render_size.c_str());
+      return 2;
+    }
+    ui::UiOptions u;
+    u.interval_ms = opts.interval_ms;
+    u.color_mode = opts.color_mode;
+    u.demo = opts.demo;
+    u.ansi = opts.ansi;
+    u.stats = opts.stats;
+    return ui::run_render_frame(collector, hw, W, H, opts.warmup, u);
+  }
+
+  if (!opts.dump && !opts.json) {
+    ui::UiOptions u;
+    u.interval_ms = opts.interval_ms;
+    u.count = opts.count;
+    u.color_mode = opts.color_mode;
+    u.stats = opts.stats;
+    return ui::run_ui(collector, hw, u);
+  }
 
   unsigned long long done = 0;
   while (!g_stop && (opts.count == 0 || done < opts.count)) {
@@ -498,7 +615,8 @@ int main(int argc, char** argv) {
     }
     ++done;
     if (g_stop || (opts.count != 0 && done >= opts.count)) break;
-    if (opts.count == 0 || done < opts.count) sleep_interruptible(opts.interval);
+    if (opts.count == 0 || done < opts.count)
+      sleep_interruptible(static_cast<double>(opts.interval_ms) / 1000.0);
   }
   return 0;
 }

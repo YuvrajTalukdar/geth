@@ -194,12 +194,23 @@ void GpuAmdBackend::attach(const PciDevice& dev) {
   Card c;
   c.dev = dev;
 
-  // Name via pci.ids: amdgpu exposes no product string in sysfs.
+  // Name via pci.ids: the generic fallback when the VBIOS name is absent.
   if (_ids)
     if (auto n = _ids->lookup(dev.vendor_id, dev.device_id)) c.name = *n;
   if (c.name.empty()) c.name = "AMD GPU [" + dev.bus_id + "]";
 
   const std::string d = dev.dev_path;
+
+  // VBIOS product name, one-shot read at attach. Source: amdgpu's sysfs
+  // attribute "product_name" (drivers/gpu/drm/amd/amdgpu/amdgpu_sysfs.c),
+  // present since kernel 6.6. Absent on older kernels (ENOENT) -> empty,
+  // and the UI falls back to the pci.ids-derived short name.
+  {
+    SysfsFile pn;
+    int err = 0;
+    if (SysfsFile::open(d + "/product_name", pn, err) && pn.valid())
+      c.product_name = parse::trim(pn.read());
+  }
 
   // --- open every metric file once; absence (ENOENT) is a valid state for
   // the optional ones, anything else is recorded as evidence ----------------
@@ -308,6 +319,7 @@ void GpuAmdBackend::sample(const PciDevice& dev, GpuSample& out) {
   if (out.pci_bus_id.empty()) {
     out.vendor = GpuVendor::kAmd;
     out.name = c->name;
+    out.product_name = c->product_name;
     out.pci_bus_id = dev.bus_id;
     out.boot_vga = c->dev.boot_vga;
     if (c->vram_total_bytes) out.vram_total_bytes = c->vram_total_bytes;
