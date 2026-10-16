@@ -1,5 +1,7 @@
 #include "core/collector.hpp"
 
+#include <limits>
+
 #include "sources/gpu_amd.hpp"  // finalize_gpus()
 
 namespace geth {
@@ -39,11 +41,52 @@ const Snapshot& Collector::sample() {
   const TimePoint now = _fixed_time ? *_fixed_time : Clock::now();
   _fixed_time.reset();
   _snap.time = now;
+
+  // Suspend/clock jump: CLOCK_BOOTTIME keeps counting while the machine is
+  // asleep, so a gap of more than 5 x the interval means the process was
+  // suspended. The sources' rates (counter delta / measured dt) would then
+  // be computed over a ~zero dt and come out as a spike; record NaN (a gap)
+  // for every rate-based series instead.
+  const auto susp = SuspendClock::now();
+  const long long thr = _gap_threshold_ms > 0 ? _gap_threshold_ms
+                                              : 5 * _interval_ms;
+  const bool gap = thr > 0 && _last_suspend &&
+                   (susp - *_last_suspend) > std::chrono::milliseconds(thr);
+  _last_suspend = susp;
+
   for (auto& src : _sources) src->sample(_snap);
   apply_apu_package_power(_snap);
+  if (gap) blank_gap_rates(_snap);
   _store.begin_tick(_snap.time);
   record(_snap);
   return _snap;
+}
+
+void Collector::blank_gap_rates(Snapshot& s) {
+  constexpr double kGap = std::numeric_limits<double>::quiet_NaN();
+  auto blank = [](std::optional<double>& v) {
+    if (v) *v = kGap;
+  };
+  // CPU usage (the ratio over the stale window is meaningless).
+  blank(s.cpu.usage_pct);
+  for (auto& pc : s.cpu.per_core_pct) blank(pc);
+  // Counter-based power only: the APU PPT lift is an instantaneous reading.
+  if (s.cpu.package_power_w &&
+      *s.cpu.package_power_source != CpuPackagePowerSource::kApuPpt)
+    s.cpu.package_power_w = kGap;
+  // Disk and network rates (bytes / measured dt).
+  for (auto& d : s.disk.devices) {
+    blank(d.read_bytes_per_s);
+    blank(d.write_bytes_per_s);
+  }
+  blank(s.disk.total_read_bytes_per_s);
+  blank(s.disk.total_write_bytes_per_s);
+  for (auto& n : s.net.interfaces) {
+    blank(n.rx_bytes_per_s);
+    blank(n.tx_bytes_per_s);
+  }
+  blank(s.net.total_rx_bytes_per_s);
+  blank(s.net.total_tx_bytes_per_s);
 }
 
 void Collector::init_series() {

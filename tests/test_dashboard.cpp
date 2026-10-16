@@ -38,9 +38,10 @@ struct DashFixture {
   ui::Hardware hw;
   std::vector<ui::PanelSpec> page;  // the default page, for reference
   ui::FrameStats stats;
-  // A NAMED theme: the Dashboard borrows it (const Theme&), so it must outlive
-  // every Dashboard this fixture makes (a temporary would dangle).
-  ui::Theme theme = ui::Theme::cyberpunk_blue();
+  // The full selectable theme list (the built-ins, in T-cycle order). The
+  // Dashboard OWNS its own copies, so passing these by value is safe.
+  std::vector<std::pair<std::string, ui::Theme>> themes;
+  int theme_idx = 0;  // cyberpunk-blue
 
   DashFixture() {
     c.add(std::make_unique<DemoSource>());
@@ -48,12 +49,14 @@ struct DashFixture {
     for (int i = 0; i < 70; ++i) c.sample();  // enough points for a full line
     hw = ui::hardware_from(c.latest(), "AMD Ryzen 5 5600H with Radeon Graphics");
     page = ui::build_default_page(hw);
+    for (const auto& b : ui::builtin_themes())
+      themes.push_back({b.name, b.theme});
   }
 
   std::unique_ptr<ui::Dashboard> make(ui::Config cfg, long long interval_ms = 1000,
                                       ui::ColorMode mode = ui::ColorMode::Color256) {
     return std::make_unique<ui::Dashboard>(
-        c, hw, std::move(cfg), theme, mode, interval_ms,
+        c, hw, std::move(cfg), themes, theme_idx, mode, interval_ms,
         /*count=*/0, /*window_idx=*/1, /*columns=*/-1, stats);
   }
 
@@ -333,6 +336,91 @@ TEST_CASE("settings: c cycles the columns (auto -> 1..8 -> auto)") {
   }
   d->OnEvent(ftxui::Event::Character('c'));  // wraps to auto
   CHECK_EQ(d->columns_setting(), -1);
+}
+
+TEST_CASE("rename: one global GPU rename changes every occurrence (Part A.1)") {
+  DashFixture fx;
+  auto d = fx.make(no_save_cfg());
+  // The demo hardware has a dGPU (0000:01:00.0) and an iGPU (0000:07:00.0).
+  const std::string dGPU = "gpu.0000:01:00.0.usage";
+  const int row = d->page_index(dGPU);
+  REQUIRE(row >= 0);
+
+  d->OnEvent(ftxui::Event::Character('e'));  // open the manager
+  fx.select_row(*d, row);
+  REQUIRE_EQ(d->manager_rows()[row].id, dGPU);
+  d->OnEvent(ftxui::Event::Character('r'));  // rename
+  const std::size_t len = d->manager_rows()[row].label.size();
+  for (std::size_t i = 0; i < len + 4; ++i) d->OnEvent(ftxui::Event::Backspace);
+  for (char ch : "dGPU3050") d->OnEvent(ftxui::Event::Character(ch));
+  d->OnEvent(ftxui::Event::Return);          // commit
+  d->OnEvent(ftxui::Event::Escape);          // close the manager
+
+  // The saved global override is set on the GPU, not the panel.
+  REQUIRE(d->config().gpus.count("0000:01:00.0"));
+  CHECK_EQ(d->config().gpus.at("0000:01:00.0").name, "dGPU3050");
+
+  // Both dGPU panels (usage AND memory) show the new name.
+  const int usage_i = d->page_index("gpu.0000:01:00.0.usage");
+  const int vram_i = d->page_index("gpu.0000:01:00.0.vram");
+  REQUIRE(usage_i >= 0);
+  REQUIRE(vram_i >= 0);
+  CHECK(d->page()[usage_i].title.find("dGPU3050") != std::string::npos);
+  CHECK(d->page()[vram_i].title.find("dGPU3050") != std::string::npos);
+
+  // The Temperature and Power legends use the new name too.
+  const int temps_i = d->page_index("temps");
+  const int power_i = d->page_index("power");
+  REQUIRE(temps_i >= 0);
+  REQUIRE(power_i >= 0);
+  bool temps_has = false, power_has = false;
+  for (const auto& s : d->page()[temps_i].series)
+    temps_has = temps_has || s.label.find("dGPU3050") != std::string::npos;
+  for (const auto& s : d->page()[power_i].series)
+    power_has = power_has || s.label.find("dGPU3050") != std::string::npos;
+  CHECK(temps_has);
+  CHECK(power_has);
+
+  // The auto header title carries the new name.
+  d->set_size(160, 48);
+  ftxui::Screen screen(160, 48);
+  screen.Clear();
+  ftxui::Render(screen, d->OnRender());
+  CHECK(screen.ToString().find("dGPU3050") != std::string::npos);
+
+  // The iGPU is untouched by the dGPU rename.
+  const int igpu_i = d->page_index("gpu.0000:07:00.0.usage");
+  REQUIRE(igpu_i >= 0);
+  CHECK(d->page()[igpu_i].title.find("dGPU3050") == std::string::npos);
+
+  // An empty rename CLEARS the global name (restores the detected one).
+  d->OnEvent(ftxui::Event::Character('e'));
+  fx.select_row(*d, row);
+  d->OnEvent(ftxui::Event::Character('r'));
+  const std::size_t len2 = d->manager_rows()[row].label.size();
+  for (std::size_t i = 0; i < len2 + 4; ++i) d->OnEvent(ftxui::Event::Backspace);
+  d->OnEvent(ftxui::Event::Return);  // commit empty
+  d->OnEvent(ftxui::Event::Escape);
+  CHECK(d->config().gpus.at("0000:01:00.0").name.empty());
+  CHECK(d->page()[usage_i].title.find("dGPU3050") == std::string::npos);
+}
+
+TEST_CASE("settings: T cycles the themes and saves the name (Part B)") {
+  DashFixture fx;
+  auto d = fx.make(no_save_cfg());
+  const std::string first = d->theme_name();
+  REQUIRE_EQ(first, std::string("cyberpunk-blue"));
+  d->OnEvent(ftxui::Event::Character('T'));
+  CHECK_EQ(d->theme_name(), std::string("matrix-green"));
+  // Cycling persists the name even in no-save mode (the disk write is what
+  // no_save suppresses).
+  CHECK_EQ(d->config().theme, "matrix-green");
+  // Three more cycles complete the lap and wrap to the first theme.
+  d->OnEvent(ftxui::Event::Character('T'));
+  d->OnEvent(ftxui::Event::Character('T'));
+  d->OnEvent(ftxui::Event::Character('T'));
+  CHECK_EQ(d->theme_name(), first);
+  CHECK_EQ(d->config().theme, first);
 }
 
 TEST_CASE("no background color is ever emitted, manager + help open (160x48, all modes)") {

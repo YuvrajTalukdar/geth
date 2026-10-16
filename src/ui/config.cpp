@@ -179,6 +179,27 @@ Config Config::load(const std::string& path, bool no_save) {
               c.warnings.push_back(warn(c, line,
                                         "general.title must be a string — "
                                         "ignored"));
+          } else if (name == "theme") {
+            // Any non-empty string is accepted here; an unknown name is a
+            // resolution-time warning (fallback to cyberpunk-blue), not a
+            // config error — a typo shouldn't break the whole file.
+            if (v.is_string() && !v.as<std::string>()->get().empty())
+              c.theme = v.as<std::string>()->get();
+            else
+              c.warnings.push_back(warn(
+                  c, line, "general.theme must be a non-empty string — "
+                           "ignored"));
+          } else if (name == "background") {
+            if (v.is_string()) {
+              const std::string s = v.as<std::string>()->get();
+              if (s == "transparent" || s == "solid") c.background = s;
+              else
+                c.warnings.push_back(warn(
+                    c, line, "general.background must be \"transparent\" or "
+                             "\"solid\" — ignored"));
+            } else
+              c.warnings.push_back(warn(
+                  c, line, "general.background must be a string — ignored"));
           } else {
             c.warnings.push_back(warn(c, line,
                                       "unknown key 'general." + name +
@@ -323,7 +344,9 @@ std::string Config::serialize() const {
     s += "columns = \"auto\"\n";
   else
     s += "columns = " + std::to_string(columns) + "\n";
-  s += "title = \"" + escape_toml(title) + "\"\n\n";
+  s += "title = \"" + escape_toml(title) + "\"\n";
+  s += "theme = \"" + escape_toml(theme) + "\"\n";
+  s += "background = \"" + escape_toml(background) + "\"\n\n";
   for (const auto& e : panels) {
     s += "[[panels]]\n";
     s += "id = \"" + escape_toml(e.id) + "\"\n";
@@ -457,7 +480,10 @@ void apply_gpu_overrides(Hardware& hw, const Config& cfg) {
   for (auto& g : hw.gpus) {
     auto it = cfg.gpus.find(g.bus_id);
     if (it == cfg.gpus.end()) continue;
-    if (!it->second.name.empty()) g.name = it->second.name;
+    if (!it->second.name.empty()) {
+      g.name = it->second.name;
+      g.renamed = true;  // the title logic uses it as-is, not shortened
+    }
     if (it->second.integrated) g.is_integrated = *it->second.integrated;
   }
 }

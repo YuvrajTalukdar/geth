@@ -83,15 +83,26 @@ struct PanelSpec {
 
 struct GpuInfo {
   std::string bus_id;
-  std::string name;          // full name (pci.ids lookup or NVML)
+  std::string name;          // full name (pci.ids lookup or NVML, or a rename)
   std::string product_name;  // amdgpu sysfs attribute; empty if not exposed
   GpuVendor vendor = GpuVendor::kAmd;
   bool is_integrated = false;
   double vram_total_bytes = 0;
+  // GTT aperture total (0 when the driver does not expose it). Integrated
+  // GPUs' memory panel scales to max(vram_total, gtt_total).
+  double gtt_total_bytes = 0;
   // Discrete GPUs report card power; integrated ones do not (their PPT is
   // whole-package power and is the CPU package line instead).
   bool reports_power = false;
+  // True when name is a user rename ([gpus."bus"].name / the manager's r):
+  // the title logic uses it AS-IS instead of shortening the detected name.
+  bool renamed = false;
 };
+
+// The GPU's display name: the rename as-is when renamed, else the detected
+// name shortened (short_gpu). Every GPU-derived title/legend/header goes
+// through this, so one rename changes all of them.
+std::string gpu_short_name(const GpuInfo& g);
 
 struct Hardware {
   std::string cpu_name;  // full cpuinfo "model name" (or the demo's fake one)

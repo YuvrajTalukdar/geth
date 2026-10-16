@@ -4,7 +4,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(geth
-  VERSION 0.4.0
+  VERSION 1.0.0
   DESCRIPTION "GETH — Geth Engine for Tracking Hardware"
   LANGUAGES CXX)
 
@@ -22,6 +22,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(GETH_BUILD_TESTS "Build the unit tests (fetches doctest)" ON)
+
+# The installed binary name. Go Ethereum also installs a `geth` binary, so on
+# a machine where both are wanted build with -DGETH_BINARY_NAME=gethmon.
+set(GETH_BINARY_NAME "geth" CACHE STRING "Name of the installed binary")
 
 # ---------------------------------------------------------------------------
 # FTXUI (terminal UI framework) — pinned to an exact tag for reproducibility.
@@ -89,9 +93,13 @@ set(GETH_SOURCES
   src/ui/theme.cpp
   src/util/alloc_count.cpp
   src/util/pci_ids.cpp
-  src/util/sysfs_file.cpp)
+  src/util/sysfs_file.cpp
+  src/util/terminal.cpp)
 
 add_executable(geth src/main.cpp ${GETH_SOURCES})
+# The target stays `geth` (the setcap target references it); only the output
+# and installed name follow GETH_BINARY_NAME.
+set_target_properties(geth PROPERTIES OUTPUT_NAME ${GETH_BINARY_NAME})
 target_include_directories(geth PRIVATE src)
 # Version is defined once here and passed to the code as a define.
 target_compile_definitions(geth PRIVATE GETH_VERSION="${PROJECT_VERSION}")
@@ -126,8 +134,20 @@ add_custom_target(install-udev
           /etc/udev/rules.d/99-geth-rapl.rules
   COMMAND udevadm control --reload
   COMMAND udevadm trigger --subsystem-match=powercap
-  COMMENT "Installing packaging/99-geth-rapl.rules  (run as root: sudo cmake --build . --target install-udev)"
+  COMMENT "Installing packaging/99-geth-rapl.rules into /etc  (run as root: sudo cmake --build . --target install-udev)"
   VERBATIM)
+
+# ---------------------------------------------------------------------------
+# Install: the binary (named by GETH_BINARY_NAME), the example theme, and the
+# udev rule — the rule lands under share/geth/, NOT /etc. `cmake --install`
+# never touches /etc; putting the rule there is a separate, root-only,
+# explicit `--target install-udev` step the user runs.
+#   cmake --install build-rel --prefix /usr/local
+# ---------------------------------------------------------------------------
+include(GNUInstallDirs)
+install(TARGETS geth RUNTIME DESTINATION bin)
+install(FILES packaging/themes/example.toml DESTINATION share/geth/themes)
+install(FILES packaging/99-geth-rapl.rules DESTINATION share/geth)
 
 # ---------------------------------------------------------------------------
 # Tests (doctest is header-only; fetch the tagged archive and expose the header)
@@ -163,6 +183,8 @@ if(GETH_BUILD_TESTS)
     tests/test_layout.cpp
     tests/test_config.cpp
     tests/test_dashboard.cpp
+    tests/test_theme.cpp
+    tests/test_collector.cpp
     ${GETH_SOURCES})
   target_include_directories(geth_tests PRIVATE src)
   # Absolute path so the test binary can find the fixture files from anywhere.

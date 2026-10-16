@@ -52,11 +52,26 @@ class Collector {
   const SeriesStore& store() const { return _store; }
   const Snapshot& latest() const { return _snap; }
 
+  // The sampling interval in ms, used to size the suspend-gap threshold: a
+  // tick whose CLOCK_BOOTTIME is more than 5 x the interval past the last
+  // one (the machine was asleep) records NaN for every RATE-based series
+  // (CPU usage, counter-based CPU power, disk, network) instead of the
+  // spike the sources would compute over a ~zero dt. Instantaneous readings
+  // (temperatures, clocks, APU PPT, absolute byte counts, GPU usage/power)
+  // are unaffected. Call once at startup; the UI updates it when the user
+  // changes the interval.
+  void set_interval_ms(long long ms) { _interval_ms = ms; }
+  // Test hook: override the gap threshold (default: 5 x the interval).
+  void set_gap_threshold_ms(long long ms) { _gap_threshold_ms = ms; }
+
  private:
   // Derive the series-id set from one sample (GPU bus ids, interface and
   // device names) and initialize the store. Runs once, after warm-up.
   void init_series();
   void record(const Snapshot& s);
+  // Replace the RATE-based fields of a post-suspend tick with NaN (a gap in
+  // the graph), keeping their nullopt-ness when the source reported nothing.
+  void blank_gap_rates(Snapshot& s);
   // Lift an active integrated AMD GPU's PPT into CPU package power when no
   // counter-based source won (see collector.cpp for why).
   void apply_apu_package_power(Snapshot& s);
@@ -75,6 +90,10 @@ class Collector {
   bool _series_inited = false;
   // Timestamp for the next sample() (see set_sample_time); nullopt = Clock::now().
   std::optional<TimePoint> _fixed_time;
+  // Suspend-gap detection (see set_interval_ms).
+  long long _interval_ms = 1000;
+  long long _gap_threshold_ms = -1;  // -1 = 5 x the interval
+  std::optional<std::chrono::time_point<SuspendClock>> _last_suspend;
 };
 
 }  // namespace geth

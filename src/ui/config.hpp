@@ -11,7 +11,9 @@
 //   interval_ms = 1000        # 250 | 500 | 1000 | 2000 | 5000
 //   window = "1m"             # "30s" | "1m" | "2m" | "5m" | "10m"
 //   columns = "auto"          # "auto" | 1..8
-//   title = ""
+//   title = ""                # header title override ("" = the auto title)
+//   theme = "cyberpunk-blue"  # a built-in or a custom themes/<name>.toml
+//   background = "transparent"  # "transparent" | "solid" (paints the theme's bg)
 //
 //   [[panels]]                # one table per panel, in display order
 //   id = "cpu"
@@ -63,7 +65,14 @@ struct Config {
   long long interval_ms = 1000;
   int64_t window_ns = 60LL * 1000000000LL;
   int columns = -1;  // -1 = auto, else 1..8
-  std::string title;
+  std::string title;  // "" = the auto header title
+  // Phase 5: theme name (built-in or a custom themes/<name>.toml); validity
+  // is checked at resolution time, not here.
+  std::string theme = "cyberpunk-blue";
+  // "transparent" (default: no background color is ever painted) or "solid"
+  // (the theme's bg color is painted across the whole screen — the only
+  // sanctioned background path).
+  std::string background = "transparent";
 
   std::vector<PanelEntry> panels;  // file order
   std::map<std::string, GpuEntry> gpus;  // PCI bus id -> override

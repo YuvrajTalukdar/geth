@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -29,9 +30,11 @@
 #include "ui/app.hpp"
 #include "ui/layout.hpp"
 #include "ui/panel_spec.hpp"
+#include "ui/theme.hpp"
 #include "util/alloc_count.hpp"
 #include "util/format.hpp"
 #include "util/parse.hpp"
+#include "util/stop.hpp"
 
 using namespace geth;
 
@@ -39,9 +42,8 @@ namespace {
 
 constexpr const char* kFullName = "GETH — Geth Engine for Tracking Hardware";
 
-std::atomic<bool> g_stop{false};
 void on_signal(int) {
-  g_stop = true;  // async-signal-safe: a plain atomic store
+  util::g_stop = true;  // async-signal-safe: a plain atomic store
 }
 
 struct Options {
@@ -66,6 +68,8 @@ struct Options {
   bool layout_report = false;  // --layout-report COLSxROWS
   std::string layout_size;    // "COLSxROWS" for --layout-report
   bool perf = false;          // --perf: relayout + layout-cache benchmarks
+  std::string theme;          // --theme NAME ("" = the config's [general] theme)
+  bool list_themes = false;   // --list-themes
 };
 
 void print_help() {
@@ -93,6 +97,10 @@ void print_help() {
       "  --color <mode>      truecolor | 256 | 16 (default: auto-detect)\n"
       "  --config <path>     Path to the config file (default: $XDG_CONFIG_HOME/\n"
       "                      geth/config.toml, then ~/.config/geth/config.toml)\n"
+      "  --theme <name>      Theme (built-in or custom file; see --list-themes;\n"
+      "                      default: the config's [general] theme)\n"
+      "  --list-themes       List the selectable themes (built-in + custom) and\n"
+      "                      mark the active one; does not touch the hardware\n"
       "  --no-save           Never write the config file (read-only)\n"
       "  --script <events>   --render-frame only: replay a comma-separated list\n"
       "                      of synthetic events (keys, enter, space, tab,\n"
@@ -167,6 +175,12 @@ int parse_args(int argc, char** argv, Options& o) {
       const char* v = need_value("--config");
       if (!v) return -1;
       o.config_path = v;
+    } else if (a == "--theme") {
+      const char* v = need_value("--theme");
+      if (!v) return -1;
+      o.theme = v;
+    } else if (a == "--list-themes") {
+      o.list_themes = true;
     } else if (a == "--no-save") {
       o.no_save = true;
     } else if (a == "--script") {
@@ -204,7 +218,7 @@ void sleep_interruptible(double seconds) {
   struct timespec ts;
   ts.tv_sec = static_cast<time_t>(ns / 1000000000LL);
   ts.tv_nsec = ns % 1000000000LL;
-  while (!g_stop && nanosleep(&ts, &ts) == -1 && errno == EINTR) {
+  while (!util::g_stop && nanosleep(&ts, &ts) == -1 && errno == EINTR) {
     // Interrupted: the kernel left the remaining time in ts; loop unless a
     // signal we care about arrived (g_stop).
   }
@@ -343,6 +357,7 @@ std::string json_escape(std::string_view s) {
 }
 
 std::string jnum(double v) {
+  if (!std::isfinite(v)) return "null";  // a clock-jump gap blanks rates to NaN
   char buf[40];
   std::snprintf(buf, sizeof(buf), "%.2f", v);
   return buf;
@@ -707,12 +722,37 @@ int run_perf(const ui::Hardware& hw_in, const Options& opts) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  ui::frame_mark_process_start();  // the startup-time clock starts here
   Options opts;
   if (parse_args(argc, argv, opts) != 0) return 2;
 
   if (opts.json && opts.probe) {
     std::fprintf(stderr, "geth: --probe and --json are mutually exclusive\n");
     return 2;
+  }
+
+  // SIGINT/SIGTERM can arrive during the (possibly long) probe phase; install
+  // the stop flag before any hardware is touched. (In UI mode FTXUI adds its
+  // own handlers — and the full terminal restore — once the loop starts.)
+  std::signal(SIGINT, on_signal);
+  std::signal(SIGTERM, on_signal);
+
+  if (opts.list_themes) {
+    // Read-only: the config (for the active theme) and the themes directory.
+    // No collector, no hardware.
+    const ui::Config cfg = ui::Config::load(
+        opts.config_path.empty() ? ui::Config::default_path() : opts.config_path,
+        /*no_save=*/true);
+    const std::string active = opts.theme.empty() ? cfg.theme : opts.theme;
+    std::vector<std::string> warn;
+    const auto themes = ui::all_themes(&warn);
+    for (const auto& w : warn) std::fprintf(stderr, "geth: theme: %s\n", w.c_str());
+    std::printf("themes (cycle with T in the UI):\n");
+    for (const auto& [name, th] : themes) {
+      (void)th;
+      std::printf("  %s%s\n", name.c_str(), name == active ? "  <-- active" : "");
+    }
+    return 0;
   }
 
   Collector collector;
@@ -746,9 +786,9 @@ int main(int argc, char** argv) {
                  kFullName);
     return 1;
   }
-
-  std::signal(SIGINT, on_signal);
-  std::signal(SIGTERM, on_signal);
+  if (util::g_stop.load()) return 1;  // signalled during the probe
+  // Gap detection (Part C) compares the time between samples against 5x this.
+  collector.set_interval_ms(opts.interval_ms);
 
   // Discover the hardware once (from the warm-up sample) and hand it to the
   // UI. The probe_all(warm_up=true) above already took a reference sample, so
@@ -786,6 +826,7 @@ int main(int argc, char** argv) {
     u.config_path = opts.config_path;
     u.no_save = opts.no_save;
     u.script = opts.script;
+    u.theme = opts.theme;
     return ui::run_render_frame(collector, hw, W, H, opts.warmup, u);
   }
 
@@ -799,11 +840,12 @@ int main(int argc, char** argv) {
     u.columns = opts.columns;
     u.config_path = opts.config_path;
     u.no_save = opts.no_save;
+    u.theme = opts.theme;
     return ui::run_ui(collector, hw, u);
   }
 
   unsigned long long done = 0;
-  while (!g_stop && (opts.count == 0 || done < opts.count)) {
+  while (!util::g_stop && (opts.count == 0 || done < opts.count)) {
     // A reference, not a copy: sample() fills the Collector's reused Snapshot
     // in place, so copying it here would allocate (strings/vectors) every tick.
     const Snapshot& snap = collector.sample();
@@ -814,7 +856,7 @@ int main(int argc, char** argv) {
       print_dump(snap);
     }
     ++done;
-    if (g_stop || (opts.count != 0 && done >= opts.count)) break;
+    if (util::g_stop || (opts.count != 0 && done >= opts.count)) break;
     if (opts.count == 0 || done < opts.count)
       sleep_interruptible(static_cast<double>(opts.interval_ms) / 1000.0);
   }

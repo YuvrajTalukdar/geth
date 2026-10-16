@@ -33,6 +33,8 @@ struct UiOptions {
   std::string config_path;  // --config PATH ("" = the XDG default location)
   bool no_save = false;     // --no-save: the config file is read-only
   std::string script;       // --render-frame --script: comma-separated events
+  // Phase 5:
+  std::string theme;  // --theme NAME ("" = the config's [general] theme)
 };
 
 // Validate `opts.color_mode` and resolve the effective color mode.
@@ -54,9 +56,15 @@ struct MgrRow {
 // change at runtime is saved atomically with a 2 s "saved" toast.
 class Dashboard : public ftxui::ComponentBase {
  public:
-  Dashboard(Collector& collector, Hardware hw, Config cfg, const Theme& theme,
-            ColorMode mode, long long interval_ms, unsigned long long count,
-            int window_idx, int columns, FrameStats& stats);
+  // `theme_cycle` (name, theme) is the full selectable list (built-ins +
+  // custom files) in `T` cycle order; `theme_idx` the active one. The
+  // Dashboard owns the copies (a borrowed theme would dangle after the
+  // caller's scope ends).
+  Dashboard(Collector& collector, Hardware hw, Config cfg,
+            std::vector<std::pair<std::string, Theme>> theme_cycle,
+            int theme_idx, ColorMode mode, long long interval_ms,
+            unsigned long long count, int window_idx, int columns,
+            FrameStats& stats);
 
   // The terminal size before the first resize event (--render-frame
   // --script and the tests): OnEvent needs it to clamp the scroll and map a
@@ -85,6 +93,10 @@ class Dashboard : public ftxui::ComponentBase {
   const std::string& toast() const { return _toast; }
   bool panel_visible(const std::string& id) const;
   int page_index(const std::string& id) const;  // -1 when not on the page
+  // Phase 5: the active theme's name (T cycles it, each cycle saves it).
+  std::string theme_name() const;
+  // A startup warning shown as a toast (e.g. a broken custom-theme file).
+  void note_warning(const std::string& msg);
 
   bool OnEvent(ftxui::Event event) override;
   ftxui::Element OnRender() override;
@@ -112,12 +124,21 @@ class Dashboard : public ftxui::ComponentBase {
   void cycle_interval(int dir);
   void cycle_window();
   void cycle_columns();
+  void cycle_theme();
+
+  // Rebuilds the page from _hw (the GPU overrides are already applied in it)
+  // and _cfg, keeping the manager's order; run after a global GPU rename or
+  // a reset, so every GPU-derived title/legend follows the new name.
+  void rebuild_page();
 
   // The config file.
   void save_now();
   void toast(const std::string& msg);
   int count_visible() const;
   std::string default_title(const std::string& id) const;
+
+  // The active theme (the `T` cycle's current entry).
+  const Theme& theme() const;
 
   // The manager overlay box at the current terminal size — the SAME math as
   // OverlayBox::make(W, H, 60, min(H-4, 30), 2) in frame.cpp, so a mouse
@@ -130,7 +151,15 @@ class Dashboard : public ftxui::ComponentBase {
   Collector& _collector;
   Hardware _hw;  // owned: the [gpus."..."] overrides are applied here
   Config _cfg;   // owned: the file the UI reads and (unless --no-save) saves
-  const Theme& _theme;
+  std::vector<std::pair<std::string, Theme>> _theme_cycle;  // Phase 5: T cycles
+  int _theme_idx = 0;
+  // The detected GPU identity BEFORE the overrides are applied — the target
+  // a rename-clear or a reset restores to. Keyed by PCI bus id.
+  struct GpuOrig {
+    std::string name;
+    bool integrated = false;
+  };
+  std::map<std::string, GpuOrig> _gpu_orig;
   ColorMode _mode;
   std::atomic<long long> _interval_ms;
   unsigned long long _count;

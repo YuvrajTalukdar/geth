@@ -15,6 +15,8 @@
 #include "ftxui/component/screen_interactive.hpp"
 
 #include "util/alloc_count.hpp"
+#include "util/stop.hpp"
+#include "util/terminal.hpp"
 
 namespace geth::ui {
 
@@ -73,13 +75,17 @@ Effective effective_settings(const UiOptions& opts, const Config& cfg) {
 // ---------------------------------------------------------------------------
 
 Dashboard::Dashboard(Collector& collector, Hardware hw, Config cfg,
-                     const Theme& theme, ColorMode mode, long long interval_ms,
+                     std::vector<std::pair<std::string, Theme>> theme_cycle,
+                     int theme_idx, ColorMode mode, long long interval_ms,
                      unsigned long long count, int window_idx, int columns,
                      FrameStats& stats)
     : _collector(collector),
       _hw(std::move(hw)),
       _cfg(std::move(cfg)),
-      _theme(theme),
+      _theme_cycle(std::move(theme_cycle)),
+      _theme_idx(_theme_cycle.empty()
+                     ? 0
+                     : std::clamp(theme_idx, 0, (int)_theme_cycle.size() - 1)),
       _mode(mode),
       _interval_ms(interval_ms),
       _count(count),
@@ -87,26 +93,65 @@ Dashboard::Dashboard(Collector& collector, Hardware hw, Config cfg,
   _window_idx = std::clamp(window_idx, 0, kNumWindows - 1);
   _columns = (columns > 0) ? columns : -1;
 
-  // The default page (the hardware that is PRESENT) is the reference for the
-  // default titles and the "new hardware" insertions.
+  // The detected GPU identity BEFORE the overrides are applied: a rename
+  // cleared in the manager (or a reset) restores these.
+  for (const auto& g : _hw.gpus)
+    _gpu_orig[g.bus_id] = GpuOrig{g.name, g.is_integrated};
+  // The [gpus."..."] overrides (name / integrated) land in _hw; every
+  // GPU-derived title flows from it.
+  apply_gpu_overrides(_hw, _cfg);
+
+  // The manager's order: the present panels (default page order), then the
+  // absent-hardware entries (file order).
   const std::vector<PanelSpec> default_page = build_default_page(_hw);
-  for (const auto& p : default_page) _default_titles[p.id] = p.title;
+  _order.clear();
+  _order.reserve(default_page.size() + _cfg.panels.size());
+  for (const auto& p : default_page) _order.push_back(p.id);
+  std::set<std::string> present;
+  for (const auto& p : default_page) present.insert(p.id);
+  for (const auto& e : _cfg.panels)
+    if (!present.count(e.id)) _order.push_back(e.id);
 
   // The merged page: the config's order/settings on the defaults, new
   // hardware inserted VISIBLE at its default position, and panels whose
   // hardware is absent dropped from the page (they stay in the file and show
   // up in the manager as "(not present)").
-  _page = merge_page(default_page, _cfg);
-  _order.clear();
-  _order.reserve(_page.size() + _cfg.panels.size());
-  for (const auto& p : _page) _order.push_back(p.id);
-  std::set<std::string> present;
-  for (const auto& p : _page) present.insert(p.id);
-  for (const auto& e : _cfg.panels)
-    if (!present.count(e.id)) _order.push_back(e.id);
+  rebuild_page();
 
   _cache.page = &_page;
   if (_columns > 0) _cache.prefs.columns = _columns;
+}
+
+const Theme& Dashboard::theme() const {
+  static const Theme kFallback = Theme::cyberpunk_blue();
+  return _theme_cycle.empty() ? kFallback : _theme_cycle[_theme_idx].second;
+}
+
+std::string Dashboard::theme_name() const {
+  if (_theme_cycle.empty()) return "cyberpunk-blue";
+  return _theme_cycle[_theme_idx].first;
+}
+
+void Dashboard::note_warning(const std::string& msg) {
+  _toast = msg;
+  _toast_until = Clock::now() + std::chrono::seconds(5);
+}
+
+void Dashboard::rebuild_page() {
+  const std::vector<PanelSpec> def = build_default_page(_hw);
+  for (const auto& p : def) _default_titles[p.id] = p.title;
+  std::vector<PanelSpec> page = merge_page(def, _cfg);
+  // Keep the manager's order (_order): merge_page returns the FILE's order,
+  // which equals _order only while every change has been saved (no-save
+  // sessions keep _order in memory).
+  std::map<std::string, PanelSpec> by_id;
+  for (auto& p : page) by_id[p.id] = std::move(p);
+  page.clear();
+  for (const auto& id : _order)
+    if (auto it = by_id.find(id); it != by_id.end())
+      page.push_back(std::move(it->second));
+  _page = std::move(page);
+  _cache.invalidate();
 }
 
 bool Dashboard::OnEvent(ftxui::Event event) {
@@ -205,6 +250,7 @@ bool Dashboard::OnEvent(ftxui::Event event) {
     return (cycle_interval(-1), true);
   if (event == ftxui::Event::Character('t')) return (cycle_window(), true);
   if (event == ftxui::Event::Character('c')) return (cycle_columns(), true);
+  if (event == ftxui::Event::Character('T')) return (cycle_theme(), true);
 
   // Scrolling (no-ops unless the page overflows).
   auto line_scroll = [&](int dir) {
@@ -259,6 +305,8 @@ ftxui::Element Dashboard::OnRender() {
   chrome.config_warning = _cfg.loaded ? "" : _cfg.error;
   chrome.toast = _toast;
   chrome.toast_until = _toast_until;
+  chrome.title_override = _cfg.title;
+  chrome.solid_bg = (_cfg.background == "solid");
 
   ManagerOverlay mg;
   bool show_manager = false;
@@ -307,6 +355,7 @@ ftxui::Element Dashboard::OnRender() {
         {"- / _", "slower interval"},
         {"t", "cycle the graph window (30 s \xE2\x80\xA6 10 m)"},
         {"c", "cycle the columns (auto, 1 \xE2\x80\xA6 8)"},
+        {"T", "cycle the theme (saves)"},
         {"\xE2\x86\x91 / \xE2\x86\x93 \xC2\xB7 j / k", "scroll one row"},
         {"PgUp / PgDn", "scroll one page"},
         {"Home / End", "top / bottom"},
@@ -314,7 +363,7 @@ ftxui::Element Dashboard::OnRender() {
   }
 
   auto el = build_frame_element(_hw, _page, _collector.store(),
-                                _collector.latest(), frozen, _state, _theme,
+                                _collector.latest(), frozen, _state, theme(),
                                 _mode, _paused, _interval_ms.load(), _cache,
                                 _top_row, kWindowsNs[_window_idx], chrome,
                                 _focus, show_manager ? &mg : nullptr,
@@ -432,6 +481,7 @@ void Dashboard::cycle_interval(int dir) {
     }
   }
   _interval_ms.store(kIntervalsMs[new_idx]);
+  _collector.set_interval_ms(kIntervalsMs[new_idx]);  // sizes the gap threshold
   _dirty = true;
   save_now();
 }
@@ -452,6 +502,16 @@ void Dashboard::cycle_columns() {
   else
     _cache.prefs.columns = _columns;
   _cache.invalidate();
+  _dirty = true;
+  save_now();
+}
+
+void Dashboard::cycle_theme() {
+  // T cycles the selectable themes (built-ins + custom files) and saves the
+  // new choice; with a single theme it just persists the (same) choice.
+  if (_theme_cycle.empty()) return;
+  if (_theme_cycle.size() > 1)
+    _theme_idx = (_theme_idx + 1) % (int)_theme_cycle.size();
   _dirty = true;
   save_now();
 }
@@ -737,9 +797,44 @@ void Dashboard::commit_rename() {
   std::string label = _mg_rename_buf;
   while (!label.empty() && label.back() == ' ') label.pop_back();
   if (r.present) {
-    if (i < (int)_page.size())
-      _page[i].title = label.empty() ? default_title(r.id) : label;
-    _cache.invalidate();
+    // A GPU panel (usage or memory) renames the GPU GLOBALLY: the name lands
+    // in _hw (every GPU-derived title, the temps/power legends, the compact
+    // titles and the auto header title flow from it) and is persisted as
+    // [gpus."bus"].name. A per-panel `title` set separately still wins for
+    // its own panel (merge_page re-applies it on top).
+    std::string bus, suffix;
+    if (r.id.rfind("gpu.", 0) == 0) {
+      const std::string rest = r.id.substr(4);
+      const auto dot = rest.rfind('.');
+      if (dot != std::string::npos) {
+        bus = rest.substr(0, dot);
+        suffix = rest.substr(dot + 1);
+      }
+    }
+    int gi = -1;
+    if (suffix == "usage" || suffix == "vram")
+      for (int k = 0; k < (int)_hw.gpus.size(); ++k)
+        if (_hw.gpus[k].bus_id == bus) gi = k;
+    if (gi >= 0) {
+      auto& g = _hw.gpus[gi];
+      if (label.empty()) {
+        // Clear the rename: restore the detected name.
+        if (const auto it = _gpu_orig.find(g.bus_id); it != _gpu_orig.end())
+          g.name = it->second.name;
+        g.renamed = false;
+        if (auto it = _cfg.gpus.find(g.bus_id); it != _cfg.gpus.end())
+          it->second.name.clear();
+      } else {
+        g.name = label;
+        g.renamed = true;
+        _cfg.gpus[g.bus_id].name = label;
+      }
+      rebuild_page();  // every GPU title/legend follows the new name
+    } else {
+      if (i < (int)_page.size())
+        _page[i].title = label.empty() ? default_title(r.id) : label;
+      _cache.invalidate();
+    }
   } else {
     for (auto& e : _cfg.panels)
       if (e.id == r.id) {
@@ -753,6 +848,18 @@ void Dashboard::commit_rename() {
 }
 
 void Dashboard::do_reset() {
+  // Reset EVERYTHING: the panel settings AND the per-GPU overrides (a rename,
+  // an integrated override) — the page returns to the detected hardware.
+  for (auto& [bus, ge] : _cfg.gpus) {
+    ge.name.clear();
+    ge.integrated.reset();
+  }
+  for (auto& g : _hw.gpus)
+    if (const auto it = _gpu_orig.find(g.bus_id); it != _gpu_orig.end()) {
+      g.name = it->second.name;
+      g.is_integrated = it->second.integrated;
+      g.renamed = false;
+    }
   _page = build_default_page(_hw);
   for (auto& e : _cfg.panels) {
     e.visible = true;
@@ -777,13 +884,15 @@ void Dashboard::do_reset() {
 // -- The config file -----------------------------------------------------------
 
 void Dashboard::save_now() {
-  // --no-save: the file is read-only (no write, no toast). An unparseable
-  // file is NEVER overwritten.
-  if (_cfg.no_save || !_cfg.loaded) return;
+  // The in-memory config is ALWAYS synced to the current runtime state, so
+  // config() is a faithful representation even under --no-save (where only
+  // the file write is suppressed).
   if (valid_interval_ms(_interval_ms.load()))
     _cfg.interval_ms = _interval_ms.load();
   _cfg.window_ns = kWindowsNs[_window_idx];
   _cfg.columns = _columns;
+  // The active theme (always a known name: it is an entry of _theme_cycle).
+  _cfg.theme = theme_name();
   _cfg.sync_panels(_page, _order);
   // A panel at its default title writes an EMPTY title (the config's "the
   // default").
@@ -795,6 +904,9 @@ void Dashboard::save_now() {
         break;
       }
   }
+  // --no-save: the file is read-only (no write, no toast). An unparseable
+  // file is NEVER overwritten.
+  if (_cfg.no_save || !_cfg.loaded) return;
   if (_cfg.save()) {
     _dirty = false;
     toast("saved");
@@ -893,24 +1005,56 @@ bool parse_script_token(const std::string& tok, ftxui::Event& out) {
 // Entry points
 // ---------------------------------------------------------------------------
 
+// Phase 5: the active theme (CLI > config > first selectable) and the full
+// selectable list (built-ins + custom files) for the `T` cycle. An unknown
+// name is a warning + fallback, never an error.
+static std::vector<std::pair<std::string, Theme>> resolve_themes(
+    const UiOptions& opts, const Config& cfg, int& idx,
+    std::vector<std::string>& warnings) {
+  std::vector<std::pair<std::string, Theme>> themes = all_themes(&warnings);
+  if (themes.empty())
+    themes.push_back({"cyberpunk-blue", Theme::cyberpunk_blue()});
+  const std::string want = !opts.theme.empty() ? opts.theme : cfg.theme;
+  idx = 0;
+  for (int i = 0; i < (int)themes.size(); ++i)
+    if (themes[i].first == want) {
+      idx = i;
+      return themes;
+    }
+  warnings.push_back("theme '" + want + "' is unknown — using " +
+                     themes[0].first);
+  return themes;
+}
+
 int run_ui(Collector& collector, const Hardware& hw_in, const UiOptions& opts) {
   ColorMode mode;
   if (!resolve_color_mode(opts, mode)) return 2;
-  const Theme theme = Theme::cyberpunk_blue();
 
   const std::string path =
       opts.config_path.empty() ? Config::default_path() : opts.config_path;
   Config cfg = Config::load(path, opts.no_save);
   const Effective eff = effective_settings(opts, cfg);
 
-  Hardware hw = hw_in;
-  apply_gpu_overrides(hw, cfg);
+  std::vector<std::string> twarn;
+  int theme_idx = 0;
+  auto themes = resolve_themes(opts, cfg, theme_idx, twarn);
+  for (const auto& w : twarn)
+    std::fprintf(stderr, "geth: theme: %s\n", w.c_str());
 
-  ftxui::ScreenInteractive screen = ftxui::ScreenInteractive::Fullscreen();
   FrameStats stats;
   auto component = ftxui::Make<Dashboard>(
-      collector, std::move(hw), std::move(cfg), theme, mode, eff.interval_ms,
-      opts.count, eff.window_idx, eff.columns, stats);
+      collector, hw_in, std::move(cfg), std::move(themes), theme_idx, mode,
+      eff.interval_ms, opts.count, eff.window_idx, eff.columns, stats);
+  if (!twarn.empty()) component->note_warning("theme: " + twarn.front());
+  collector.set_interval_ms(eff.interval_ms);
+
+  // A signal during the probe/setup phase: skip the UI and exit cleanly.
+  if (util::g_stop.load()) return 0;
+
+  ftxui::ScreenInteractive screen = ftxui::ScreenInteractive::Fullscreen();
+  // SIGHUP is the one signal FTXUI does not handle; from here on (the termios
+  // is still the user's normal one) it restores the terminal and exits.
+  util::install_sighup_restore();
 
   // The small timer thread: posts Event::Custom at each tick and nothing
   // else. All sampling and rendering happen on the UI thread. It reads the
@@ -928,6 +1072,7 @@ int run_ui(Collector& collector, const Hardware& hw_in, const UiOptions& opts) {
       });
 
   screen.Loop(component);  // blocks until q / Esc / Ctrl-C (or count ticks)
+  util::uninstall_sighup_restore();
 
   quit = true;
   timer.join();
@@ -944,15 +1089,17 @@ int run_render_frame(Collector& collector, const Hardware& hw_in, int W, int H,
     std::fprintf(stderr, "geth: --render-frame size must be at least 1x1\n");
     return 2;
   }
-  const Theme theme = Theme::cyberpunk_blue();
 
   const std::string path =
       opts.config_path.empty() ? Config::default_path() : opts.config_path;
   Config cfg = Config::load(path, opts.no_save);
   const Effective eff = effective_settings(opts, cfg);
 
-  Hardware hw = hw_in;
-  apply_gpu_overrides(hw, cfg);
+  std::vector<std::string> twarn;
+  int theme_idx = 0;
+  auto themes = resolve_themes(opts, cfg, theme_idx, twarn);
+  for (const auto& w : twarn)
+    std::fprintf(stderr, "geth: theme: %s\n", w.c_str());
 
   // Collect warmup samples. Demo mode sleeps nowhere: instead each sample is
   // stamped on a VIRTUAL clock spaced by the effective interval, so 60
@@ -978,10 +1125,12 @@ int run_render_frame(Collector& collector, const Hardware& hw_in, int W, int H,
   FrameStats stats;
   ftxui::Screen screen(W, H);
   screen.Clear();
-  auto dash = ftxui::Make<Dashboard>(collector, std::move(hw), std::move(cfg),
-                                     theme, mode, eff.interval_ms,
-                                     /*count=*/0, eff.window_idx, eff.columns,
-                                     stats);
+  auto dash = ftxui::Make<Dashboard>(collector, hw_in, std::move(cfg),
+                                     std::move(themes), theme_idx, mode,
+                                     eff.interval_ms, /*count=*/0,
+                                     eff.window_idx, eff.columns, stats);
+  if (!twarn.empty()) dash->note_warning("theme: " + twarn.front());
+  collector.set_interval_ms(eff.interval_ms);
   dash->set_size(W, H);
 
   // --script: replay synthetic events against the live Dashboard, then render

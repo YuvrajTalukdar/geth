@@ -1,5 +1,5 @@
 # GETH configuration
-# Written by geth v0.4.0.
+# Written by geth v1.0.0.
 # Edit freely; unknown keys are ignored with a warning on load.
 
 [general]
@@ -7,6 +7,8 @@ interval_ms = 1000
 window = "1m"
 columns = "auto"
 title = ""
+theme = "cyberpunk-blue"
+background = "transparent"
 
 [[panels]]
 id = "cpu"
@@ -16,7 +18,7 @@ title = ""
 [[panels]]
 id = "gpu.0000:01:00.0.usage"
 visible = true
-title = "RTX 3050"
+title = ""
 
 [[panels]]
 id = "gpu.0000:07:00.0.usage"
@@ -58,4 +60,10 @@ title = ""
 id = "disk"
 visible = true
 title = ""
+
+# A GPU rename is GLOBAL: it applies to every panel and legend for that bus
+# (both usage and vram panel titles, the temps/power series labels, and the
+# header). A per-panel `title` above still overrides it for that one panel.
+[gpus."0000:01:00.0"]
+name = "RTX 3050"
 

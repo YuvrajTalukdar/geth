@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <ctime>
 #include <optional>
 #include <string>
 #include <vector>
@@ -16,6 +17,24 @@ namespace geth {
 // time changes, which makes it the right base for rate calculations.
 using Clock = std::chrono::steady_clock;
 using TimePoint = Clock::time_point;
+
+// CLOCK_BOOTTIME: like steady_clock, but it KEEPS COUNTING while the system
+// is suspended (CLOCK_MONOTONIC stops). That makes it the only way to notice
+// a wake-from-sleep from inside the process — the Collector uses it to spot
+// the gap after laptop sleep and record NaN instead of a rate spike.
+struct SuspendClock {
+  using duration = std::chrono::nanoseconds;
+  using rep = duration::rep;
+  using period = duration::period;
+  using time_point = std::chrono::time_point<SuspendClock, duration>;
+  static constexpr bool is_steady = true;
+  static time_point now() noexcept {
+    struct timespec ts;
+    clock_gettime(CLOCK_BOOTTIME, &ts);
+    return time_point(duration(std::chrono::seconds(ts.tv_sec) +
+                               std::chrono::nanoseconds(ts.tv_nsec)));
+  }
+};
 
 // Where the CPU package power figure came from. Counter-based sources are
 // probed in this order (see sensor_tables.hpp); kApuPpt is injected by the

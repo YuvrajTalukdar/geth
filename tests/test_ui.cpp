@@ -537,7 +537,8 @@ TEST_CASE("fill cells are the derived fill of their OWN series color (all palett
     const ftxui::Color line_c =
         ui::to_ftxui(theme.series[i], ui::ColorMode::TrueColor);
     const ftxui::Color fill_c =
-        ui::to_ftxui(ui::derive_fill(theme.series[i]), ui::ColorMode::TrueColor);
+        ui::to_ftxui(ui::derive_fill(theme.series[i], theme.fill_mix),
+                     ui::ColorMode::TrueColor);
     CHECK(line_c != fill_c);  // the theme actually derives a distinct fill
     bool saw_line = false, saw_fill = false;
     for (int ccol = 0; ccol < Wg; ++ccol)
@@ -565,7 +566,8 @@ TEST_CASE("256-color fills stay dark shades of their own series hue") {
   const ui::Theme theme = ui::Theme::cyberpunk_blue();
   const int border_idx = ui::nearest256(theme.border);
   for (int i = 0; i < 6; ++i) {
-    const int idx = fg256(ui::fill_color(theme.series[i], ui::ColorMode::Color256));
+    const int idx =
+        fg256(ui::fill_color(theme.series[i], ui::ColorMode::Color256, theme.fill_mix));
     REQUIRE(idx >= 0);
     const double hs = ui::hue_deg(theme.series[i]);
     const double hp = ui::hue_deg(pal256_rgb(idx));
@@ -758,6 +760,61 @@ TEST_CASE("byte-rate axis: quarter of the ceiling has no .5 label") {
     for (double f : {0.25, 0.5, 0.75, 1.0})
       CHECK(format::compact_rate(m * f).find('.') == std::string::npos);
   CHECK_EQ(ui::panel_y_max(p, 1.0 * KiB, st, Clock::now()), 64.0 * KiB);
+}
+
+TEST_CASE("solid mode paints the theme background; transparent never does "
+          "(every built-in theme, all three color modes)") {
+  UiFixture fx;
+  const ui::ColorMode modes[] = {ui::ColorMode::TrueColor, ui::ColorMode::Color256,
+                                 ui::ColorMode::Color16};
+  for (const auto& b : ui::builtin_themes()) {
+    for (auto mode : modes) {
+      // Solid: the single sanctioned background path must actually paint.
+      {
+        ui::FrameState st;
+        ui::LayoutCache cache = cache_for(fx.page);
+        ftxui::Screen screen(160, 48);
+        screen.Clear();
+        ui::FrameChrome ch;
+        ch.solid_bg = true;
+        ui::render_frame(screen, fx.hw, fx.page, fx.c.store(), fx.c.latest(), nullptr,
+                         st, b.theme, mode, /*paused=*/false, 1000, cache, 0, kWinNs,
+                         ch);
+        CHECK_GT(count_background_codes(screen.ToString()), 0);
+      }
+      // Transparent (the default): no background is ever painted.
+      {
+        ui::FrameState st;
+        ui::LayoutCache cache = cache_for(fx.page);
+        ftxui::Screen screen(160, 48);
+        screen.Clear();
+        ui::render_frame(screen, fx.hw, fx.page, fx.c.store(), fx.c.latest(), nullptr,
+                         st, b.theme, mode, /*paused=*/false, 1000, cache, 0, kWinNs);
+        CHECK_EQ(count_background_codes(screen.ToString()), 0);
+      }
+    }
+  }
+}
+
+TEST_CASE("header: [general].title overrides the auto title; without it, the auto title") {
+  UiFixture fx;
+  const std::string custom = "MY CUSTOM HEADER TITLE";
+  for (bool use_override : {true, false}) {
+    ui::FrameState st;
+    ui::LayoutCache cache = cache_for(fx.page);
+    ftxui::Screen screen(160, 48);
+    screen.Clear();
+    ui::FrameChrome ch;
+    if (use_override) ch.title_override = custom;
+    ui::render_frame(screen, fx.hw, fx.page, fx.c.store(), fx.c.latest(), nullptr, st,
+                     ui::Theme::cyberpunk_blue(), ui::ColorMode::TrueColor,
+                     /*paused=*/false, 1000, cache, 0, kWinNs, ch);
+    const std::string out = screen.ToString();
+    if (use_override)
+      CHECK(out.find(custom) != std::string::npos);
+    else
+      CHECK(out.find(custom) == std::string::npos);
+  }
 }
 
 }  // TEST_SUITE

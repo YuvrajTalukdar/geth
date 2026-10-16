@@ -117,6 +117,8 @@ TEST_CASE("round-trip: serialize -> load preserves every field") {
   c.window_ns = 120000000000LL;  // 2m
   c.columns = 3;
   c.title = "My \"GETH\" \\ title";
+  c.theme = "matrix-green";
+  c.background = "solid";
   ui::PanelEntry p1;
   p1.id = "cpu";
   p1.visible = false;
@@ -139,6 +141,8 @@ TEST_CASE("round-trip: serialize -> load preserves every field") {
   CHECK_EQ(r.window_ns, 120000000000LL);
   CHECK_EQ(r.columns, 3);
   CHECK_EQ(r.title, "My \"GETH\" \\ title");
+  CHECK_EQ(r.theme, "matrix-green");
+  CHECK_EQ(r.background, "solid");
   REQUIRE_EQ((int)r.panels.size(), 2);
   CHECK_EQ(r.panels[0].id, "cpu");
   CHECK_FALSE(r.panels[0].visible);

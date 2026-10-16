@@ -1,0 +1,60 @@
+# Maintainer: <you>
+#
+# GETH — Geth Engine for Tracking Hardware
+#
+# Builds from a local git checkout (there is no public release tarball or
+# remote yet). Point _repo at your clone — note the "%20" encodes the space
+# in the default path — and make sure the release tag exists on the commit
+# this PKGBUILD ships with:
+#
+#     git tag v1.0.0 <release-commit>
+#
+# The source is pinned to that tag, so the package is reproducible from the
+# exact commit it was written in (the tag is an external pointer, so the
+# reference is not circular).
+
+pkgname=geth
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="A fast, lightweight terminal system monitor for Linux (C++20, in-process, no subprocesses)"
+arch=(x86_64)
+# TODO: set the real repository URL once a remote exists.
+url="https://example.invalid/geth"
+# TODO: add a LICENSE file to the repo; namcap warns until it is present.
+license=(MIT)
+# FTXUI and toml++ are compiled in / header-only (fetched by CMake at build
+# time); the binary links only the base C/C++ runtime. NVML is dlopened, so
+# it is an optional runtime dependency, not a hard one.
+depends=()
+optdepends=(
+  'nvidia-utils: NVIDIA discrete-GPU support (NVML is dlopened at runtime, never linked)'
+)
+makedepends=(cmake g++ git)
+
+# Local git checkout (file:// transport). Override to your clone path.
+_repo="file:///run/media/yuvrajtalukdar/New%20Volume2/computer/geth"
+source=("$pkgname::git+$_repo#tag=v${pkgver}")
+sha256sums=()
+
+build() {
+  cd "$srcdir/$pkgname"
+  cmake -S . -B build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr
+  cmake --build build -j"$(nproc)"
+}
+
+check() {
+  cd "$srcdir/$pkgname"
+  ctest --test-dir build --output-on-failure
+}
+
+package() {
+  cd "$srcdir/$pkgname"
+  cmake --install build --prefix "$pkgdir"
+  # Package the license if the checkout has one (keeps namcap happy once a
+  # LICENSE file is added).
+  if [[ -f LICENSE ]]; then
+    install -Dm 644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  fi
+}

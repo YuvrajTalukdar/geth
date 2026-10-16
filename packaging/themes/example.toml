@@ -1,0 +1,63 @@
+# GETH custom theme — example
+# ============================
+# Copy this file to your theme directory and rename it (the filename, without
+# ".toml", is the theme name):
+#
+#   cp example.toml ~/.config/geth/themes/solar.toml
+#   # now selectable as `solar` (config [general] theme, --theme, or `T`)
+#
+# Every field is a 24-bit color written as "#RRGGBB" (uppercase or lowercase
+# hex). A field left out (or set to a bad value) falls back to the base
+# theme's value — see `base` below — so a theme can override just a few.
+#
+# Invalid hex values and unknown keys never crash the app: each produces a
+# warning toast (or a `geth: theme: ...` line on stderr) and that field keeps
+# its inherited value.
+
+# --- base -------------------------------------------------------------------
+# Start from an existing theme and override only the fields below. The base
+# may be a built-in (cyberpunk-blue, matrix-green, crimson-red, amber) or
+# another custom theme (enabling layering). Omit this line for a fully
+# explicit theme — then every field below must be present (or defaults are
+# used: the built-in cyberpunk-blue values).
+#
+# Uncomment and edit to inherit, e.g. a warmer take on cyberpunk-blue:
+# base = "cyberpunk-blue"
+
+# --- colors -------------------------------------------------------------------
+# accent      the "live" foreground: current values, selected rows, the title
+# title       panel titles (defaults to accent when omitted)
+# text        body text: labels, numbers, graph legends
+# label_dim   secondary/dim text: units, hidden markers, the footer
+# border      panel borders
+# grid        graph grid lines
+# axis_text   graph axis labels
+# warn        warning toast / config-error foreground
+# bg          the solid-mode screen background (only used when
+#             [general] background = "solid"; the one place GETH may paint a
+#             cell background)
+accent      = "#FF9E42"
+title       = "#FFB000"
+text        = "#FFE3C2"
+label_dim   = "#B3855A"
+border      = "#66400F"
+grid        = "#42300A"
+axis_text   = "#997A3E"
+warn        = "#FF3B5C"
+bg          = "#141008"
+
+# --- fill ---------------------------------------------------------------------
+# fill_mix is in [0, 1]: how much of the series color is kept when the bar
+# "fill" is drawn (1.0 = the series color itself, 0.0 = fully dark). It
+# controls the dimness of the filled area under a graph. Default 0.45.
+fill_mix = 0.45
+
+# --- series 1..6 --------------------------------------------------------------
+# The six graph series colors, in order. Panel A uses series_1, panel B
+# series_2, and so on (wrapping), so two adjacent panels always differ.
+series_1 = "#FF9E42"  # orange
+series_2 = "#39FF88"  # green
+series_3 = "#FF4FD8"  # pink
+series_4 = "#FFD23F"  # amber
+series_5 = "#4DA3FF"  # blue
+series_6 = "#C77DFF"  # violet

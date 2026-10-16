@@ -1,0 +1,5 @@
+     0.0s  start     VmRSS=   6264 kB (   6.1 MiB)
+    60.0s  1min      VmRSS=   7032 kB (   6.9 MiB)
+   180.1s  end-pre-quit  VmRSS=   7308 kB (   7.1 MiB)
+
+wall=180.5s pty_bytes_drained=38295509 exit_status=0

@@ -1,6 +1,7 @@
 #include "ui/frame.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -440,6 +441,8 @@ struct Colors {
   // series from the same device; fills derive from the variant color itself.
   ftxui::Color series_v[6];
   ftxui::Color fill_v[6];
+  // Phase 5: the theme's background, painted only in solid mode.
+  ftxui::Color bg;
 };
 
 Colors build_colors(const Theme& th, ColorMode m) {
@@ -452,13 +455,20 @@ Colors build_colors(const Theme& th, ColorMode m) {
   c.grid = to_ftxui(th.grid, m);
   c.axis_text = to_ftxui(th.axis_text, m);
   c.warn = to_ftxui(th.warn, m);
+  c.bg = to_ftxui(th.bg, m);
+  // In 16-color mode the six series get an INJECTIVE slot assignment (no two
+  // series share a slot); 256/truecolor use the plain nearest color.
+  std::uint8_t slots16[6];
+  if (m == ColorMode::Color16) series16_slots(th.series, slots16);
   for (int i = 0; i < 6; ++i) {
-    c.series[i] = to_ftxui(th.series[i], m);
+    c.series[i] = (m == ColorMode::Color16)
+                      ? ftxui::Color(ftxui::Color::Palette16(slots16[i]))
+                      : to_ftxui(th.series[i], m);
     // fill_color keeps the fill in the series' hue family when the terminal
     // only has 256/16 colors (see theme.cpp).
-    c.fill[i] = fill_color(th.series[i], m);
+    c.fill[i] = fill_color(th.series[i], m, th.fill_mix);
     c.series_v[i] = to_ftxui(mix_white(th.series[i]), m);
-    c.fill_v[i] = fill_color(mix_white(th.series[i]), m);
+    c.fill_v[i] = fill_color(mix_white(th.series[i]), m, th.fill_mix);
   }
   return c;
 }
@@ -940,10 +950,21 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
   const Colors c = build_colors(theme, mode);
   const Snapshot& snap = frozen ? frozen->snap : latest;
 
+  // Phase 5 solid mode: paint the theme's bg across every pixel. This is the
+  // ONLY sanctioned background-color path in GETH — every other draw writes
+  // foregrounds only.
+  auto paint_solid_bg = [&] {
+    if (!chrome.solid_bg) return;
+    for (int y = 0; y < H; ++y)
+      for (int x = 0; x < W; ++x)
+        screen.PixelAt(x, y).background_color = c.bg;
+  };
+
   // Small terminals: never crash, show a centered notice below 40x12.
   if (W < 40 || H < 12) {
     const std::string shown = truncate("GETH — terminal too small (need 40×12)", W);
     put_str(screen, (W - utf8_cols(shown)) / 2, H / 2, shown, c.text);
+    paint_solid_bg();
     return;
   }
 
@@ -1019,11 +1040,17 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
 
   // --- header: <CPU> & <dGPU>  [PAUSED] <interval> <window> <time> --------------
   // Painted AFTER the panels so a row cut off at the top can never bleed into it.
-  std::string htitle = names::short_cpu(hw.cpu_name);
-  for (const auto& g : hw.gpus) {
-    if (!g.is_integrated) {
-      htitle += " & " + names::short_gpu(g.name, false, g.product_name);
-      break;  // primary dGPU only
+  // [general].title (non-empty) replaces the auto title entirely.
+  std::string htitle;
+  if (!chrome.title_override.empty()) {
+    htitle = chrome.title_override;
+  } else {
+    htitle = names::short_cpu(hw.cpu_name);
+    for (const auto& g : hw.gpus) {
+      if (!g.is_integrated) {
+        htitle += " & " + gpu_short_name(g);
+        break;  // primary dGPU only
+      }
     }
   }
   {
@@ -1046,7 +1073,8 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
   // --- footer --------------------------------------------------------------------
   {
     for (int x = 0; x < W; ++x) put_px(screen, x, H - 1, " ", c.label_dim);
-    std::string foot = "q quit \xC2\xB7 space pause \xC2\xB7 t window";
+    // Truncated from the RIGHT on narrow terminals (truncate below).
+    std::string foot = "q quit \xC2\xB7 space pause \xC2\xB7 t window \xC2\xB7 e panels \xC2\xB7 ? help";
     if (lo.scrolling) {
       foot += " \xC2\xB7 \xE2\x86\x91\xE2\x86\x93 scroll";  // "· ↑↓ scroll"
       // Rows out of sight: every row above the current top row (tr — we snap
@@ -1087,6 +1115,10 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
   // --- Phase 4 overlays (last, on top of everything) ---------------------------
   if (manager) draw_manager_overlay(screen, W, H, *manager, c);
   if (help) draw_help_overlay(screen, W, H, *help, c);
+
+  // Solid mode: the background goes down last. Every pixel still shows the
+  // content drawn above — only the (default) cell background is replaced.
+  paint_solid_bg();
 }
 
 namespace {
@@ -1156,8 +1188,24 @@ std::string screen_to_text(const ftxui::Screen& screen) {
   return out;
 }
 
+namespace {
+std::atomic<long long> g_process_start_ns{0};
+}  // namespace
+
+void frame_mark_process_start() {
+  g_process_start_ns.store(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          Clock::now().time_since_epoch())
+          .count());
+}
+
+long long process_start_ns() { return g_process_start_ns.load(); }
+
 void FrameStats::print() const {
   std::printf("geth stats: %llu frames, %llu samples\n", frames, samples);
+  if (first_frame_ms >= 0)
+    std::printf("  first frame   %9.0f ms after process start\n",
+                first_frame_ms);
   std::printf("  render time   mean %9.1f us  max %10.1f us\n", render_us_mean(),
               render_us_max);
   std::printf("  sample time   mean %9.1f us  max %10.1f us\n", sample_us_mean(),

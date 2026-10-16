@@ -2,6 +2,7 @@
 
 #include "util/format.hpp"
 #include "util/names.hpp"
+#include "util/parse.hpp"
 
 namespace geth::ui {
 
@@ -37,10 +38,17 @@ std::vector<std::size_t> gpu_order(const Hardware& hw) {
   return out;
 }
 
-std::string gpu_title(const GpuInfo& g) {
+}  // namespace
+
+// Exported (panel_spec.hpp): the single choke point for every GPU-derived
+// title, legend label and the auto header title.
+std::string gpu_short_name(const GpuInfo& g) {
+  if (g.renamed) return std::string(parse::trim(g.name));
   return names::short_gpu(g.name, g.is_integrated, g.product_name);
 }
 
+namespace {
+std::string gpu_title(const GpuInfo& g) { return gpu_short_name(g); }
 }  // namespace
 
 Hardware hardware_from(const Snapshot& s, const std::string& cpu_name) {
@@ -55,6 +63,7 @@ Hardware hardware_from(const Snapshot& s, const std::string& cpu_name) {
     gi.vendor = g.vendor;
     gi.is_integrated = g.is_integrated;
     if (g.vram_total_bytes) gi.vram_total_bytes = *g.vram_total_bytes;
+    if (g.gtt_total_bytes) gi.gtt_total_bytes = *g.gtt_total_bytes;
     gi.reports_power = !g.is_integrated;
     h.gpus.push_back(std::move(gi));
   }
@@ -155,25 +164,44 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
     // name: "RTX 3050 Laptop · Memory".
     p.title = title + " \xC2\xB7 Memory";
     p.gpu_bus = bus;
-    p.series = {{.id = SeriesId("gpu." + bus + ".vram"), .label = title, .color_index = ci,
-                 .fill = true,
-                 .value_fn = [bus](const Snapshot& s) {
-                   for (const auto& x : s.gpus)
-                     if (x.pci_bus_id == bus) return v_bytes(x.vram_used_bytes);
-                   return std::string("—");
-                 }}};
-    // Integrated GPUs may expose the GTT aperture as a second line. Same
-    // device as the VRAM series, so it keeps the device's base color in its
-    // lighter variant (the hard-coded pink used to collide with the Cezanne
-    // line and made the two legend bars indistinguishable).
-    if (g.is_integrated)
-      p.series.push_back({.id = SeriesId("gpu." + bus + ".gtt"), .label = "GTT",
-                          .color_index = ci, .variant = true,
-                          .value_fn = [bus](const Snapshot& s) {
-                            for (const auto& x : s.gpus)
-                              if (x.pci_bus_id == bus) return v_bytes(x.gtt_used_bytes);
-                            return std::string("—");
-                          }});
+    if (g.is_integrated) {
+      // Integrated: GTT is the primary FILLED series (the aperture the OS
+      // actually uses), and the fixed BIOS VRAM carve-out is a line. Same
+      // device, so the VRAM line keeps the device's base color in its lighter
+      // variant (the hard-coded pink used to collide with the Cezanne line).
+      p.series = {
+          {.id = SeriesId("gpu." + bus + ".gtt"), .label = "GTT", .color_index = ci,
+           .fill = true,
+           .value_fn = [bus](const Snapshot& s) {
+             for (const auto& x : s.gpus)
+               if (x.pci_bus_id == bus) return v_bytes(x.gtt_used_bytes);
+             return std::string("—");
+           }},
+          {.id = SeriesId("gpu." + bus + ".vram"), .label = "VRAM", .color_index = ci,
+           .variant = true,
+           .value_fn = [bus](const Snapshot& s) {
+             for (const auto& x : s.gpus)
+               if (x.pci_bus_id == bus) return v_bytes(x.vram_used_bytes);
+             return std::string("—");
+           }},
+      };
+      // The scale is the {1, 1.5} x 2^k ceiling (nice_bytes_max, in
+      // frame.cpp) of the LARGER of the two totals, so both lines fit.
+      p.y_scale.kind = ScaleSpec::Kind::kAbsolute;
+      p.y_scale.absolute_max =
+          std::max(g.vram_total_bytes, g.gtt_total_bytes);
+    } else {
+      p.series = {{.id = SeriesId("gpu." + bus + ".vram"), .label = title,
+                   .color_index = ci,
+                   .fill = true,
+                   .value_fn = [bus](const Snapshot& s) {
+                     for (const auto& x : s.gpus)
+                       if (x.pci_bus_id == bus) return v_bytes(x.vram_used_bytes);
+                     return std::string("—");
+                   }}};
+      p.y_scale.kind = ScaleSpec::Kind::kAbsolute;
+      p.y_scale.absolute_max = g.vram_total_bytes;
+    }
     p.info_rows = {
         {"Memory Clock",
          [bus](const Snapshot& s) {
@@ -183,8 +211,6 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
          },
          -1},
     };
-    p.y_scale.kind = ScaleSpec::Kind::kAbsolute;
-    p.y_scale.absolute_max = g.vram_total_bytes;
     page.push_back(std::move(p));
   }
 

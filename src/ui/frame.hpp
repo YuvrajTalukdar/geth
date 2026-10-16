@@ -7,9 +7,12 @@
 // express it — the Screen is the same FTXUI pixel model the Canvas would
 // composite into, addressed directly.)
 //
-// Transparency guarantee: the renderer only ever sets `foreground_color` and
-// style bits; `background_color` stays Color::Default (Palette1, which FTXUI
-// prints as SGR 49, never 48). The no-background unit test asserts this.
+// Transparency guarantee: by default the renderer only ever sets
+// `foreground_color` and style bits; `background_color` stays Color::Default
+// (Palette1, which FTXUI prints as SGR 49, never 48). The no-background unit
+// test asserts this. The ONE exception: with `FrameChrome::solid_bg` (config
+// background = "solid") a final pass paints the theme's bg color across every
+// pixel — the only code path in GETH allowed to emit a background color.
 #pragma once
 
 #include <map>
@@ -60,14 +63,30 @@ struct GeometryReport {
 };
 GeometryReport check_geometry(const std::string& text, int want_cols);
 
+// Startup measurement: main() calls frame_mark_process_start() before
+// anything else; the first note_render() (below) measures against it.
+void frame_mark_process_start();
+// The marked start point in steady-clock ns (0 = not marked).
+long long process_start_ns();
+
 // --stats bookkeeping (steady_clock, printed on exit).
 struct FrameStats {
   unsigned long long frames = 0, samples = 0;
   double render_us_total = 0, render_us_max = 0;
   double sample_us_total = 0, sample_us_max = 0;
   long long allocs_total = 0, allocs_max = 0;
+  // Startup time: process start (frame_mark_process_start) to the first full
+  // draw, in ms; -1 when unmeasured.
+  double first_frame_ms = -1;
 
   void note_render(double us, long long allocs) {
+    if (frames == 0) {
+      const long long s0 = process_start_ns();
+      if (s0 > 0)
+        first_frame_ms = std::chrono::duration<double, std::milli>(
+            Clock::now().time_since_epoch() -
+            std::chrono::nanoseconds(s0)).count();
+    }
     ++frames;
     render_us_total += us;
     render_us_max = std::max(render_us_max, us);
@@ -136,12 +155,17 @@ struct LayoutCache {
   }
 };
 
-// App-level frame extras (Phase 4). All optional: empty / -1 / nullptr gives
+// App-level frame extras (Phase 4). All optional: empty / -1 / false gives
 // exactly the plain dashboard of Phases 1-3.
 struct FrameChrome {
   std::string config_warning;  // "line N: msg" — the persistent footer warn
   std::string toast;           // e.g. "saved"; shown while now < toast_until
   TimePoint toast_until{};
+  // Phase 5: [general].title ("" = the auto header title).
+  std::string title_override;
+  // Phase 5: background = "solid" — paint the theme's bg across the whole
+  // screen (the single sanctioned background-color path).
+  bool solid_bg = false;
 };
 
 // The panel-manager overlay (drawn over the live dashboard, which keeps
