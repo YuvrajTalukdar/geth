@@ -107,19 +107,75 @@ double panel_y_max(const PanelSpec& p, double visible_max, FrameState& st,
 // changes — i.e. on a resize — and reuses the stored vectors otherwise, so a
 // frame at an unchanged size allocates nothing for the layout (spec). The app
 // loop owns one and points it at the page; render_frame pulls from it.
+//
+// Phase 4: the layout is computed over the VISIBLE panels only; `visible_idx`
+// maps layout/panel index -> index into *page. Call invalidate() after any
+// page change (a panel hidden/shown/renamed) so the next get() rebuilds.
 struct LayoutCache {
   const std::vector<PanelSpec>* page = nullptr;
   LayoutPrefs prefs;
   Layout layout;
+  std::vector<int> visible_idx;
   int w = -1, h = -1;
+  void invalidate() { w = -1; }
   const Layout& get(int W, int H) {
     if (page && (W != w || H != h)) {
-      layout = compute_layout(W, H, *page, prefs);
+      std::vector<PanelSpec> vis;
+      visible_idx.clear();
+      vis.reserve(page->size());
+      for (std::size_t i = 0; i < page->size(); ++i)
+        if ((*page)[i].visible) {
+          visible_idx.push_back((int)i);
+          vis.push_back((*page)[i]);
+        }
+      layout = compute_layout(W, H, vis, prefs);
       w = W;
       h = H;
     }
     return layout;
   }
+};
+
+// App-level frame extras (Phase 4). All optional: empty / -1 / nullptr gives
+// exactly the plain dashboard of Phases 1-3.
+struct FrameChrome {
+  std::string config_warning;  // "line N: msg" — the persistent footer warn
+  std::string toast;           // e.g. "saved"; shown while now < toast_until
+  TimePoint toast_until{};
+};
+
+// The panel-manager overlay (drawn over the live dashboard, which keeps
+// relaying out behind it — the live preview).
+struct ManagerOverlay {
+  struct Row {
+    std::string label;
+    bool visible = true;
+    bool present = true;  // false: absent hardware, dimmed "(not present)"
+    bool selected = false;
+  };
+  std::vector<Row> rows;
+  int scroll = 0;  // first row index shown
+  // `r`: inline rename of rename_row (the edit buffer, with a block cursor).
+  bool renaming = false;
+  int rename_row = -1;
+  std::string rename_buf;
+  // Enter: the series submenu of the selected panel.
+  bool submenu = false;
+  std::string submenu_title;  // "Series — CPU"
+  struct SubRow {
+    std::string label;
+    bool hidden = false;
+    bool selected = false;
+  };
+  std::vector<SubRow> sub_rows;
+  // `d`: pending "reset panels to defaults? (y/n)".
+  bool confirm_reset = false;
+};
+
+// The `?` help overlay.
+struct HelpOverlay {
+  std::string title = "Keys";
+  std::vector<std::pair<std::string, std::string>> lines;  // (keys, meaning)
 };
 
 // A frozen copy of the display window, taken on pause so the display freezes
@@ -151,12 +207,19 @@ FrozenFrame capture_frozen(const std::vector<PanelSpec>& page,
 // out by `cache` (recomputed only on a size change) and drawn from `top_row`
 // (the scroll position, a row index); graphs cover `window_ns`. Never writes
 // outside the screen; below 40x12 it draws the "terminal too small" notice.
+//
+// Phase 4: `chrome` carries the footer warning/toast, `focus_panel` (a PAGE
+// index, -1 = none) gets the accent border, and `manager` / `help` are the
+// overlays drawn last (the manager over the live dashboard, the help over
+// everything).
 void render_frame(ftxui::Screen& screen, const Hardware& hw,
                   const std::vector<PanelSpec>& page, const SeriesStore& store,
                   const Snapshot& latest, const FrozenFrame* frozen,
                   FrameState& state, const Theme& theme, ColorMode mode,
                   bool paused, long long interval_ms, LayoutCache& cache,
-                  int top_row, int64_t window_ns);
+                  int top_row, int64_t window_ns, const FrameChrome& chrome = {},
+                  int focus_panel = -1, const ManagerOverlay* manager = nullptr,
+                  const HelpOverlay* help = nullptr);
 
 // The Element form of the above, for the ScreenInteractive loop.
 ftxui::Element build_frame_element(const Hardware& hw,
@@ -165,7 +228,11 @@ ftxui::Element build_frame_element(const Hardware& hw,
                                    const FrozenFrame* frozen, FrameState& state,
                                    const Theme& theme, ColorMode mode, bool paused,
                                    long long interval_ms, LayoutCache& cache,
-                                   int top_row, int64_t window_ns);
+                                   int top_row, int64_t window_ns,
+                                   const FrameChrome& chrome = {},
+                                   int focus_panel = -1,
+                                   const ManagerOverlay* manager = nullptr,
+                                   const HelpOverlay* help = nullptr);
 
 // Plain UTF-8 text of a rendered screen (for --render-frame without --ansi).
 std::string screen_to_text(const ftxui::Screen& screen);

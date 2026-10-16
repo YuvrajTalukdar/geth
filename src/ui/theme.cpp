@@ -1,5 +1,7 @@
 #include "ui/theme.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 
@@ -27,6 +29,30 @@ Rgb scale(Rgb c, double f) {
           static_cast<std::uint8_t>(c.b * f + 0.5)};
 }
 
+Rgb derive_fill(Rgb series) { return scale(series, 0.45); }
+
+Rgb mix_white(Rgb c) {
+  return {static_cast<std::uint8_t>((c.r + 255) / 2),
+          static_cast<std::uint8_t>((c.g + 255) / 2),
+          static_cast<std::uint8_t>((c.b + 255) / 2)};
+}
+
+double hue_deg(Rgb c) {
+  const int mx = std::max(c.r, std::max(c.g, c.b));
+  const int mn = std::min(c.r, std::min(c.g, c.b));
+  const int d = mx - mn;
+  if (d == 0) return -1.0;
+  double h;
+  if (mx == (int)c.r)
+    h = 60.0 * std::fmod((double)(c.g - c.b) / d, 6.0);
+  else if (mx == (int)c.g)
+    h = 60.0 * (double)(c.b - c.r) / d + 120.0;
+  else
+    h = 60.0 * (double)(c.r - c.g) / d + 240.0;
+  if (h < 0.0) h += 360.0;
+  return h;
+}
+
 namespace {
 
 // ANSI-16 in FTXUI's Palette16 order (0-7 dark, 8-15 bright), the standard
@@ -51,8 +77,12 @@ void build_palette256() {
   for (int i = 0; i < 16; ++i) put(i, kAnsi16[i].r, kAnsi16[i].g, kAnsi16[i].b);
   const int levels[6] = {0, 95, 135, 175, 215, 255};
   for (int i = 16; i < 232; ++i) {
+    // c = r * 36 + g * 6 + b, so the component indices are c/36, (c/6) % 6,
+    // c % 6. (An older draft wrote (c/36)/6 for the red, which is always 0:
+    // every cube color then had r == 0 and red-rich colors like the pink
+    // series quantized onto grey ramp colors.)
     const int c = i - 16;
-    put(i, static_cast<std::uint8_t>(levels[(c / 36) / 6]),
+    put(i, static_cast<std::uint8_t>(levels[c / 36]),
         static_cast<std::uint8_t>(levels[(c / 6) % 6]),
         static_cast<std::uint8_t>(levels[c % 6]));
   }
@@ -106,6 +136,55 @@ ftxui::Color to_ftxui(Rgb c, ColorMode mode) {
     case ColorMode::Color16: return ftxui::Color(ftxui::Color::Palette16(nearest16(c)));
   }
   return ftxui::Color::RGB(c.r, c.g, c.b);
+}
+
+ftxui::Color fill_color(Rgb series, ColorMode mode) {
+  const Rgb target = derive_fill(series);
+  if (mode == ColorMode::TrueColor) return to_ftxui(target, mode);
+  build_palette256();
+  const bool m256 = (mode == ColorMode::Color256);
+  const int n = m256 ? 256 : 16;
+  const double hs = hue_deg(series);
+  // A hue-having series may only match palette colors that have a hue too,
+  // within 30 degrees: an achromatic candidate (grey ramp) is always "close"
+  // in plain RGB distance and would swallow e.g. the violet fill.
+  int best = -1;
+  long long best_d = -1;
+  for (int i = 0; i < n; ++i) {
+    const Rgb p = m256
+                      ? Rgb{kPalette256[i][0], kPalette256[i][1], kPalette256[i][2]}
+                      : kAnsi16[i];
+    const double hp = hue_deg(p);
+    if (hs >= 0.0) {
+      if (hp < 0.0) continue;  // grey: never a shade of a colored series
+      double dh = std::fabs(hs - hp);
+      if (dh > 180.0) dh = 360.0 - dh;
+      if (dh > 30.0) continue;  // outside the series' hue family
+    }
+    const long long d = sqdist(target, p);
+    if (best < 0 || d < best_d) {
+      best_d = d;
+      best = i;
+    }
+  }
+  if (hs >= 0.0 && best < 0) {
+    // No palette color in the family (impossible for the shipped palette,
+    // kept for safety): fall back to the plain nearest color.
+    best_d = -1;
+    for (int i = 0; i < n; ++i) {
+      const Rgb p = m256
+                        ? Rgb{kPalette256[i][0], kPalette256[i][1], kPalette256[i][2]}
+                        : kAnsi16[i];
+      const long long d = sqdist(target, p);
+      if (best_d < 0 || d < best_d) {
+        best_d = d;
+        best = i;
+      }
+    }
+  }
+  return m256
+             ? ftxui::Color(ftxui::Color::Palette256(static_cast<std::uint8_t>(best)))
+             : ftxui::Color(ftxui::Color::Palette16(static_cast<std::uint8_t>(best)));
 }
 
 Theme Theme::cyberpunk_blue() {

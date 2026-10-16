@@ -50,7 +50,11 @@ struct Options {
   bool json = false;
   bool demo = false;
   long long interval_ms = 1000;  // sampling interval in milliseconds
+  bool interval_explicit = false;  // --interval was passed; beats the config
   unsigned long long count = 0;  // 0 = until Ctrl-C
+  std::string config_path;  // --config PATH ("" = the XDG default location)
+  bool no_save = false;      // --no-save: the config file is read-only
+  std::string script;        // --render-frame --script: synthetic events
   // Part B (UI) options
   bool ansi = false;          // --render-frame: emit full SGR escape codes
   bool stats = false;         // print render/perf stats on exit
@@ -87,6 +91,13 @@ void print_help() {
       "  --columns <n>       Pin the layout column count (UI/render/report)\n"
       "  --stats             Print render/perf statistics on exit\n"
       "  --color <mode>      truecolor | 256 | 16 (default: auto-detect)\n"
+      "  --config <path>     Path to the config file (default: $XDG_CONFIG_HOME/\n"
+      "                      geth/config.toml, then ~/.config/geth/config.toml)\n"
+      "  --no-save           Never write the config file (read-only)\n"
+      "  --script <events>   --render-frame only: replay a comma-separated list\n"
+      "                      of synthetic events (keys, enter, space, tab,\n"
+      "                      up/down/left/right, click:X:Y, ...) before the\n"
+      "                      single frame is rendered\n"
       "  --help            Show this help\n"
       "  --version         Print name and version\n");
 }
@@ -130,6 +141,7 @@ int parse_args(int argc, char** argv, Options& o) {
       if (!v || !parse_u64_arg(v, ms)) return -1;
       if (ms < 10) ms = 10;
       o.interval_ms = static_cast<long long>(ms);
+      o.interval_explicit = true;
     } else if (a == "--count") {
       const char* v = need_value("--count");
       if (!v || !parse_u64_arg(v, o.count)) return -1;
@@ -151,6 +163,16 @@ int parse_args(int argc, char** argv, Options& o) {
       const char* v = need_value("--color");
       if (!v) return -1;
       o.color_mode = v;
+    } else if (a == "--config") {
+      const char* v = need_value("--config");
+      if (!v) return -1;
+      o.config_path = v;
+    } else if (a == "--no-save") {
+      o.no_save = true;
+    } else if (a == "--script") {
+      const char* v = need_value("--script");
+      if (!v) return -1;
+      o.script = v;
     } else if (a == "--columns") {
       unsigned long long n = 0;
       const char* v = need_value("--columns");
@@ -554,20 +576,36 @@ int run_probe(Collector& collector, GpuRegistrySource* gpu_registry) {
 // --layout-report COLSxROWS: the layout engine's decision, in text. The
 // candidate table is scored by the SAME code compute_layout uses, so the
 // "<-- chosen" row is exactly what the UI will render at this size.
-int run_layout_report(const ui::Hardware& hw, int W, int H, const Options& opts) {
-  const std::vector<ui::PanelSpec> page = ui::build_default_page(hw);
+int run_layout_report(const ui::Hardware& hw_in, int W, int H, const Options& opts) {
+  // The SAME page the UI renders: the config (GPU overrides, order,
+  // visibility) applied to the default page.
+  const ui::Config cfg = ui::Config::load(
+      opts.config_path.empty() ? ui::Config::default_path() : opts.config_path,
+      /*no_save=*/true);
+  ui::Hardware hw = hw_in;
+  ui::apply_gpu_overrides(hw, cfg);
+  const std::vector<ui::PanelSpec> page =
+      ui::merge_page(ui::build_default_page(hw), cfg);
   ui::LayoutPrefs prefs;
-  if (opts.columns > 0) prefs.columns = opts.columns;
+  if (opts.columns > 0)
+    prefs.columns = opts.columns;
+  else if (cfg.columns > 0)
+    prefs.columns = cfg.columns;
+  const std::vector<ui::PanelSpec> vis = ui::visible_panels(page);
 
-  const ui::Layout lo = ui::compute_layout(W, H, page, prefs);
+  const ui::Layout lo = ui::compute_layout(W, H, vis, prefs);
   const std::vector<ui::CandidateReport> cands =
-      ui::score_layout_candidates(W, H, page, prefs);
+      ui::score_layout_candidates(W, H, vis, prefs);
 
   const std::string pin = opts.columns > 0
                               ? "  (--columns " + std::to_string(opts.columns) + ")"
                               : "";
-  std::printf("== GETH layout report: %dx%d, %zu panels%s ==\n", W, H, page.size(),
-              pin.c_str());
+  const std::string hidden_note =
+      page.size() != vis.size()
+          ? "  (" + std::to_string(page.size() - vis.size()) + " hidden)"
+          : "";
+  std::printf("== GETH layout report: %dx%d, %zu panels%s%s ==\n", W, H,
+              vis.size(), hidden_note.c_str(), pin.c_str());
 
   std::printf("\nfeasible candidates (ascending column count):\n");
   std::printf("  cols  mode      valid  min_graph_h  total_graph_area\n");
@@ -594,12 +632,12 @@ int run_layout_report(const ui::Hardware& hw, int W, int H, const Options& opts)
               "top row under the header):\n");
   std::printf("  %-22s %4s %4s %4s %4s  %-8s  graph\n", "id", "x", "y", "w", "h",
               "mode");
-  for (std::size_t i = 0; i < page.size(); ++i) {
+  for (std::size_t i = 0; i < vis.size(); ++i) {
     const ui::LayoutRect& r = lo.panels[i].rect;
     const bool full = lo.panels[i].mode == ui::PanelMode::kFull;
-    const int gw = ui::graph_w(page[i], r.w);
-    const int gh = full ? ui::full_graph_h(page[i], r.w, r.h) : ui::compact_graph_h(r.h);
-    std::printf("  %-22s %4d %4d %4d %4d  %-8s  %dx%d\n", page[i].id.c_str(), r.x, r.y,
+    const int gw = ui::graph_w(vis[i], r.w);
+    const int gh = full ? ui::full_graph_h(vis[i], r.w, r.h) : ui::compact_graph_h(r.h);
+    std::printf("  %-22s %4d %4d %4d %4d  %-8s  %dx%d\n", vis[i].id.c_str(), r.x, r.y,
                 r.w, r.h, full ? "full" : "compact", gw, gh);
   }
   return 0;
@@ -611,10 +649,25 @@ int run_layout_report(const ui::Hardware& hw, int W, int H, const Options& opts)
 // per-frame RENDER cost and allocation count are measured separately with
 // `--render-frame COLSxROWS --stats` (FrameStats), which prints render
 // time and allocations for one full frame.
-int run_perf(const ui::Hardware& hw, const Options& opts) {
-  const std::vector<ui::PanelSpec> page = ui::build_default_page(hw);
-  std::printf("== GETH perf (%s), %zu panels ==\n",
-              opts.demo ? "demo" : "real hardware", page.size());
+int run_perf(const ui::Hardware& hw_in, const Options& opts) {
+  // The SAME page the UI renders: the config (GPU overrides, order,
+  // visibility) applied to the default page.
+  const ui::Config cfg = ui::Config::load(
+      opts.config_path.empty() ? ui::Config::default_path() : opts.config_path,
+      /*no_save=*/true);
+  ui::Hardware hw = hw_in;
+  ui::apply_gpu_overrides(hw, cfg);
+  const std::vector<ui::PanelSpec> page =
+      ui::merge_page(ui::build_default_page(hw), cfg);
+  const std::vector<ui::PanelSpec> vis = ui::visible_panels(page);
+  ui::LayoutPrefs prefs;
+  if (opts.columns > 0)
+    prefs.columns = opts.columns;
+  else if (cfg.columns > 0)
+    prefs.columns = cfg.columns;
+  std::printf("== GETH perf (%s), %zu panels%s ==\n",
+              opts.demo ? "demo" : "real hardware", vis.size(),
+              page.size() != vis.size() ? " visible" : "");
 
   // --- (1) relayout over 50 random sizes -------------------------------------
   // Fixed seed: reproducible across runs. The size range spans the test matrix
@@ -626,7 +679,7 @@ int run_perf(const ui::Hardware& hw, const Options& opts) {
   for (int i = 0; i < kIters; ++i) {
     const int W = dw(rng), H = dh(rng);
     const auto t0 = std::chrono::steady_clock::now();
-    ui::Layout lo = ui::compute_layout(W, H, page, ui::LayoutPrefs{});
+    ui::Layout lo = ui::compute_layout(W, H, vis, prefs);
     (void)lo;
     const auto t1 = std::chrono::steady_clock::now();
     const double us = std::chrono::duration<double, std::micro>(t1 - t0).count();
@@ -724,21 +777,28 @@ int main(int argc, char** argv) {
     }
     ui::UiOptions u;
     u.interval_ms = opts.interval_ms;
+    u.interval_explicit = opts.interval_explicit;
     u.color_mode = opts.color_mode;
     u.demo = opts.demo;
     u.ansi = opts.ansi;
     u.stats = opts.stats;
     u.columns = opts.columns;
+    u.config_path = opts.config_path;
+    u.no_save = opts.no_save;
+    u.script = opts.script;
     return ui::run_render_frame(collector, hw, W, H, opts.warmup, u);
   }
 
   if (!opts.dump && !opts.json) {
     ui::UiOptions u;
     u.interval_ms = opts.interval_ms;
+    u.interval_explicit = opts.interval_explicit;
     u.count = opts.count;
     u.color_mode = opts.color_mode;
     u.stats = opts.stats;
     u.columns = opts.columns;
+    u.config_path = opts.config_path;
+    u.no_save = opts.no_save;
     return ui::run_ui(collector, hw, u);
   }
 

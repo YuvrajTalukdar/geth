@@ -162,10 +162,13 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
                      if (x.pci_bus_id == bus) return v_bytes(x.vram_used_bytes);
                    return std::string("—");
                  }}};
-    // Integrated GPUs may expose the GTT aperture as a second line.
+    // Integrated GPUs may expose the GTT aperture as a second line. Same
+    // device as the VRAM series, so it keeps the device's base color in its
+    // lighter variant (the hard-coded pink used to collide with the Cezanne
+    // line and made the two legend bars indistinguishable).
     if (g.is_integrated)
       p.series.push_back({.id = SeriesId("gpu." + bus + ".gtt"), .label = "GTT",
-                          .color_index = 2,
+                          .color_index = ci, .variant = true,
                           .value_fn = [bus](const Snapshot& s) {
                             for (const auto& x : s.gpus)
                               if (x.pci_bus_id == bus) return v_bytes(x.gtt_used_bytes);
@@ -232,7 +235,7 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
                           }});
     }
     p.y_scale.kind = ScaleSpec::Kind::kWatts;
-    p.y_scale.floor_ = 30.0;  // minimum ceiling: 30 W
+    p.y_scale.floor_ = 20.0;  // minimum ceiling: 20 W (nice_watts' floor)
     page.push_back(std::move(p));
   }
 

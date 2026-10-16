@@ -4,6 +4,14 @@
 
 namespace geth::ui {
 
+std::vector<PanelSpec> visible_panels(std::span<const PanelSpec> page) {
+  std::vector<PanelSpec> out;
+  out.reserve(page.size());
+  for (const auto& p : page)
+    if (p.visible) out.push_back(p);
+  return out;
+}
+
 namespace {
 
 constexpr int kHeaderRows = 1;        // the title line

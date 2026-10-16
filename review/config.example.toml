@@ -1,0 +1,61 @@
+# GETH configuration
+# Written by geth v0.4.0.
+# Edit freely; unknown keys are ignored with a warning on load.
+
+[general]
+interval_ms = 1000
+window = "1m"
+columns = "auto"
+title = ""
+
+[[panels]]
+id = "cpu"
+visible = true
+title = ""
+
+[[panels]]
+id = "gpu.0000:01:00.0.usage"
+visible = true
+title = "RTX 3050"
+
+[[panels]]
+id = "gpu.0000:07:00.0.usage"
+visible = true
+title = ""
+
+[[panels]]
+id = "mem"
+visible = true
+title = ""
+
+[[panels]]
+id = "gpu.0000:01:00.0.vram"
+visible = true
+title = ""
+
+[[panels]]
+id = "gpu.0000:07:00.0.vram"
+visible = true
+title = ""
+hidden_series = ["gpu.0000:07:00.0.gtt"]
+
+[[panels]]
+id = "temps"
+visible = true
+title = ""
+
+[[panels]]
+id = "power"
+visible = true
+title = ""
+
+[[panels]]
+id = "net"
+visible = true
+title = ""
+
+[[panels]]
+id = "disk"
+visible = true
+title = ""
+

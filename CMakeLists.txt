@@ -4,7 +4,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(geth
-  VERSION 0.3.0
+  VERSION 0.4.0
   DESCRIPTION "GETH — Geth Engine for Tracking Hardware"
   LANGUAGES CXX)
 
@@ -47,6 +47,23 @@ if(NOT ftxui_POPULATED)
 endif()
 
 # ---------------------------------------------------------------------------
+# toml++ (TOML config parsing) — header-only, pinned to an exact tag. Nothing
+# is built; we expose only the include directory of the fetched source.
+# ---------------------------------------------------------------------------
+FetchContent_Declare(tomlplusplus
+  URL https://github.com/marzer/tomlplusplus/archive/refs/tags/v3.4.0.tar.gz
+  URL_HASH SHA256=8517f65938a4faae9ccf8ebb36631a38c1cadfb5efa85d9a72e15b9e97d25155
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+FetchContent_GetProperties(tomlplusplus)
+if(NOT tomlplusplus_POPULATED)
+  FetchContent_Populate(tomlplusplus)
+endif()
+
+# Header-only: an INTERFACE target with the include directory.
+add_library(tomlplusplus INTERFACE)
+target_include_directories(tomlplusplus INTERFACE ${tomlplusplus_SOURCE_DIR}/include)
+
+# ---------------------------------------------------------------------------
 # Binary
 # ---------------------------------------------------------------------------
 set(GETH_SOURCES
@@ -65,6 +82,7 @@ set(GETH_SOURCES
   src/sources/pci_discovery.cpp
   src/sources/temps.cpp
   src/ui/app.cpp
+  src/ui/config.cpp
   src/ui/frame.cpp
   src/ui/layout.cpp
   src/ui/panel_spec.cpp
@@ -88,7 +106,7 @@ target_link_options(geth PRIVATE $<$<CONFIG:Debug>:-fsanitize=address,undefined>
 # Threads is linked for the UI's timer thread (it only posts an event; all
 # sampling/rendering runs on the UI thread).
 find_package(Threads REQUIRED)
-target_link_libraries(geth PRIVATE ftxui::component Threads::Threads ${CMAKE_DL_LIBS})
+target_link_libraries(geth PRIVATE ftxui::component tomlplusplus Threads::Threads ${CMAKE_DL_LIBS})
 
 # ---------------------------------------------------------------------------
 # RAPL access helpers (opt-in; never run by a plain build).
@@ -143,12 +161,17 @@ if(GETH_BUILD_TESTS)
     tests/test_names.cpp
     tests/test_ui.cpp
     tests/test_layout.cpp
+    tests/test_config.cpp
+    tests/test_dashboard.cpp
     ${GETH_SOURCES})
   target_include_directories(geth_tests PRIVATE src)
   # Absolute path so the test binary can find the fixture files from anywhere.
+  # GETH_VERSION mirrors the main target: config.cpp (shared via ${GETH_SOURCES})
+  # embeds it in the written config's header comment.
   target_compile_definitions(geth_tests PRIVATE
-    GETH_TEST_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
-  target_link_libraries(geth_tests PRIVATE doctest ftxui::component Threads::Threads ${CMAKE_DL_LIBS})
+    GETH_TEST_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
+    GETH_VERSION="${PROJECT_VERSION}")
+  target_link_libraries(geth_tests PRIVATE doctest ftxui::component tomlplusplus Threads::Threads ${CMAKE_DL_LIBS})
   target_compile_options(geth_tests PRIVATE
     -Wall -Wextra -Wpedantic -Werror
     $<$<CONFIG:Debug>:-fsanitize=address,undefined -g -O1>

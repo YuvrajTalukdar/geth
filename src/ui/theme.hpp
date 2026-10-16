@@ -36,6 +36,19 @@ constexpr Rgb rgb(std::uint8_t r, std::uint8_t g, std::uint8_t b) { return {r, g
 // Component-wise darken. fill(i) = series[i] × 0.45 (spec).
 Rgb scale(Rgb c, double f);
 
+// The spec's fill formula in RGB space: the series color darkened to 45 %.
+// In TrueColor this is exactly what is drawn; in 256/16 it is drawn through
+// fill_color(), which keeps the shade in the series' hue family.
+Rgb derive_fill(Rgb series);
+
+// The lighter variant of a device color: mixed 50 % toward white. Used for a
+// panel's second series from the same device (VRAM + GTT) so the two legend
+// bars visibly differ while the device keeps one base hue.
+Rgb mix_white(Rgb c);
+
+// Hue of c in [0, 360) degrees, or -1 when achromatic (r == g == b).
+double hue_deg(Rgb c);
+
 // Nearest xterm-256 palette index for c.
 std::uint8_t nearest256(Rgb c);
 // Nearest ANSI-16 index (FTXUI Palette16 order: 0-7 dark, 8-15 bright).
@@ -43,6 +56,14 @@ std::uint8_t nearest16(Rgb c);
 
 // Mode-aware conversion into an ftxui::Color for drawing.
 ftxui::Color to_ftxui(Rgb c, ColorMode mode);
+
+// The drawable fill for a series color: derive_fill(series) exactly in
+// TrueColor; in 256/16 the nearest palette color of the same hue family as
+// `series`. Even on the correct xterm cube, plain nearest-neighbor collapses
+// the green fill (26,115,61) onto (0,95,95) — the border's own teal — and the
+// blue fill onto the same teal, so the fill is quantized with the series'
+// hue as a constraint (within 30 degrees) instead.
+ftxui::Color fill_color(Rgb series, ColorMode mode);
 
 struct Theme {
   // Every color in the UI comes from here; nothing is hard-coded elsewhere.
@@ -58,7 +79,7 @@ struct Theme {
 
   // Fill colors are derived per series as a tint (series × 0.45), so fills
   // read as a shade of the series color rather than grey. Phase 5 tunable.
-  Rgb fill(int i) const { return scale(series[i], 0.45); }
+  Rgb fill(int i) const { return derive_fill(series[i]); }
 
   static Theme cyberpunk_blue();
 };

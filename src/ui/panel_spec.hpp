@@ -22,7 +22,14 @@ struct SeriesSpec {
   SeriesId id;          // must exist in the SeriesStore
   std::string label;    // legend label
   int color_index = 0;  // index into Theme::series[6]
+  // True for a panel's second series from the same device (GTT next to
+  // VRAM): it draws in the lighter variant (color mixed 50 % toward white)
+  // of the device's base color, so the two legend bars visibly differ.
+  bool variant = false;
   bool fill = false;    // filled area (Memory/VRAM first series)
+  // Phase 4: hidden by the user (config `hidden_series`). No line, no fill,
+  // no legend entry. Info rows are independent of series visibility.
+  bool hidden = false;
   // False for the CPU / GPU-usage series: their value is already shown by a
   // color-barred info row (the KDE look the mock specifies), so a separate
   // legend line would duplicate it.
@@ -44,11 +51,11 @@ struct ScaleSpec {
     kPercent,       // fixed 0-100
     kTemperature,   // 0-100, growing to 110/120
     kAbsolute,      // 0..absolute_max (RAM/VRAM total)
-    kWatts,         // auto-scale, nice 1/2/2.5/5×10ⁿ, floor 30 W
+    kWatts,         // auto-scale; the ceiling's QUARTER is a nice {1,2,2.5,5}×10ⁿ
     kBytesPerSec,   // auto-scale, nice power of two ×1024ⁿ, floor per source
   } kind = Kind::kPercent;
   double absolute_max = 0;  // kAbsolute only
-  // kWatts/kBytesPerSec: the minimum ceiling (30 W / 64 KiB/s / 1 MiB/s).
+  // kWatts/kBytesPerSec: the minimum ceiling (20 W / 64 KiB/s / 1 MiB/s).
   double floor_ = 0;
 };
 
@@ -56,6 +63,9 @@ struct PanelSpec {
   // Stable id for Phase 4's config: cpu, mem, gpu.<bus>.usage, gpu.<bus>.vram,
   // temps, power, net, disk.
   std::string id;
+  // Phase 4: hidden panels are kept in the page (and the config file) but
+  // laid out and drawn as if absent.
+  bool visible = true;
   std::string title;
   // The GPU this panel belongs to ("" for non-GPU panels): drives the
   // " · sleeping" title and the "sleeping" legend values.

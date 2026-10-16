@@ -8,8 +8,10 @@ No subprocesses: everything is read from `/proc`, `/sys`, or NVML (loaded
 with `dlopen`, never linked). The only build-time dependencies, fetched by
 CMake via FetchContent and pinned to exact versions, are
 [FTXUI v6.1.9](https://github.com/ArthurSonzogni/FTXUI/releases/tag/v6.1.9)
-(SHA256 `45819c1e54914783d4a1ca5633885035d74146778a1f74e1213cdb7b76340e71`)
-and doctest 2.4.11 for the unit tests.
+(SHA256 `45819c1e54914783d4a1ca5633885035d74146778a1f74e1213cdb7b76340e71`),
+[toml++ v3.4.0](https://github.com/marzer/tomlplusplus/releases/tag/v3.4.0)
+(SHA256 `8517f65938a4faae9ccf8ebb36631a38c1cadfb5efa85d9a72e15b9e97d25155`,
+header-only, for the config file), and doctest 2.4.11 for the unit tests.
 
 ## Build
 
@@ -36,13 +38,71 @@ installed system-wide.
 ./build/geth --render-frame 120x40 --demo --warmup 60
 ./build/geth --stats                # print render-time + alloc stats on exit
 ./build/geth --color 256            # force a color mode: truecolor | 256 | 16
+./build/geth --config path.toml     # use an alternate config file
+./build/geth --no-save              # treat the config file as read-only
+./build/geth --render-frame 160x48 --demo --script "e,down,space"
+                                    # render one frame after replaying those keys
 ```
 
-UI keys: `q` / `Esc` / `Ctrl-C` quit (terminal is restored, even after a
-crash signal), `space` pauses the display while sampling continues. The UI
-never paints a background color — it is transparent over any terminal theme
-(and a unit test asserts this). Terminals below 40x12 get a centered
-"terminal too small" notice instead of a broken frame.
+UI keys (press `?` in the UI for the full list): `q` / `Esc` / `Ctrl-C` quit
+(the terminal is restored, even after a crash signal), `space` pauses the
+display while sampling continues, `Tab` / `Shift-Tab` move the focus (accent
+border), `x` hides the focused panel, and a mouse click focuses a panel.
+`e` opens the panel manager: show/hide a panel with `space`, reorder with
+`K` / `J` (or the mouse), rename with `r`, hide a series with `enter` then
+`space`, and reset everything with `d`. `+` / `=` and `-` / `_` change the
+sampling interval, `t` cycles the graph window, and `c` cycles the column
+count. Every manager and setting change saves the config file with a short
+"saved" toast. The UI never paints a background color — it is transparent
+over any terminal theme (and a unit test asserts this). Terminals below
+40x12 get a centered "terminal too small" notice instead of a broken frame.
+
+## Configuration
+
+The dashboard reads `$XDG_CONFIG_HOME/geth/config.toml` (or
+`~/.config/geth/config.toml` when `XDG_CONFIG_HOME` is unset). On the first
+run there is no file: the defaults are used, and the file is written only
+the first time a setting actually changes (never on a bare launch).
+`--config PATH` points at a different file, and `--no-save` makes it
+read-only (changes apply for the session only, and no "saved" toast appears).
+A config the app wrote is a good starting point to edit by hand.
+
+Schema — unknown keys (and malformed values) are warned about on `stderr`
+and ignored, never an error:
+
+```toml
+[general]
+interval_ms = 1000      # 250 | 500 | 1000 | 2000 | 5000
+window = "1m"           # "30s" | "1m" | "2m" | "5m" | "10m"
+columns = "auto"        # "auto" | 1..8
+title = ""              # window title override
+
+# One [[panels]] table per panel, in display order.
+[[panels]]
+id = "cpu"              # stable panel id (below)
+visible = true
+title = ""              # "" = the default title
+hidden_series = []      # series ids hidden in this panel
+
+# Per-GPU overrides, keyed by PCI bus id.
+[gpus."0000:01:00.0"]
+name = "RTX 3050"
+integrated = "auto"     # "auto" | true | false
+```
+
+Panel ids: `cpu`, `mem`, `temps`, `power`, `net`, `disk`, and
+`gpu.<bus>.usage` / `gpu.<bus>.vram` (one usage + one VRAM panel per GPU).
+Series ids look like `cpu.usage`, `mem.ram_used`, `gpu.<bus>.vram`.
+
+Merge rules on load: a panel whose hardware is absent stays in the file but
+is not shown (it appears as "(not present)" in the panel manager, so its
+settings are kept for the day the hardware returns); a panel whose hardware
+is new is inserted **visible** at its default position; a panel present in
+both keeps the file's order and settings. Saves are atomic (a temp file in
+the same directory, then `rename`), so a crash never leaves a half-written
+config, and a stale `.tmp` from a crashed save is dropped on the next load.
+A file that does not parse is never overwritten: the defaults are used, the
+footer shows the parse error, and `save()` refuses.
 
 ## CPU power permissions
 
@@ -71,7 +131,8 @@ shared machines.
 ```
 src/core/       snapshot model, source interface, ring-buffer history, collector
 src/sources/    one file per metric family (cpu, memory, power, temps, gpus, disk, net, demo)
-src/ui/         dashboard: frame renderer, data-driven panel specs, theme, app loop
+src/ui/         dashboard: frame renderer, data-driven panel specs, theme,
+                  config file (toml++), panel manager + app loop
 src/util/       sysfs fd wrapper, pci.ids lookup, text parsing, formatting, short names
 tests/          doctest unit tests + fixture files (parsers, names, UI, alloc counting)
 packaging/      udev rule for RAPL access

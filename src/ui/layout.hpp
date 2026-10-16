@@ -62,6 +62,11 @@ struct LayoutPrefs {
   std::optional<int> columns;  // --columns N: pin the column count
 };
 
+// The visible panels of a page (Phase 4: hidden ones are laid out as if
+// absent). Every layout entry point filters through this so the layout
+// engine, the report and the cache can never disagree.
+std::vector<PanelSpec> visible_panels(std::span<const PanelSpec> page);
+
 // The layout for one frame. `panels` is the page in reading order (the order
 // they flow into the grid, left to right, top to bottom).
 Layout compute_layout(int term_w, int term_h, std::span<const PanelSpec> panels,

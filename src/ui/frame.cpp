@@ -33,13 +33,16 @@ std::string braille_char(std::uint8_t mask) {
 // y-axis scales (exported for the unit tests)
 // ---------------------------------------------------------------------------
 
-// Round up to a "nice" number: 1 / 2 / 2.5 / 5 x 10^n.
+// Round up so the ceiling's QUARTER is a nice number {1, 2, 2.5, 5} x 10^n:
+// the ceiling itself is then {4, 8, 10, 20} x 10^n (20, 40, 80, 100, 200,
+// 400 W, ...), and every tick label — 0/25/50/75/100 % of the ceiling — is a
+// whole number of watts, so a "7.5 W" label is impossible. Minimum ceiling
+// 20 W (its quarter is 5 W).
 double nice_watts(double v) {
-  if (v <= 0) return 0;
-  const double p = std::pow(10.0, std::floor(std::log10(v)));
-  for (double m : {1.0, 2.0, 2.5, 5.0, 10.0})
-    if (v <= m * p + 1e-9) return m * p;
-  return 10.0 * p;
+  const double lo = std::max(v, 20.0);
+  for (double p = 1.0;; p *= 10.0)
+    for (double m : {4.0, 8.0, 10.0, 20.0})
+      if (lo <= m * p + 1e-9) return m * p;
 }
 
 // Binary units are powers of two, so the nice steps are powers of two too:
@@ -339,6 +342,30 @@ struct GraphSeries {
   bool filled;
 };
 
+// Bresenham in dot space: plots every dot from (x0,y0) to (x1,y1) EXCEPT the
+// start (already drawn as the previous column's line dot). Between two
+// adjacent sample columns (x1 == x0 + 1) this makes the line continuous: a
+// steep rise or fall fills an unbroken vertical run of dots instead of
+// leaving isolated dots with a gap between them.
+template <typename F>
+void bresenham_dots(int x0, int y0, int x1, int y1, F plot) {
+  const int dx = std::abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+  const int dy = -std::abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+  int err = dx + dy;
+  while (x0 != x1 || y0 != y1) {
+    const int e2 = 2 * err;
+    if (e2 >= dy && x0 != x1) {
+      err += dy;
+      x0 += sx;
+    }
+    if (e2 <= dx && y0 != y1) {
+      err += dx;
+      y0 += sy;
+    }
+    plot(x0, y0);
+  }
+}
+
 // Fill `cells` (Wg x Hg) from all series. Drawn in legend order; when two
 // series share a cell the later one wins. Within one series the topmost dot
 // sets the cell color, and the LINE dot (prio 1) beats its own fill dot
@@ -371,19 +398,32 @@ void draw_graph_cells(std::vector<Cell>& cells, int Wg, int Hg,
     const GraphSeries& g = gs[si];
     if (!g.d || g.d->t.empty() || !raws[si].valid()) continue;
     const RawWindow& w = raws[si];
+    bool have_prev = false;  // line restarts after a gap
+    int prev_x = 0, prev_y = 0;  // last drawn line dot
     for (int xc = 0; xc < dot_cols; ++xc) {
       // The time under this dot column: real history over the 60 s window,
       // newest at the right edge.
       const double t =
           w.t_start + w.span_ns * (dot_cols > 1 ? xc / (double)(dot_cols - 1) : 1.0);
       const double v = value_at(*g.d, t);
-      if (!std::isfinite(v)) continue;  // gap: never drawn as 0
+      if (!std::isfinite(v)) {
+        have_prev = false;  // gap: never drawn as 0, line does not span it
+        continue;
+      }
       const double clamped = std::clamp(v, 0.0, vmax);
       int y = static_cast<int>(std::lround((1.0 - clamped / vmax) * (dot_rows - 1)));
       y = std::clamp(y, 0, dot_rows - 1);
       if (g.filled)
         for (int y2 = y; y2 < dot_rows; ++y2) set_dot(xc, y2, (int)si, g.fill, 0);
+      // Continuous connection to the previous column (its start dot was
+      // already drawn, so Bresenham plots only the new dots).
+      if (have_prev && prev_x == xc - 1)
+        bresenham_dots(prev_x, prev_y, xc, y,
+                       [&](int bx, int by) { set_dot(bx, by, (int)si, g.line, 1); });
       set_dot(xc, y, (int)si, g.line, 1);
+      have_prev = true;
+      prev_x = xc;
+      prev_y = y;
     }
   }
 }
@@ -396,6 +436,10 @@ struct Colors {
   ftxui::Color accent, title, text, label_dim, border, grid, axis_text, warn;
   ftxui::Color series[6];
   ftxui::Color fill[6];
+  // Lighter variants (mix_white of the base color) for a panel's second
+  // series from the same device; fills derive from the variant color itself.
+  ftxui::Color series_v[6];
+  ftxui::Color fill_v[6];
 };
 
 Colors build_colors(const Theme& th, ColorMode m) {
@@ -410,9 +454,22 @@ Colors build_colors(const Theme& th, ColorMode m) {
   c.warn = to_ftxui(th.warn, m);
   for (int i = 0; i < 6; ++i) {
     c.series[i] = to_ftxui(th.series[i], m);
-    c.fill[i] = to_ftxui(th.fill(i), m);
+    // fill_color keeps the fill in the series' hue family when the terminal
+    // only has 256/16 colors (see theme.cpp).
+    c.fill[i] = fill_color(th.series[i], m);
+    c.series_v[i] = to_ftxui(mix_white(th.series[i]), m);
+    c.fill_v[i] = fill_color(mix_white(th.series[i]), m);
   }
   return c;
+}
+
+// A series' drawable line/fill color: the device's base color, or the lighter
+// variant for a same-device second series (GTT next to VRAM).
+const ftxui::Color& series_line(const Colors& c, int ci, bool variant) {
+  return variant ? c.series_v[ci] : c.series[ci];
+}
+const ftxui::Color& series_fill(const Colors& c, int ci, bool variant) {
+  return variant ? c.fill_v[ci] : c.fill[ci];
 }
 
 std::string interval_str(long long ms) {
@@ -501,11 +558,11 @@ std::string compact_title(const PanelSpec& p,
                           const Snapshot& snap) {
   int n_leg = 0;
   for (const auto& s : p.series)
-    if (s.in_legend) ++n_leg;
+    if (s.in_legend && !s.hidden) ++n_leg;
   const bool multi = n_leg >= 2;
   std::string t = p.title;
   for (std::size_t i = 0; i < p.series.size(); ++i) {
-    if (!p.series[i].in_legend) continue;
+    if (!p.series[i].in_legend || p.series[i].hidden) continue;
     const std::string v = legend_values[i];
     t += " \xC2\xB7 " + (multi ? short_title_label(p.series[i].label) + " " + v : v);
   }
@@ -515,7 +572,9 @@ std::string compact_title(const PanelSpec& p,
       const std::string v = r.value_fn(snap);
       bool dup = false;
       for (std::size_t i = 0; i < p.series.size(); ++i)
-        if (p.series[i].in_legend && legend_values[i] == v) dup = true;
+        if (p.series[i].in_legend && !p.series[i].hidden &&
+            legend_values[i] == v)
+          dup = true;
       if (dup) continue;
       t += " \xC2\xB7 " + v;
     }
@@ -531,19 +590,19 @@ void draw_compact_legend(ftxui::Screen& s, int x, int y, int iw,
   int cx = x;
   const int xend = x + iw;
   for (std::size_t i = 0; i < p.series.size(); ++i) {
-    if (!p.series[i].in_legend) continue;
+    if (!p.series[i].in_legend || p.series[i].hidden) continue;
     const SeriesSpec& sr = p.series[i];
     const std::string& val = legend_values[i];
     const int entry = 1 + utf8_cols(sr.label) + 1 + utf8_cols(val);
     if (cx + entry > xend) {
       // Truncate the entry to the remaining room and stop.
       if (xend - cx >= 2) {
-        put_px(s, cx, y, "▌", c.series[sr.color_index]);
+        put_px(s, cx, y, "▌", series_line(c, sr.color_index, sr.variant));
         put_str(s, cx + 1, y, truncate(sr.label + " " + val, xend - cx - 1), c.text);
       }
       break;
     }
-    put_px(s, cx, y, "▌", c.series[sr.color_index]);
+    put_px(s, cx, y, "▌", series_line(c, sr.color_index, sr.variant));
     put_str(s, cx + 1, y, sr.label, c.text);
     put_str(s, cx + 1 + utf8_cols(sr.label) + 1, y, val, c.accent);
     cx += entry + 2;
@@ -553,21 +612,24 @@ void draw_compact_legend(ftxui::Screen& s, int x, int y, int iw,
 void draw_panel(ftxui::Screen& s, int x0, int y0, int W, int H, const PanelSpec& p,
                 PanelMode mode, bool sleeping, const std::vector<RawWindow>& raws,
                 const std::vector<std::string>& legend_values,
-                const Snapshot& snap, double vmax, const Colors& c) {
+                const Snapshot& snap, double vmax, const Colors& c,
+                bool focused = false) {
   if (W < 4 || H < 2) return;
 
   // --- rounded border + title --------------------------------------------------
+  // The focused panel (Tab / click) gets the accent border.
+  const ftxui::Color& bc = focused ? c.accent : c.border;
   for (int x = 1; x + 1 < W; ++x) {
-    put_px(s, x0 + x, y0, "─", c.border);
-    put_px(s, x0 + x, y0 + H - 1, "─", c.border);
+    put_px(s, x0 + x, y0, "─", bc);
+    put_px(s, x0 + x, y0 + H - 1, "─", bc);
   }
-  put_px(s, x0, y0, "╭", c.border);
-  put_px(s, x0 + W - 1, y0, "╮", c.border);
-  put_px(s, x0, y0 + H - 1, "╰", c.border);
-  put_px(s, x0 + W - 1, y0 + H - 1, "╯", c.border);
+  put_px(s, x0, y0, "╭", bc);
+  put_px(s, x0 + W - 1, y0, "╮", bc);
+  put_px(s, x0, y0 + H - 1, "╰", bc);
+  put_px(s, x0 + W - 1, y0 + H - 1, "╯", bc);
   for (int y = 1; y + 1 < H; ++y) {
-    put_px(s, x0, y0 + y, "│", c.border);
-    put_px(s, x0 + W - 1, y0 + y, "│", c.border);
+    put_px(s, x0, y0 + y, "│", bc);
+    put_px(s, x0 + W - 1, y0 + y, "│", bc);
   }
 
   // Full: the panel title. Compact: the title plus the key values.
@@ -591,7 +653,7 @@ void draw_panel(ftxui::Screen& s, int x0, int y0, int W, int H, const PanelSpec&
   int n_legend = 0;
   std::vector<int> legend_idx;  // series indices that appear in the legend
   for (std::size_t i = 0; i < p.series.size(); ++i)
-    if (p.series[i].in_legend) {
+    if (p.series[i].in_legend && !p.series[i].hidden) {
       legend_idx.push_back((int)i);
       ++n_legend;
     }
@@ -631,7 +693,9 @@ void draw_panel(ftxui::Screen& s, int x0, int y0, int W, int H, const PanelSpec&
     for (std::size_t i = 0; i < p.series.size(); ++i) {
       decs[i] = decimate(raws[i], dot_cols);
       const int ci = p.series[i].color_index;
-      gs[i] = GraphSeries{&decs[i], c.series[ci], c.fill[ci], p.series[i].fill};
+      const bool vv = p.series[i].variant;
+      gs[i] = GraphSeries{&decs[i], series_line(c, ci, vv),
+                          series_fill(c, ci, vv), p.series[i].fill};
     }
     cells.resize(static_cast<std::size_t>(Wg) * Hg);
     draw_graph_cells(cells, Wg, Hg, gs, raws, vmax);
@@ -687,8 +751,9 @@ void draw_panel(ftxui::Screen& s, int x0, int y0, int W, int H, const PanelSpec&
         const int si = legend_idx[k];
         const int col = k % ipr;
         draw_value_row(s, cx[col], y0leg + k / ipr, cw[col], true,
-                       c.series[p.series[si].color_index], p.series[si].label,
-                       legend_values[si], c.text, c.accent);
+                       series_line(c, p.series[si].color_index,
+                                   p.series[si].variant),
+                       p.series[si].label, legend_values[si], c.text, c.accent);
       }
     }
   }
@@ -714,6 +779,148 @@ std::string window_str(int64_t window_ns) {
   return std::to_string(s / 60) + "m";
 }
 
+// ---------------------------------------------------------------------------
+// Phase 4 overlays. Both clear their rectangle with PLAIN SPACE cells (no
+// background, no fill — the transparency guarantee) and draw a rounded
+// border on top of the live frame underneath.
+// ---------------------------------------------------------------------------
+
+// A box centered on the screen: returns its top-left and inner size.
+struct OverlayBox {
+  int x0 = 0, y0 = 0, w = 0, h = 0;
+  static OverlayBox make(int W, int H, int want_w, int want_h, int margin) {
+    OverlayBox b;
+    b.w = std::min(want_w, W - 2 * margin);
+    if (b.w < 24) b.w = std::min(W, want_w);
+    b.h = std::min(want_h, H - 2 * margin);
+    if (b.h < 8) b.h = H;
+    b.x0 = (W - b.w) / 2;
+    b.y0 = (H - b.h) / 2;
+    return b;
+  }
+};
+
+void clear_box(ftxui::Screen& s, int x0, int y0, int w, int h) {
+  const ftxui::Color def = ftxui::Color(ftxui::Color::Default);
+  for (int y = y0; y < y0 + h; ++y)
+    for (int x = x0; x < x0 + w; ++x) put_px(s, x, y, " ", def);
+}
+
+void box_border(ftxui::Screen& s, const OverlayBox& b, const std::string& title,
+                const std::string& bottom, const Colors& c) {
+  for (int x = 1; x + 1 < b.w; ++x) {
+    put_px(s, b.x0 + x, b.y0, "─", c.border);
+    put_px(s, b.x0 + x, b.y0 + b.h - 1, "─", c.border);
+  }
+  put_px(s, b.x0, b.y0, "╭", c.border);
+  put_px(s, b.x0 + b.w - 1, b.y0, "╮", c.border);
+  put_px(s, b.x0, b.y0 + b.h - 1, "╰", c.border);
+  put_px(s, b.x0 + b.w - 1, b.y0 + b.h - 1, "╯", c.border);
+  for (int y = 1; y + 1 < b.h; ++y) {
+    put_px(s, b.x0, b.y0 + y, "│", c.border);
+    put_px(s, b.x0 + b.w - 1, b.y0 + y, "│", c.border);
+  }
+  if (!title.empty()) put_str(s, b.x0 + 2, b.y0, " " + title, c.accent, true);
+  if (!bottom.empty())
+    put_str(s, b.x0 + 2, b.y0 + b.h - 1,
+            truncate(" " + bottom, b.w - 4), c.label_dim);
+}
+
+// The panel manager: ~60 x min(rows-4, 30), centered, space-cleared.
+void draw_manager_overlay(ftxui::Screen& s, int W, int H,
+                          const ManagerOverlay& m, const Colors& c) {
+  const OverlayBox b = OverlayBox::make(W, H, 60, std::min(H - 4, 30), 2);
+  clear_box(s, b.x0, b.y0, b.w, b.h);
+  box_border(s, b, "Panel Manager",
+             "\xE2\x86\x91\xE2\x86\x93 select \xC2\xB7 space toggle \xC2\xB7 "
+             "K/J move \xC2\xB7 r rename",
+             c);
+  // Interior: one hint row at the bottom, the rest for rows.
+  const int inner_top = b.y0 + 1;
+  const int inner_bottom = b.y0 + b.h - 2;  // hint row
+  const int row_count = inner_bottom - inner_top;  // rows above the hint
+  if (row_count < 1) return;
+  const int x = b.x0 + 2;
+  const int xw = b.w - 4;
+
+  auto put_row = [&](int y, const std::string& mark, const ftxui::Color& mc,
+                     const std::string& label, const ftxui::Color& lc,
+                     bool bold, const std::string& suffix,
+                     const ftxui::Color& sc) {
+    put_str(s, x, y, mark + " ", mc);
+    put_str(s, x + 2, y, truncate(label, std::max(0, xw - 2 - utf8_cols(suffix))), lc,
+            bold);
+    if (!suffix.empty())
+      put_str(s, x + 2 + utf8_cols(truncate(label, std::max(
+                                0, xw - 2 - utf8_cols(suffix)))),
+              y, suffix, sc);
+  };
+
+  if (m.confirm_reset) {
+    put_str(s, x, inner_top, "Reset panels to defaults?", c.text, true);
+    put_str(s, x, inner_top + 1, "(y)es", c.accent, true);
+    put_str(s, x + 8, inner_top + 1, "(n)o", c.label_dim);
+    return;
+  }
+
+  if (m.submenu) {
+    put_str(s, x, inner_top, truncate(m.submenu_title, xw), c.title, true);
+    for (int k = 0; k < row_count - 1 && k < (int)m.sub_rows.size(); ++k) {
+      const auto& r = m.sub_rows[k];
+      const int y = inner_top + 1 + k;
+      put_str(s, x, y, (r.hidden ? "\xC2\xB7 " : "\xE2\x9C\x93 "),
+              r.hidden ? c.label_dim : c.series[0]);
+      put_str(s, x + 2, y, truncate(r.label, xw - 2 - (r.hidden ? 9 : 0)),
+              r.selected ? c.accent : c.text, r.selected);
+      if (r.hidden) put_str(s, x + 2 + utf8_cols(truncate(r.label, xw - 11)), y,
+                            " (hidden)", c.label_dim);
+    }
+    return;
+  }
+
+  const int n = (int)m.rows.size();
+  int scroll = std::clamp(m.scroll, 0, std::max(0, n - row_count));
+  for (int k = 0; k < row_count && scroll + k < n; ++k) {
+    const auto& r = m.rows[scroll + k];
+    const int y = inner_top + k;
+    if (m.renaming && scroll + k == m.rename_row) {
+      put_str(s, x, y, "\xE2\x9C\x93 ", c.series[0]);
+      put_str(s, x + 2, y, "Rename: ", c.label_dim);
+      const std::string buf = truncate(m.rename_buf, std::max(0, xw - 11));
+      put_str(s, x + 10, y, buf, c.text);
+      put_px(s, x + 10 + utf8_cols(buf), y, "\xE2\x96\x8C", c.accent, true);
+      continue;
+    }
+    const std::string suffix = r.present ? "" : " (not present)";
+    const ftxui::Color lc = r.selected ? c.accent
+                                       : (r.present ? c.text : c.label_dim);
+    put_row(y, (r.visible ? "\xE2\x9C\x93" : "\xC2\xB7"),
+            r.visible ? c.series[0] : c.label_dim, r.label, lc, r.selected,
+            suffix, c.label_dim);
+  }
+}
+
+// The `?` help overlay: grouped key lines, any key closes.
+void draw_help_overlay(ftxui::Screen& s, int W, int H, const HelpOverlay& h,
+                       const Colors& c) {
+  int n = (int)h.lines.size();
+  const int max_rows = H - 4;
+  if (n > max_rows) n = max_rows;
+  const OverlayBox b = OverlayBox::make(W, H, 72, n + 2, 2);
+  clear_box(s, b.x0, b.y0, b.w, b.h);
+  box_border(s, b, h.title, "any key closes", c);
+  const int x = b.x0 + 2;
+  const int xw = b.w - 4;
+  int keys_w = 0;
+  for (int i = 0; i < n; ++i) keys_w = std::max(keys_w, utf8_cols(h.lines[i].first));
+  keys_w = std::min(keys_w, xw / 2);
+  for (int i = 0; i < n; ++i) {
+    const int y = b.y0 + 1 + i;
+    put_str(s, x, y, h.lines[i].first + std::string(std::max(0, keys_w - utf8_cols(h.lines[i].first)) + 2, ' '), c.accent);
+    put_str(s, x + keys_w + 2, y, truncate(h.lines[i].second, std::max(0, xw - keys_w - 2)), c.text);
+  }
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -725,7 +932,9 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
                   const Snapshot& latest, const FrozenFrame* frozen,
                   FrameState& state, const Theme& theme, ColorMode mode,
                   bool paused, long long interval_ms, LayoutCache& cache,
-                  int top_row, int64_t window_ns) {
+                  int top_row, int64_t window_ns, const FrameChrome& chrome,
+                  int focus_panel, const ManagerOverlay* manager,
+                  const HelpOverlay* help) {
   screen.Clear();
   const int W = screen.dimx(), H = screen.dimy();
   const Colors c = build_colors(theme, mode);
@@ -763,13 +972,17 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
     std::vector<std::vector<float>> vs(p.series.size());
     std::vector<RawWindow> raws(p.series.size());
     if (frozen) {
-      for (std::size_t i = 0; i < p.series.size(); ++i)
+      for (std::size_t i = 0; i < p.series.size(); ++i) {
+        if (p.series[i].hidden) continue;  // no data, no line, no legend
         if (const FrozenFrame::Window* w = frozen->find(p.series[i].id))
           raws[i] = RawWindow{w->t.data(), w->v.data(), w->t.size(), w->t_start,
                               w->t_end, w->span_ns};
+      }
     } else {
-      for (std::size_t i = 0; i < p.series.size(); ++i)
+      for (std::size_t i = 0; i < p.series.size(); ++i) {
+        if (p.series[i].hidden) continue;
         load_live(raws[i], ts[i], vs[i], store, p.series[i].id, window_ns);
+      }
     }
 
     bool sleeping = false;
@@ -791,16 +1004,17 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
         legend_values[i] = p.series[i].value_fn(snap);
 
     draw_panel(screen, px, py, pw, ph, p, pm, sleeping, raws, legend_values, snap,
-               vmax, c);
+               vmax, c, pi == focus_panel);
   };
 
   // --- panel grid: the visible rows of the layout -------------------------------
+  // lo.panels is parallel to the VISIBLE panels; map back to the page index.
   for (int r = tr; r <= last_visible && r < lo.rows(); ++r)
     for (int i = 0; i < (int)lo.panels.size(); ++i)
       if (lo.panels[i].rect.row == r) {
         const auto& pl = lo.panels[i];
-        render_one(i, pl.rect.x, 1 + pl.rect.y - scroll_top, pl.rect.w, pl.rect.h,
-                   pl.mode);
+        render_one(cache.visible_idx[i], pl.rect.x, 1 + pl.rect.y - scroll_top,
+                   pl.rect.w, pl.rect.h, pl.mode);
       }
 
   // --- header: <CPU> & <dGPU>  [PAUSED] <interval> <window> <time> --------------
@@ -850,8 +1064,29 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
         foot += " \xC2\xB7 \xE2\x96\xB2 " + std::to_string(hidden) +
                 " more \xE2\x96\xBC";  // "· ▲ N more ▼"
     }
+    // Right side: a broken config is warned about PERMANENTLY; otherwise a
+    // transient toast (e.g. "saved") while now < toast_until.
+    const bool toast_live =
+        !chrome.toast.empty() && Clock::now() < chrome.toast_until;
+    if (!chrome.config_warning.empty() || toast_live) {
+      const std::string msg = chrome.config_warning.empty()
+                                  ? chrome.toast
+                                  : "config error (" + chrome.config_warning +
+                                        ") \xE2\x80\x94 using defaults, not saving";
+      const ftxui::Color mc =
+          chrome.config_warning.empty() ? c.text : c.warn;
+      const int room = W - utf8_cols(truncate(foot, W)) - 2;
+      if (room > 6) {
+        const std::string shown = truncate(msg, room);
+        put_str(screen, W - utf8_cols(shown) - 1, H - 1, shown, mc);
+      }
+    }
     put_str(screen, 0, H - 1, truncate(foot, W), c.label_dim);
   }
+
+  // --- Phase 4 overlays (last, on top of everything) ---------------------------
+  if (manager) draw_manager_overlay(screen, W, H, *manager, c);
+  if (help) draw_help_overlay(screen, W, H, *help, c);
 }
 
 namespace {
@@ -879,12 +1114,32 @@ ftxui::Element build_frame_element(const Hardware& hw,
                                    const FrozenFrame* frozen, FrameState& state,
                                    const Theme& theme, ColorMode mode, bool paused,
                                    long long interval_ms, LayoutCache& cache,
-                                   int top_row, int64_t window_ns) {
+                                   int top_row, int64_t window_ns,
+                                   const FrameChrome& chrome, int focus_panel,
+                                   const ManagerOverlay* manager,
+                                   const HelpOverlay* help) {
+  // The Element outlives this call (FTXUI renders it after the caller's
+  // OnRender has returned), so the chrome / overlays are COPIED into the
+  // closure: their owners are caller locals. (hw / page / store / latest /
+  // state / theme / cache are captured by reference; their owners outlive the
+  // element in every call path.)
+  FrameChrome chrome_copy = chrome;
+  ManagerOverlay manager_copy;
+  HelpOverlay help_copy;
+  const bool has_manager = manager != nullptr;
+  const bool has_help = help != nullptr;
+  if (has_manager) manager_copy = *manager;
+  if (has_help) help_copy = *help;
   return std::make_shared<FrameNode>(
       [&hw, &page, &store, &latest, frozen, &state, &theme, mode, paused,
-       interval_ms, &cache, top_row, window_ns](ftxui::Screen& screen) {
+       interval_ms, &cache, top_row, window_ns, focus_panel, chrome_copy,
+       manager_copy, help_copy, has_manager,
+       has_help](ftxui::Screen& screen) {
         render_frame(screen, hw, page, store, latest, frozen, state, theme, mode,
-                     paused, interval_ms, cache, top_row, window_ns);
+                     paused, interval_ms, cache, top_row, window_ns,
+                     chrome_copy, focus_panel,
+                     has_manager ? &manager_copy : nullptr,
+                     has_help ? &help_copy : nullptr);
       });
 }
 
