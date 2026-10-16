@@ -1,0 +1,71 @@
+# GETH — Configuration
+
+The dashboard reads `$XDG_CONFIG_HOME/geth/config.toml` (or
+`~/.config/geth/config.toml` when `XDG_CONFIG_HOME` is unset). On the first
+run there is no file: the defaults are used, and the file is written only the
+first time a setting actually changes (never on a bare launch).
+`--config PATH` points at a different file, and `--no-save` makes it
+read-only (changes apply for the session only, and no "saved" toast appears).
+A config the app wrote is a good starting point to edit by hand.
+
+The uninstall paths (`pacman -R geth`, `cmake --build build --target
+uninstall`) never touch this file. Removing `~/.config/geth` (or just the
+`config.toml`) restores the defaults.
+
+## Schema
+
+Unknown keys (and malformed values) are warned about on `stderr` and ignored,
+never an error:
+
+```toml
+[general]
+interval_ms = 1000      # 250 | 500 | 1000 | 2000 | 5000
+window = "1m"           # "30s" | "1m" | "2m" | "5m" | "10m"
+columns = "auto"        # "auto" | 1..8
+title = ""              # header title override ("" = auto: CPU & GPU names)
+theme = "cyberpunk-blue"# built-in or custom theme name (see --list-themes)
+background = "transparent"  # "transparent" | "solid" (paints the theme bg)
+
+# One [[panels]] table per panel, in display order.
+[[panels]]
+id = "cpu"              # stable panel id (below)
+visible = true
+title = ""              # "" = the default title
+hidden_series = []      # series ids hidden in this panel
+
+# Per-GPU overrides, keyed by PCI bus id. A `name` here is a GLOBAL rename:
+# it applies to every panel, legend, and the header for that bus.
+[gpus."0000:01:00.0"]
+name = "RTX 3050"
+integrated = "auto"     # "auto" | true | false
+```
+
+### Panel and series ids
+
+Panel ids: `cpu`, `mem`, `temps`, `power`, `net`, `disk`, and
+`gpu.<bus>.usage` / `gpu.<bus>.vram` (one usage + one VRAM panel per GPU).
+Series ids look like `cpu.usage`, `mem.ram_used`, `gpu.<bus>.vram`.
+
+A per-panel `title` overrides the default for that one panel only; the
+`[gpus."…"].name` rename is what changes *every* occurrence of the GPU's name
+(both its panels, the temps/power legends, and the header).
+
+### Merge rules on load
+
+- A panel whose hardware is **absent** stays in the file but is not shown (it
+  appears as "(not present)" in the panel manager, so its settings are kept
+  for the day the hardware returns).
+- A panel whose hardware is **new** is inserted **visible** at its default
+  position.
+- A panel present in **both** keeps the file's order and settings.
+
+### Save behavior
+
+- Saves are **atomic** (a temp file in the same directory, then `rename`), so
+  a crash never leaves a half-written config, and a stale `.tmp` from a
+  crashed save is dropped on the next load.
+- A file that does not parse is **never overwritten**: the defaults are used,
+  the footer shows the parse error, and `save()` refuses.
+- Test-safety: when `GETH_TEST=1` is set (soaks, CI, dev harnesses), saving
+  is refused anywhere under the real `~/.config`. Set `XDG_CONFIG_HOME` to a
+  temporary directory instead.

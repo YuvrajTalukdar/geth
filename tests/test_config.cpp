@@ -7,6 +7,7 @@
 
 #include <doctest.h>
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -30,8 +31,9 @@ std::string tmp_dir() {
 std::string tmp_path(const std::string& name) {
   const std::string p = tmp_dir() + "/" + name;
   // The temp dir persists between runs: start each test from a clean slate.
+  // remove_all (not remove): tests may leave directory trees behind.
   std::error_code ec;
-  std::filesystem::remove(p, ec);
+  std::filesystem::remove_all(p, ec);
   std::filesystem::remove(p + ".tmp", ec);
   return p;
 }
@@ -255,6 +257,76 @@ TEST_CASE("save is atomic (tmp + rename) and leaves no .tmp behind") {
   const ui::Config r = ui::Config::load(path, false);
   CHECK(r.loaded);
   CHECK_EQ(r.interval_ms, 2000);
+}
+
+TEST_CASE("GETH_TEST=1 refuses saves under the real ~/.config") {
+  // Restore HOME / XDG_CONFIG_HOME / GETH_TEST exactly as found on scope exit,
+  // so a mid-test failure still leaves the environment untouched.
+  struct EnvGuard {
+    std::string saved_home, saved_xdg, saved_test;
+    bool had_home, had_xdg, had_test;
+    EnvGuard() {
+      const char* h = std::getenv("HOME");
+      const char* x = std::getenv("XDG_CONFIG_HOME");
+      const char* t = std::getenv("GETH_TEST");
+      had_home = h != nullptr;
+      had_xdg = x != nullptr;
+      had_test = t != nullptr;
+      saved_home = had_home ? h : "";
+      saved_xdg = had_xdg ? x : "";
+      saved_test = had_test ? t : "";
+    }
+    ~EnvGuard() {
+      if (had_home) setenv("HOME", saved_home.c_str(), 1);
+      else unsetenv("HOME");
+      if (had_xdg) setenv("XDG_CONFIG_HOME", saved_xdg.c_str(), 1);
+      else unsetenv("XDG_CONFIG_HOME");
+      if (had_test) setenv("GETH_TEST", saved_test.c_str(), 1);
+      else unsetenv("GETH_TEST");
+    }
+  } guard;
+
+  // A fake HOME that looks like the user's real one: ~/.config exists.
+  const std::string home = tmp_path("home");
+  std::error_code ec;
+  std::filesystem::create_directories(home + "/.config", ec);
+  const std::string xdg = tmp_path("xdg");
+  const std::string real = home + "/.config/geth/config.toml";
+
+  // 1) GETH_TEST=1, no XDG_CONFIG_HOME -> default path IS under the real
+  //    ~/.config -> save must be refused, nothing written.
+  setenv("HOME", home.c_str(), 1);
+  unsetenv("XDG_CONFIG_HOME");
+  setenv("GETH_TEST", "1", 1);
+  {
+    ui::Config c;
+    c.path = ui::Config::default_path();
+    CHECK_EQ(c.path, real);
+    CHECK_FALSE(c.save());
+    CHECK_FALSE(std::filesystem::exists(c.path));
+  }
+
+  // 2) GETH_TEST=1 but XDG_CONFIG_HOME points at a temp dir -> allowed.
+  setenv("XDG_CONFIG_HOME", xdg.c_str(), 1);
+  {
+    ui::Config c;
+    c.path = ui::Config::default_path();
+    CHECK_EQ(c.path, xdg + "/geth/config.toml");
+    CHECK(c.save());
+    CHECK(std::filesystem::exists(c.path));
+  }
+
+  // 3) GETH_TEST unset -> the guard is off; saving under the (fake) real
+  //    ~/.config is allowed again.
+  unsetenv("GETH_TEST");
+  unsetenv("XDG_CONFIG_HOME");
+  {
+    ui::Config c;
+    c.path = ui::Config::default_path();
+    CHECK_EQ(c.path, real);
+    CHECK(c.save());
+    CHECK(std::filesystem::exists(c.path));
+  }
 }
 
 TEST_CASE("load drops a stale .tmp and reads the main file") {

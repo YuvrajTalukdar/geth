@@ -6,6 +6,7 @@
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
+#include <iostream>
 #include <map>
 #include <set>
 #include <string>
@@ -1070,6 +1071,20 @@ int run_ui(Collector& collector, const Hardware& hw_in, const UiOptions& opts) {
           screen.PostEvent(ftxui::Event::Custom);
         }
       });
+
+  // First frame at row 0 regardless of where the shell prompt sat (v1.0.1).
+  // FTXUI enters the alternate screen inside Loop() and then draws frame 1
+  // from the cursor's CURRENT row — it never homes the cursor, so with the
+  // prompt low on the screen frame 1 started low and scrolled up. Enter the
+  // alternate screen ourselves first: that saves the main screen and keeps
+  // the cursor, then home + clear put the cursor at 0,0. FTXUI's own
+  // re-entry inside Loop() is a no-op on a terminal already in the
+  // alternate screen, so frame 1 is drawn at the top; on exit FTXUI's
+  // `?1049l` restores the (saved, untouched) main screen.
+  std::cout << "\x1b[?1049h"  // enter alternate screen (main screen saved)
+            << "\x1b[H"        // cursor home
+            << "\x1b[2J";      // clear the alternate screen
+  std::cout.flush();
 
   screen.Loop(component);  // blocks until q / Esc / Ctrl-C (or count ticks)
   util::uninstall_sighup_restore();

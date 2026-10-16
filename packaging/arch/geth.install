@@ -1,0 +1,19 @@
+# GETH install script: prints a short note about the optional RAPL udev
+# rule. It does nothing automatically — enabling CPU package power reading
+# without root is always the user's explicit choice.
+
+_geth_rapl_note() {
+    echo "Optional: to read CPU package power (RAPL) without root, copy the"
+    echo "shipped udev rule and reload:"
+    echo "  sudo cp /usr/share/geth/99-geth-rapl.rules /etc/udev/rules.d/"
+    echo "  sudo udevadm trigger --subsystem-match=powercap"
+    echo "Details: README section 'CPU power permissions'."
+}
+
+post_install() {
+    _geth_rapl_note
+}
+
+post_upgrade() {
+    _geth_rapl_note
+}

@@ -1,0 +1,47 @@
+# Uninstall driver for source installs. Removes exactly the files recorded
+# in this build's install manifest (every file `cmake --install` wrote).
+# Nothing else is touched — in particular the user config in
+# ~/.config/geth, which the manifest can never contain.
+#
+#   cmake --build <build> --target uninstall
+#
+# Files that no longer exist (prefix already removed by hand) are reported,
+# not an error.
+
+if(NOT EXISTS "@BUILD_DIR@/install_manifest.txt")
+  message(FATAL_ERROR
+    "Cannot uninstall: no install manifest found at\n"
+    "  @BUILD_DIR@/install_manifest.txt\n"
+    "Run `cmake --install @BUILD_DIR@` first (or remove the files by hand).")
+endif()
+
+file(READ "@BUILD_DIR@/install_manifest.txt" manifest)
+string(REGEX REPLACE "\r?\n" ";" manifest "${manifest}")
+
+set(removed 0)
+set(missing 0)
+foreach(file IN LISTS manifest)
+  if(IS_DIRECTORY "${file}")
+    # install_manifest.txt records created directories after their contents;
+    # remove only if empty (a file we installed must already be gone).
+    if(EXISTS "${file}" AND IS_DIRECTORY "${file}")
+      file(GLOB _contents "${file}/*")
+      if(_contents)
+        message(STATUS "keeping non-empty directory: ${file}")
+      else()
+        file(REMOVE_DIRECTORY "${file}")
+        message(STATUS "removed directory: ${file}")
+        math(EXPR removed "${removed} + 1")
+      endif()
+    endif()
+  elseif(EXISTS "${file}")
+    file(REMOVE "${file}")
+    message(STATUS "removed: ${file}")
+    math(EXPR removed "${removed} + 1")
+  else()
+    message(STATUS "already gone: ${file}")
+    math(EXPR missing "${missing} + 1")
+  endif()
+endforeach()
+
+message(STATUS "uninstall: ${removed} removed, ${missing} already gone")

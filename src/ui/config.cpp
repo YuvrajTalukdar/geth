@@ -376,6 +376,27 @@ std::string Config::serialize() const {
 bool Config::save() const {
   if (no_save) return true;  // --no-save: read-only
   if (!loaded) return false;  // never overwrite a config we could not parse
+  // Test-safety guard (v1.0.1): with GETH_TEST=1 (set by soaks, CI and the
+  // dev harnesses) refuse to write anywhere under the user's REAL
+  // ~/.config. A temporary XDG_CONFIG_HOME (mktemp -d) is always fine; the
+  // default location (or an explicit path under ~/.config) is refused.
+  if (const char* test = std::getenv("GETH_TEST"); test && *test) {
+    if (const char* home = std::getenv("HOME"); home && *home) {
+      std::error_code ec;
+      const std::filesystem::path real = std::filesystem::weakly_canonical(
+          std::string(home) + "/.config", ec);
+      const std::filesystem::path here =
+          std::filesystem::weakly_canonical(path, ec);
+      const std::string real_str = real.string() + "/";
+      if (!ec && !real_str.empty() &&
+          here.string().compare(0, real_str.size(), real_str) == 0) {
+        std::fprintf(stderr,
+                     "geth: GETH_TEST=1: refusing to save config under your "
+                     "real ~/.config (set XDG_CONFIG_HOME to a temp dir)\n");
+        return false;
+      }
+    }
+  }
   std::error_code ec;
   const std::filesystem::path p(path);
   if (p.has_parent_path()) std::filesystem::create_directories(p.parent_path(), ec);

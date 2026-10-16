@@ -2,6 +2,71 @@
 
 All notable changes to GETH. The format follows the five-phase build plan.
 
+## 1.0.1 — Release polish (2026-10-16)
+
+Distribution-ready: first-frame positioning fix, install layout, Arch
+package, screenshots, and reference documentation.
+
+### Fixes
+
+- **First-frame position**: after entering the alternate screen, the
+  cursor is homed and the screen cleared before the first frame is
+  drawn, so the dashboard starts at row 0 even when the shell prompt
+  sits near the bottom of the terminal. Previously a full-height frame
+  drawn from the prompt row scrolled the page up (verified in a pty
+  harness with the prompt placed 30 rows down: 0 scroll-ups now, 30
+  before).
+
+### License and version
+
+- **MIT license** (`LICENSE`, copyright Yuvraj Talukdar). The SPDX
+  identifier lives in a single CMake variable (`GETH_LICENSE`); the
+  version is defined once in `CMakeLists.txt`. The PKGBUILD's `pkgver`
+  and `license=` are checked against them when the package is built —
+  a mismatch fails the build.
+
+### Install layout and packaging
+
+- `cmake --install` places: `bin/geth`,
+  `share/geth/themes/example.toml`,
+  `share/geth/99-geth-rapl.rules` (shipped, **not** activated),
+  `share/man/man1/geth.1.gz`, `share/doc/geth/{README,CHANGELOG}.md`,
+  `share/licenses/geth/LICENSE`. It never touches `/etc` or
+  `~/.config/geth`.
+- `cmake --build <build> --target uninstall` removes exactly the files
+  the install wrote (from CMake's install manifest) and nothing else.
+- **Arch package**: `tools/package-arch.sh` (or
+  `cmake --build build-rel --target package-arch`) builds
+  `dist/geth-1.0.1-1-x86_64.pkg.tar.zst` + `dist/SHA256SUMS` from a
+  `git archive` of a clean HEAD, with pinned, checksummed dependencies
+  and **no network in `build()`**. `geth.install` prints a short RAPL
+  note after install/upgrade and does nothing else.
+- `namcap` clean on the PKGBUILD and the built package: no errors; the
+  only warnings are the standard dependency heuristics about `gcc-libs`,
+  which is the correct provider of `libstdc++.so.6` and
+  `libgcc_s.so.1`.
+- New man page: `docs/geth.1` (roff/mdoc) — synopsis, all flags, key
+  bindings, files, environment, examples.
+
+### Documentation
+
+- The long reference content moved to `docs/CONFIG.md`,
+  `docs/THEMES.md`, `docs/HARDWARE.md`, and `docs/DEVELOPMENT.md`; the
+  README is now the front door (pitch, features, screenshots, hardware,
+  install, usage, FAQ).
+- Nine screenshots in `docs/screenshots/` captured live from a Konsole
+  window running `geth --demo` (Spectacle, 1920×1080 screen);
+  `tools/frame2png.py` and `--render-frame` remain for CI-style static
+  frames.
+
+### Testing
+
+- **`GETH_TEST=1` save guard**: when set, `Config::save()` refuses to
+  write anywhere under the real `~/.config` (unit-tested: guard on,
+  guard on + temp `XDG_CONFIG_HOME`, guard off).
+- 30-minute Release soak with a key-cycling workload: RSS flat at
+  1/10/20/30 minutes.
+
 ## 1.0.0 — Phase 5: Themes, robustness, packaging (2026-10-16)
 
 First stable release. Adds theming, hardens the runtime, and ships

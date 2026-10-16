@@ -4,7 +4,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(geth
-  VERSION 1.0.0
+  VERSION 1.0.1
   DESCRIPTION "GETH — Geth Engine for Tracking Hardware"
   LANGUAGES CXX)
 
@@ -24,8 +24,13 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(GETH_BUILD_TESTS "Build the unit tests (fetches doctest)" ON)
 
 # The installed binary name. Go Ethereum also installs a `geth` binary, so on
-# a machine where both are wanted build with -DGETH_BINARY_NAME=gethmon.
+# a machine where both are wanted build with -DGETH_BINARY_NAME=geth-engine.
 set(GETH_BINARY_NAME "geth" CACHE STRING "Name of the installed binary")
+
+# SPDX license identifier. Defined ONCE here; the install rule and the
+# packaging scripts (PKGBUILD's license=, package-arch.sh's consistency
+# check) all read from this variable — change it here and nowhere else.
+set(GETH_LICENSE "MIT" CACHE STRING "SPDX license identifier for GETH")
 
 # ---------------------------------------------------------------------------
 # FTXUI (terminal UI framework) — pinned to an exact tag for reproducibility.
@@ -138,16 +143,70 @@ add_custom_target(install-udev
   VERBATIM)
 
 # ---------------------------------------------------------------------------
-# Install: the binary (named by GETH_BINARY_NAME), the example theme, and the
-# udev rule — the rule lands under share/geth/, NOT /etc. `cmake --install`
-# never touches /etc; putting the rule there is a separate, root-only,
-# explicit `--target install-udev` step the user runs.
-#   cmake --install build-rel --prefix /usr/local
+# Install layout (all under the install prefix, e.g. /usr or ~/.local):
+#   <prefix>/bin/geth                        binary (name: GETH_BINARY_NAME)
+#   <prefix>/share/geth/themes/example.toml  example custom theme
+#   <prefix>/share/geth/99-geth-rapl.rules   udev rule — SHIPPED, NOT
+#                                            activated; the user opts in by
+#                                            copying it to /etc/udev/rules.d
+#                                            (or: sudo cmake --build .
+#                                            --target install-udev)
+#   <prefix>/share/man/man1/geth.1.gz        man page (docs/geth.1, roff)
+#   <prefix>/share/doc/geth/{README,CHANGELOG}.md
+#   <prefix>/share/licenses/geth/LICENSE
+# `cmake --install` never touches /etc and never touches the user's config
+# (~/.config/geth). Uninstall: `cmake --build . --target uninstall`.
 # ---------------------------------------------------------------------------
-include(GNUInstallDirs)
+# Man pages ship gzipped (the convention for man1). Compress docs/geth.1 into
+# the build tree at build time, then install the .gz — no shell, so paths with
+# spaces are safe. `makepkg`/pacman accept an already-gzipped page as-is.
+set(GETH_MAN_GZ "${CMAKE_CURRENT_BINARY_DIR}/${GETH_BINARY_NAME}.1.gz")
+set(GETH_MAN_GZ_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/gzip_man.cmake")
+file(WRITE "${GETH_MAN_GZ_SCRIPT}"
+  "execute_process(COMMAND gzip -9 -c \"${CMAKE_CURRENT_SOURCE_DIR}/docs/geth.1\"\n"
+  "  OUTPUT_FILE \"${GETH_MAN_GZ}\")\n")
+add_custom_command(
+  OUTPUT "${GETH_MAN_GZ}"
+  COMMAND ${CMAKE_COMMAND} -P "${GETH_MAN_GZ_SCRIPT}"
+  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/docs/geth.1"
+  COMMENT "Gzipping the man page"
+  VERBATIM)
+add_custom_target(geth-man DEPENDS "${GETH_MAN_GZ}")
+add_dependencies(geth geth-man)
+
 install(TARGETS geth RUNTIME DESTINATION bin)
 install(FILES packaging/themes/example.toml DESTINATION share/geth/themes)
 install(FILES packaging/99-geth-rapl.rules DESTINATION share/geth)
+install(FILES "${GETH_MAN_GZ}" DESTINATION share/man/man1)
+install(FILES README.md CHANGELOG.md DESTINATION share/doc/geth)
+install(FILES LICENSE DESTINATION share/licenses/${GETH_BINARY_NAME}
+        RENAME LICENSE)
+
+# ---------------------------------------------------------------------------
+# Uninstall (source installs): remove every file this install placed, from
+# CMake's install manifest. The manifest lists only what `cmake --install`
+# wrote — the user config in ~/.config/geth is never in it, so it is never
+# touched. (Pacman-managed installs use `pacman -R` instead.)
+# ---------------------------------------------------------------------------
+# @BUILD_DIR@ is substituted at configure time (the -P script cannot receive
+# it any other way — cmake -P -D only sets script-scope variables, which the
+# configured text does not reference).
+set(BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}")
+configure_file(cmake/uninstall.cmake.in
+               ${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake @ONLY)
+add_custom_target(uninstall
+  ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake
+  COMMENT "Uninstalling every file listed in install_manifest.txt")
+
+# ---------------------------------------------------------------------------
+# package-arch: build the Arch .pkg.tar.zst from a clean `git archive` of the
+# current tree (see tools/package-arch.sh). Needs base-devel (makepkg).
+# ---------------------------------------------------------------------------
+add_custom_target(package-arch
+  COMMAND ${CMAKE_COMMAND} -E env bash
+          ${CMAKE_CURRENT_SOURCE_DIR}/tools/package-arch.sh
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+  COMMENT "Building the Arch package via tools/package-arch.sh")
 
 # ---------------------------------------------------------------------------
 # Tests (doctest is header-only; fetch the tagged archive and expose the header)

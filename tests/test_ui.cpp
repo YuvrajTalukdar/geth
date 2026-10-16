@@ -310,6 +310,35 @@ TEST_CASE("no background color is ever emitted (160x48, all color modes)") {
   }
 }
 
+// v1.0.1 Part A.3: every BUILT-IN theme renders in all three color modes
+// (paired with the 16-slot distinctness test in test_theme.cpp).
+TEST_CASE("every built-in theme renders in truecolor, 256 and 16 colors") {
+  const UiFixture fx;
+  const ui::Theme themes[] = {ui::Theme::cyberpunk_blue(), ui::Theme::matrix_green(),
+                              ui::Theme::crimson_red(), ui::Theme::amber()};
+  const ui::ColorMode modes[] = {ui::ColorMode::TrueColor, ui::ColorMode::Color256,
+                                 ui::ColorMode::Color16};
+  for (const auto& theme : themes)
+    for (auto mode : modes) {
+      ui::FrameState state;
+      ui::LayoutCache cache = cache_for(fx.page);
+      ftxui::Screen screen(160, 48);
+      screen.Clear();
+      ui::render_frame(screen, fx.hw, fx.page, fx.c.store(), fx.c.latest(), nullptr, state,
+                       theme, mode, /*paused=*/false, 1000, cache, 0, kWinNs);
+      const std::string out = screen.ToString();
+      CHECK(!out.empty());
+      CHECK(out.find('\xe2') != std::string::npos);  // box/braille glyphs drawn
+      CHECK(!has_forbidden_style(out));  // no background SGR in any mode
+      if (mode == ui::ColorMode::TrueColor)
+        CHECK(out.find("38;2;") != std::string::npos);  // 24-bit fg present
+      else if (mode == ui::ColorMode::Color256)
+        CHECK(out.find("38;5;") != std::string::npos);  // 256-color fg present
+      else
+        CHECK(out.find("38;5;") == std::string::npos);  // 16: palette SGRs only
+    }
+}
+
 TEST_CASE("never crashes at tiny / degenerate terminal sizes") {
   const UiFixture fx;
   const ui::Theme theme = ui::Theme::cyberpunk_blue();

@@ -1,0 +1,41 @@
+################ BEFORE (v1.0.0, pre-fix) ################
+stream bytes: 262542
+first ?1049h at byte 69
+first frame (ESC[2K) at byte 116
+byte-level: ESC[H present before frame: False
+byte-level: ESC[2J present before frame: False
+BYTE-LEVEL FAIL
+
+--- after frame 1 (cursor 0,0, in_alt=True) ---
+row 0: 'Ryzen 5 5600H & RTX 3050 Laptop                                                                      500ms · 1m 19:32:50'
+row 1: '╭─ CPU · 45.7 % · 2.13 GHz · 2.53 GHz ─────────────────────╮╭─ RTX 3050 Laptop ────────────────────────────────────────╮'
+scroll-ups while drawing frame 1: 30
+--- final (cursor 30,0, in_alt=False) ---
+row 0: '                                                                                                                        '
+row 1: '                                                                                                                        '
+row 30: '                                                                                                                        '
+
+EMULATOR title@row0=ok  scroll-ups-during-frame1=30 (FAIL (frame started at the prompt row))
+EMULATOR FAIL
+(temp XDG_CONFIG_HOME: /tmp/geth-ff-zhdwgf_5)
+
+################ AFTER (v1.0.1, fixed) ################
+stream bytes: 262559
+first ?1049h at byte 60
+first frame (ESC[2K) at byte 131
+byte-level: ESC[H present before frame: True
+byte-level: ESC[2J present before frame: True
+BYTE-LEVEL PASS
+
+--- after frame 1 (cursor 0,0, in_alt=True) ---
+row 0: 'Ryzen 5 5600H & RTX 3050 Laptop                                                                      500ms · 1m 19:32:57'
+row 1: '╭─ CPU · 45.7 % · 2.13 GHz · 2.53 GHz ─────────────────────╮╭─ RTX 3050 Laptop ────────────────────────────────────────╮'
+scroll-ups while drawing frame 1: 0
+--- final (cursor 30,0, in_alt=False) ---
+row 0: '                                                                                                                        '
+row 1: '                                                                                                                        '
+row 30: '                                                                                                                        '
+
+EMULATOR title@row0=ok  scroll-ups-during-frame1=0 (ok)
+EMULATOR PASS
+(temp XDG_CONFIG_HOME: /tmp/geth-ff-am8kk2hz)

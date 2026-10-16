@@ -3,3 +3,4 @@ build-debug/
 build-rel/
 CMakeUserPresets.json
 geth_test.bin
+dist/

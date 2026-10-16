@@ -1,0 +1,250 @@
+.\" GETH \- Geth Engine for Tracking Hardware
+.\" Installed as geth.1 (the name follows the GETH_BINARY_NAME build option).
+.Dd October 16, 2026
+.Dt GETH 1
+.Os Linux
+.Sh NAME
+.Nm geth
+.Nd Geth Engine for Tracking Hardware \- a fast, lightweight terminal system monitor
+.Sh SYNOPSIS
+.Nm
+.Op Ar options
+.Pp
+With no option,
+.Nm
+starts the interactive dashboard.
+.Sh DESCRIPTION
+.Nm
+is a terminal dashboard that samples CPU, GPU (multiple cards), memory,
+power, temperature, disk and network and draws them as real-time graphs
+inspired by the KDE System Monitor.
+It is built for transparent and blurred terminals: nothing is ever drawn
+with a background color, so the terminal background shows through.
+It never requires root, except optionally enabling RAPL CPU package power
+through the shipped udev rule.
+.Sh OPTIONS
+.Bl -tag -width "  -render-frame COLSxROWS"
+.It Sy -probe
+List every data source, its availability and a fix hint, then exit.
+This is the only mode in which a brief NVML enumeration session runs.
+.It Sy -dump
+Print human-readable samples to stdout and exit on interrupt.
+.It Sy -json
+Print samples as JSON, one object per sample.
+.It Sy -demo
+Use synthetic data; no hardware is accessed.
+.It Sy "-interval Ar ms"
+Sampling interval in milliseconds (default 1000, minimum 10).
+Beats the value stored in the config file.
+.It Sy "-count Ar n"
+Stop after
+.Ar n
+samples (default: run until interrupted).
+.It Sy "-render-frame Ar COLSxROWS"
+Render a single frame at the given size to stdout and exit.
+The sub-options
+.Sy -warmup Ar n
+(samples to collect first; default 60) and
+.Sy -ansi
+(emit full SGR escape codes instead of plain text) apply only here, as does
+.Sy -script Ar events
+(see below).
+.It Sy "-layout-report Ar COLSxROWS"
+Print the layout engine's decision (candidate scores, chosen layout,
+per-panel rectangles) at the given size and exit.
+.It Sy -perf
+Benchmark relayout cost and layout-cache reuse, then exit.
+.It Sy "-columns Ar n"
+Pin the layout column count (UI, render and report).
+.It Sy -stats
+Print render/perf statistics on exit.
+.It Sy "-color Ar mode"
+Force a color mode:
+.Sy truecolor ,
+.Sy 256
+or
+.Sy 16 .
+Default: auto-detect from
+.Ev COLORTERM .
+.It Sy "-config Ar path"
+Path to the config file (default:
+.Pa $XDG_CONFIG_HOME/geth/config.toml ,
+then
+.Pa ~/.config/geth/config.toml ).
+.It Sy "-theme Ar name"
+Theme to use: a built-in name or a custom theme file name.
+Default: the
+.Sq general
+theme from the config.
+.It Sy -list-themes
+List the selectable themes (built-in and custom) and mark the active one.
+Does not touch the hardware.
+.It Sy -no-save
+Never write the config file (read-only).
+.It Sy "-script Ar events"
+Valid with
+.Sy -render-frame
+only: replay a comma-separated list of synthetic events (keys,
+.Sy enter ,
+.Sy space ,
+.Sy tab ,
+.Sy up/down/left/right ,
+.Sy click:X:Y )
+before the single frame is rendered.
+.It Sy -help , Sy -h
+Show help and exit.
+.It Sy -version
+Print name and version, then exit.
+.El
+.Sh KEY BINDINGS
+.Bl -tag -width "  Shift-Tab"
+.It Sy "q / Esc / Ctrl-C"
+Quit (pending settings are saved first).
+.It Sy e
+Open the panel manager.
+.It Sy ?
+Show help; any key closes it.
+.It Sy space
+Pause/resume the display (sampling continues).
+.It Sy "Tab / Shift-Tab"
+Focus the next/previous visible panel.
+.It Sy x
+Hide the focused panel.
+.It Sy click
+Focus the panel under the cursor.
+.It Sy "+ / ="
+Faster sampling interval (250 ms to 5 s).
+.It Sy "- / _"
+Slower sampling interval.
+.It Sy t
+Cycle the graph window (30 s to 10 m).
+.It Sy c
+Cycle the column count (auto, 1 to 8).
+.It Sy T
+Cycle the theme (saves the config).
+.It Sy "Up / Down or j / k"
+Scroll one row (when the page overflows).
+.It Sy "PgUp / PgDn"
+Scroll one page.
+.It Sy "Home / End"
+Scroll to the top / bottom.
+.It Sy "mouse wheel"
+Scroll (only while the page overflows).
+.El
+.Pp
+In the panel manager:
+.Sy Up / Down
+or
+.Sy j / k
+select a row,
+.Sy space
+toggles visibility,
+.Sy K / J
+move the panel up/down,
+.Sy r
+renames it,
+.Sy enter
+opens the per-series submenu (
+.Sy space
+hides/shows a series),
+.Sy d
+resets the layout,
+.Sy Esc
+closes.
+.Sh FILES
+.Bl -bullet
+.It
+.Pa $XDG_CONFIG_HOME/geth/config.toml
+(or
+.Pa ~/.config/geth/config.toml ):
+the user configuration.
+Installed packages never modify this file; removing it (or the whole
+.Pa ~/.config/geth
+directory) restores the defaults.
+.It
+.Pa $XDG_CONFIG_HOME/geth/themes/ :
+custom theme files (TOML).
+.It
+.Pa /usr/share/geth/themes/example.toml :
+the example theme shipped with the package.
+.It
+.Pa /usr/share/geth/99-geth-rapl.rules :
+a udev rule that makes RAPL CPU package power readable without root.
+It is shipped but not activated; copy it to
+.Pa /etc/udev/rules.d/
+to enable it.
+.It
+.Pa /usr/share/man/man1/geth.1 :
+this manual page.
+.It
+.Pa /usr/share/doc/geth/README.md ,
+.Pa /usr/share/doc/geth/CHANGELOG.md :
+the project documentation.
+.It
+.Pa /usr/share/licenses/geth/LICENSE :
+the MIT license.
+.El
+.Sh ENVIRONMENT
+.Bl -tag -width "XDG_CONFIG_HOME"
+.It Ev XDG_CONFIG_HOME
+Base directory for the config file and the custom themes directory.
+.It Ev HOME
+Fallback base directory when
+.Ev XDG_CONFIG_HOME
+is not set.
+.It Ev COLORTERM
+When set to
+.Sy truecolor
+or
+.Sy 24bit ,
+the truecolor mode is used; otherwise 256-color.
+.It Ev GETH_TEST
+Development guard: when set, saving the config file is refused anywhere
+under the real
+.Pa ~/.config .
+.El
+.Sh EXAMPLES
+Start the dashboard:
+.Bd -literal -offset indent
+geth
+.Ed
+.Pp
+Demo data, no hardware:
+.Bd -literal -offset indent
+geth --demo
+.Ed
+.Pp
+Report which data sources are available:
+.Bd -literal -offset indent
+geth --probe
+.Ed
+.Pp
+Five JSON samples at 250 ms:
+.Bd -literal -offset indent
+geth --json --count 5 --interval 250
+.Ed
+.Pp
+Render one 120x40 frame with SGR colors (useful for screenshots):
+.Bd -literal -offset indent
+geth --render-frame 120x40 --demo --ansi --warmup 30
+.Ed
+.Pp
+Two columns with the amber theme:
+.Bd -literal -offset indent
+geth --columns 2 --theme amber
+.Ed
+.Sh NOTES
+The binary is named
+.Nm
+by default.
+If that clashes with Go-Ethereum's
+.Nm geth
+on your system, build with
+.Sy -DGETH_BINARY_NAME=geth-engine .
+.Sh SEE ALSO
+The project README (
+.Pa /usr/share/doc/geth/README.md
+after installation, or
+.Pa README.md
+in the source tree) for configuration, themes, hardware support and
+packaging documentation.
