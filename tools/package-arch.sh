@@ -109,11 +109,15 @@ PKG_FILE="$(ls "$SRC"/geth-${CMAKE_VER}-*-x86_64.pkg.tar.zst)"
 
 # ------------------------------------------------------------------- dist ---
 mkdir -p dist
-cp "$PKG_FILE" "dist/$(basename "$PKG_FILE")"
+DEST="dist/$(basename "$PKG_FILE")"
+cp "$PKG_FILE" "$DEST"
 (cd dist && sha256sum geth-${CMAKE_VER}-*-x86_64.pkg.tar.zst > SHA256SUMS)
 
 echo
-echo "done:"
+echo "done. Package saved to:"
+echo "  $REPO_ROOT/$DEST"
+echo "  checksum: $REPO_ROOT/dist/SHA256SUMS"
+echo
 ls -la dist/
 echo
 cat dist/SHA256SUMS
