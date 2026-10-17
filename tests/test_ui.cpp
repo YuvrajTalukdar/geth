@@ -26,9 +26,24 @@
 
 #include "ui_test_util.hpp"
 
+#include "ftxui/screen/terminal.hpp"
+
 using namespace geth;
 
 namespace {
+
+// FTXUI's Color constructors downgrade to the nearest lower-palette color when
+// the detected terminal (Terminal::ColorSupport(), from COLORTERM/TERM) doesn't
+// support the requested mode. The color-mode tests assert on the exact SGR form
+// (38;2; / 38;5;), so they must be deterministic regardless of the build shell
+// (an SSH/CI shell may have no COLORTERM). Pin the support to TrueColor for the
+// whole test process. Test-only: it does not affect the app.
+struct ForceTrueColorSupport {
+  ForceTrueColorSupport() {
+    ftxui::Terminal::SetColorSupport(ftxui::Terminal::Color::TrueColor);
+  }
+};
+ForceTrueColorSupport kForceTrueColorSupport;
 
 // The Phase 3 default graph window (1 m). The tests predate the t-cycle; a
 // fixed 60 s window keeps their data geometry identical to before.
@@ -287,14 +302,14 @@ ui::Rgb pal256_rgb(int i) {
           static_cast<std::uint8_t>(g)};
 }
 
-// The color-mode checks below are deterministic: render_frame takes the mode
-// as a parameter (no COLORTERM/TERM/TTY reads anywhere in the path), and the
-// demo fixture data is constant (DemoSource's clock starts at 0 on the first
-// sample). A failure therefore points at a transient fault in the running
-// test binary (a bit error in RAM) rather than at the app — so on failure
-// dump what the frame actually contained: which SGRs survived, and what
-// to_ftxui itself produced. The first recurrence is then diagnosable instead
-// of a mystery.
+// The color-mode checks render with an explicit ColorMode and assert on the
+// exact SGR form (38;2; / 38;5;). FTXUI's Color constructors downgrade to the
+// nearest lower-palette color when the detected terminal (Terminal::
+// ColorSupport(), from COLORTERM/TERM) doesn't support the requested mode, so
+// ForceTrueColorSupport pins the support to TrueColor for the whole test
+// process, keeping these checks deterministic in any build shell. If a check
+// still fails, dump what the frame actually contained (which SGRs survived, and
+// what to_ftxui itself produced) so the first recurrence is diagnosable.
 void diag_color_mode(const std::string& out, const ui::Theme& th) {
   const std::string tc = ui::to_ftxui(th.title, ui::ColorMode::TrueColor).Print(false);
   const std::string c256 = ui::to_ftxui(th.title, ui::ColorMode::Color256).Print(false);
@@ -320,25 +335,6 @@ void diag_color_mode(const std::string& out, const ui::Theme& th) {
       esc += static_cast<char>(ch);
   }
   std::fprintf(stderr, "geth: [diag] frame head: %s\n", esc.c_str());
-
-  // Actionable conclusion. The source's TrueColor branch is
-  //   `return ftxui::Color::RGB(c.r, c.g, c.b);`
-  // and never calls nearest256, so a CORRECTLY COMPILED binary cannot make
-  // to_ftxui(c, TrueColor) return a palette ("38;5;...") color. When it does,
-  // the compiled test binary was corrupted during the build (a transient
-  // memory/I-O fault, typically under machine load) -- not a geth source or
-  // config bug. Say so, and give the remedy.
-  if (tc.rfind("38;2;", 0) != 0) {
-    std::fprintf(stderr,
-        "geth: [diag] ------------------------------------------------------------\n"
-        "geth: [diag] CONCLUSION: to_ftxui(c, TrueColor) returned \"%s\" -- a PALETTE\n"
-        "geth: [diag] color. The source's TrueColor branch returns ftxui::Color::RGB and\n"
-        "geth: [diag] never calls nearest256, so a correct build cannot do this. The test\n"
-        "geth: [diag] binary was corrupted DURING THE BUILD (transient memory/I-O fault,\n"
-        "geth: [diag] usually under machine load). This is NOT a geth source/config bug:\n"
-        "geth: [diag] RE-RUN THE BUILD to regenerate the binary. The source is correct.\n",
-        tc.c_str());
-  }
 }
 
 }  // namespace
