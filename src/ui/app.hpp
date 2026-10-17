@@ -125,6 +125,7 @@ class Dashboard : public ftxui::ComponentBase {
   void cycle_window();
   void cycle_columns();
   void cycle_theme();
+  void cycle_graph_style();
 
   // Rebuilds the page from _hw (the GPU overrides are already applied in it)
   // and _cfg, keeping the manager's order; run after a global GPU rename or

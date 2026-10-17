@@ -1,6 +1,9 @@
 #include "core/series_store.hpp"
 
 #include <cmath>
+#include <cstdio>
+
+#include "util/trace.hpp"
 
 namespace geth {
 
@@ -34,6 +37,11 @@ void SeriesStore::put(std::string_view id, std::optional<double> v) {
   const auto it = _index.find(id);
   if (it == _index.end()) return;  // unknown id: drop, never grow
   _series[it->second].values.overwrite_last(static_cast<float>(*v));
+  if (trace::matches(id)) {
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%s = %.3f", std::string(id).c_str(), *v);
+    trace::stage("store", id, buf);
+  }
 }
 
 bool SeriesStore::has(std::string_view id) const {

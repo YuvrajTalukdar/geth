@@ -22,11 +22,11 @@ struct SeriesSpec {
   SeriesId id;          // must exist in the SeriesStore
   std::string label;    // legend label
   int color_index = 0;  // index into Theme::series[6]
-  // True for a panel's second series from the same device (GTT next to
-  // VRAM): it draws in the lighter variant (color mixed 50 % toward white)
-  // of the device's base color, so the two legend bars visibly differ.
-  bool variant = false;
-  bool fill = false;    // filled area (Memory/VRAM first series)
+  // Filled area under the line. Rule (Phase 6, Part B): single-series panels
+  // fill their one series; a two-series panel fills only its PRIMARY (the
+  // first entry); panels with three or more series (Temperature, Power) fill
+  // nothing. Lines are always drawn over fills; the primary is drawn last.
+  bool fill = false;
   // Phase 4: hidden by the user (config `hidden_series`). No line, no fill,
   // no legend entry. Info rows are independent of series visibility.
   bool hidden = false;

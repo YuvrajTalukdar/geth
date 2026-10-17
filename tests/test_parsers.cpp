@@ -34,6 +34,7 @@
 #include "sources/memory.hpp"
 #include "sources/net.hpp"
 #include "sources/temps.hpp"
+#include "fake_pci_tree.hpp"
 #include "ui/panel_spec.hpp"
 #include "util/format.hpp"
 #include "util/pci_ids.hpp"
@@ -646,62 +647,10 @@ TEST_SUITE("format") {
 // PCI discovery + GPU registry (over a fake sysfs tree)
 // ---------------------------------------------------------------------------
 
-namespace {
-
-// A minimal /sys stand-in: <root>/bus/pci/devices/<bus_id>/* and
-// <root>/class/drm/cardN/device symlinks. remove_all'd on destruction.
-struct FakePciTree {
-  std::filesystem::path root;
-
-  FakePciTree() {
-    static int next = 0;
-    root = std::filesystem::temp_directory_path() /
-           ("geth_fakepci_" + std::to_string(::getpid()) + "_" + std::to_string(++next));
-    std::filesystem::remove_all(root);
-    std::filesystem::create_directories(root / "bus/pci/devices");
-    std::filesystem::create_directories(root / "class/drm");
-  }
-  ~FakePciTree() { std::filesystem::remove_all(root); }
-
-  void add_device(const std::string& bus_id, const std::string& vendor,
-                  const std::string& device, const std::string& driver,
-                  bool boot_vga = false, const std::string& runtime = "active",
-                  int drm_card = -1) {
-    const auto dev = root / "bus/pci/devices" / bus_id;
-    std::filesystem::create_directories(dev / "power");
-    auto write = [&](const std::filesystem::path& p, const std::string& v) {
-      std::ofstream f(p);
-      f << v;
-    };
-    write(dev / "class", "0x030000\n");
-    write(dev / "vendor", "0x" + vendor + "\n");
-    write(dev / "device", "0x" + device + "\n");
-    write(dev / "subsystem_vendor", "0x" + vendor + "\n");
-    write(dev / "subsystem_device", "0x0001\n");
-    write(dev / "boot_vga", boot_vga ? "1\n" : "0\n");
-    write(dev / "power/runtime_status", runtime + "\n");
-    if (!driver.empty()) std::filesystem::create_symlink(driver, dev / "driver");
-    if (drm_card >= 0) {
-      const auto card = root / "class/drm" / ("card" + std::to_string(drm_card));
-      std::filesystem::create_directories(card);
-      std::filesystem::create_symlink(dev.string(), card / "device");
-    }
-  }
-
-  void write_dev_file(const std::string& bus_id, const std::string& rel,
-                      const std::string& v) {
-    const auto p = root / "bus/pci/devices" / bus_id / rel;
-    std::filesystem::create_directories(p.parent_path());
-    std::ofstream f(p);
-    f << v;
-  }
-};
-
-}  // namespace
 
 TEST_SUITE("pci_discovery") {
   TEST_CASE("finds class-0x03 devices with ids, driver, boot_vga, drm card") {
-    FakePciTree tree;
+    test::FakePciTree tree;
     tree.add_device("0000:01:00.0", "10de", "25a2", "nvidia", false, "active", 0);
     tree.add_device("0000:02:00.0", "1002", "1638", "amdgpu", true, "active", 1);
     tree.add_device("0000:03:00.0", "8086", "9a49", "i915", false, "suspended", -1);
@@ -731,7 +680,7 @@ TEST_SUITE("pci_discovery") {
   // The spec's required test: a fake tree containing an Intel device that no
   // backend claims. It must still be reported, not dropped.
   TEST_CASE("registry keeps an unclaimed Intel device as 'no backend yet'") {
-    FakePciTree tree;
+    test::FakePciTree tree;
     tree.add_device("0000:01:00.0", "1002", "1638", "amdgpu", true, "active", 0);
     tree.add_device("0000:02:00.0", "8086", "9a49", "i915", false, "active", 1);
 
@@ -944,7 +893,7 @@ TEST_SUITE("amd_power_split") {
   // a VRAM total, then attach + sample it through the backend.
   GpuSample sample_amd(const std::string& device_id, unsigned long long vram_bytes,
                        const std::string& ppt_microwatts = "47000000") {
-    FakePciTree tree;
+    test::FakePciTree tree;
     const std::string bus = "0000:07:00.0";
     tree.add_device(bus, "1002", device_id, "amdgpu", true, "active", 0);
     const auto dev = tree.root / "bus/pci/devices" / bus;
@@ -1004,6 +953,7 @@ namespace {
 struct FakeApuGpuSource : Source {
   std::optional<double> preset_cpu_power;  // set => a counter source already won
   bool gpu_active = true;
+  double ppt = 47.0;  // the PPT reading; the regression tests vary it per tick
 
   const char* name() const override { return "fake apu gpu"; }
   SourceStatus probe() override {
@@ -1023,7 +973,7 @@ struct FakeApuGpuSource : Source {
       g.is_integrated = true;
     }
     g.state = gpu_active ? GpuState::kActive : GpuState::kSleeping;
-    g.ppt_w = gpu_active ? std::optional<double>(47.0) : std::nullopt;
+    g.ppt_w = gpu_active ? std::optional<double>(ppt) : std::nullopt;
     g.power_w = std::nullopt;  // the fake card reports no card power
   }
 };
@@ -1086,6 +1036,131 @@ TEST_SUITE("apu_package_power") {
     const ui::SeriesSpec& cpu_series = power->series.front();
     CHECK_EQ(cpu_series.label, std::string("APU Package (PPT)"));
     CHECK_EQ(cpu_series.value_fn(c.latest()), std::string("47.0 W"));
+  }
+
+  // v1.0.3 regression: the Collector reuses ONE Snapshot across ticks and
+  // CpuPowerSource writes the power fields only when its backend produced a
+  // value — on an APU-PPT machine it never does. The lift's "a counter source
+  // already won" guard then read the value the LIFT itself stored on the
+  // previous tick and skipped forever, freezing package power at the first
+  // sample (the flat "APU 5.0 W" under full load). Every tick must lift the
+  // CURRENT reading. All pre-existing cases above are single-tick, so none
+  // of them could see it.
+  TEST_CASE("regression: the lift follows a changing PPT on every tick") {
+    Collector c;
+    auto src = std::make_unique<FakeApuGpuSource>();
+    FakeApuGpuSource* s = src.get();  // the object outlives the moved pointer
+    c.add(std::move(src));
+    for (int i = 0; i < 4; ++i) {
+      s->ppt = 40.0 + i;  // the sensor climbs under load
+      const auto snap = c.sample();
+      REQUIRE(snap.cpu.package_power_w.has_value());
+      CHECK_EQ(snap.cpu.package_power_w.value(), 40.0 + i);
+      CHECK(snap.cpu.package_power_source == CpuPackagePowerSource::kApuPpt);
+    }
+  }
+
+  TEST_CASE("regression: a woken iGPU updates the lifted power (no stale value)") {
+    Collector c;
+    auto src = std::make_unique<FakeApuGpuSource>();
+    FakeApuGpuSource* s = src.get();
+    s->ppt = 40.0;
+    c.add(std::move(src));
+
+    CHECK_EQ(c.sample().cpu.package_power_w.value(), 40.0);
+
+    s->gpu_active = false;  // the iGPU sleeps (suspend)
+    CHECK(c.sample().cpu.package_power_w.has_value() == false);  // no stale 40 W
+
+    s->gpu_active = true;
+    s->ppt = 42.0;  // wakes under load
+    const auto s3 = c.sample();
+    CHECK_EQ(s3.cpu.package_power_w.value(), 42.0);  // not the old 40 W
+    CHECK(s3.cpu.package_power_source == CpuPackagePowerSource::kApuPpt);
+  }
+
+  // End-to-end through the REAL sources over a fake /sys: a CpuPowerSource
+  // with no powercap/hwmon counter (the EACCES machine), a GpuRegistrySource
+  // over a fake Cezanne APU, and a power1_input file rewritten between
+  // ticks. The sampled value must follow the sensor every tick; pre-fix it
+  // froze at the warm-up reading.
+  TEST_CASE("regression: the lift follows a changing power1_input (fake sysfs)") {
+    test::FakePciTree tree;
+    const std::string bus = "0000:07:00.0";
+    tree.add_device(bus, "1002", "1638", "amdgpu", true, "active", 0);
+    tree.write_dev_file(bus, "hwmon/hwmon0/name", "amdgpu\n");
+    tree.write_dev_file(bus, "hwmon/hwmon0/power1_input", "10000000\n");
+    tree.write_dev_file(bus, "gpu_busy_percent", "3\n");
+    tree.write_dev_file(bus, "mem_info_vram_total", "536870912\n");  // 512 MiB (shared)
+    tree.write_dev_file(bus, "mem_info_vram_used", "104857600\n");
+
+    Collector c;
+    c.add(std::make_unique<CpuPowerSource>(tree.root.string()));
+    auto reg = std::make_unique<GpuRegistrySource>();
+    reg->set_sysfs_roots(tree.root.string(), (tree.root / "class/drm").string());
+    reg->set_pci_ids_path(std::string(GETH_TEST_FIXTURES) + "/pci_ids.txt");
+    c.add(std::move(reg));
+    c.probe_all(/*warm_up=*/true);
+    DOCTEST_REQUIRE(!c.latest().gpus.empty());
+    CHECK(c.latest().gpus[0].is_integrated);  // 0x1638 is a known APU id
+
+    const auto expect = [&](unsigned long long microwatts, double watts) {
+      tree.write_dev_file(bus, "hwmon/hwmon0/power1_input",
+                          std::to_string(microwatts) + "\n");
+      const auto s = c.sample();
+      REQUIRE(s.cpu.package_power_w.has_value());
+      CHECK(s.cpu.package_power_source == CpuPackagePowerSource::kApuPpt);
+      CHECK_EQ(s.cpu.package_power_w.value(), watts);
+    };
+    expect(30000000, 30.0);  // load ramps up
+    expect(40000000, 40.0);
+    expect(50000000, 50.0);  // pre-fix: still 10.0 W here
+  }
+
+  // Work order: when RAPL becomes readable (the udev rule / setcap installed),
+  // the Power panel must switch from "APU Package (PPT)" to "CPU Package" —
+  // a counter source beats the APU PPT lift. The live temp tree lets the
+  // RAPL counter advance between samples (static fixture => 0 W).
+  TEST_CASE("RAPL readable: it beats the APU PPT and relabels to 'CPU Package'") {
+    const auto root = std::filesystem::temp_directory_path() /
+        ("geth_rapl_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(root);
+    const auto dev = root / "class/powercap/package-0";
+    auto wf = [&](const char* name, const std::string& v) {
+      std::filesystem::create_directories(dev);
+      std::ofstream f(dev / name);
+      f << v;
+    };
+    wf("name", "package-0");
+    wf("energy_uj", "10000000");        // 10 mJ
+    wf("max_energy_range_uj", "100000000");
+
+    Collector c;
+    c.add(std::make_unique<CpuPowerSource>(root.string()));
+    c.add(std::make_unique<FakeApuGpuSource>());  // 47 W PPT — must lose
+    c.probe_all(/*warm_up=*/true);  // RAPL baseline set here
+
+    // Advance the RAPL counter by 1 mJ, ~100 ms later => ~10 W.
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    wf("energy_uj", "11000000");
+    const auto s = c.sample();
+    DOCTEST_REQUIRE(s.cpu.package_power_w.has_value());
+    CHECK(s.cpu.package_power_source == CpuPackagePowerSource::kRapl);
+    CHECK(s.cpu.package_power_w.value() > 1.0);
+    CHECK(s.cpu.package_power_w.value() < 100.0);
+    CHECK(s.cpu.package_power_w.value() != 47.0);  // not the iGPU's PPT
+
+    // The panel label switches with the source.
+    const ui::Hardware hw = ui::hardware_from(c.latest(), "Fake APU");
+    CHECK_EQ(hw.cpu_power_label, std::string("CPU Package"));
+    const std::vector<ui::PanelSpec> page = ui::build_default_page(hw);
+    const ui::PanelSpec* power = nullptr;
+    for (const auto& p : page)
+      if (p.id == "power") power = &p;
+    REQUIRE(power != nullptr);
+    REQUIRE(!power->series.empty());
+    CHECK_EQ(power->series.front().label, std::string("CPU Package"));
+    std::filesystem::remove_all(root);
   }
 
 }  // TEST_SUITE
@@ -1297,7 +1372,7 @@ TEST_SUITE("nvml_at_startup") {
     g_nvml_init_calls = 0;
     g_nvml_shutdown_calls = 0;
 
-    FakePciTree tree;
+    test::FakePciTree tree;
     tree.add_device("0000:01:00.0", "10de", "25a2", "nvidia", false, "suspended", 0);
 
     GpuRegistrySource reg;

@@ -59,12 +59,6 @@ Rgb scale(Rgb c, double f) {
 
 Rgb derive_fill(Rgb series, double mix) { return scale(series, mix); }
 
-Rgb mix_white(Rgb c) {
-  return {static_cast<std::uint8_t>((c.r + 255) / 2),
-          static_cast<std::uint8_t>((c.g + 255) / 2),
-          static_cast<std::uint8_t>((c.b + 255) / 2)};
-}
-
 double hue_deg(Rgb c) {
   const int mx = std::max(c.r, std::max(c.g, c.b));
   const int mn = std::min(c.r, std::min(c.g, c.b));
@@ -261,6 +255,130 @@ ftxui::Color fill_color(Rgb series, ColorMode mode, double mix) {
              : ftxui::Color(ftxui::Color::Palette16(static_cast<std::uint8_t>(best)));
 }
 
+namespace {
+
+// c mixed `f` toward white (f = 0.4 for series slots 5-6).
+Rgb mix_toward_white(Rgb c, double f) {
+  auto mix = [f](int v) { return (int)(v + f * (255.0 - v) + 0.5); };
+  return {static_cast<std::uint8_t>(mix(c.r)), static_cast<std::uint8_t>(mix(c.g)),
+          static_cast<std::uint8_t>(mix(c.b))};
+}
+
+// sRGB channel (0..255) to linear light.
+double srgb_linear(int v) {
+  const double c = v / 255.0;
+  return c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
+}
+
+// OKLab (Ottosson) from linear-light RGB.
+struct Oklab {
+  double L, a, b;
+};
+Oklab oklab_from_linear(double r, double g, double b) {
+  const double l = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b;
+  const double m = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b;
+  const double s = 0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b;
+  const double l_ = std::cbrt(l), m_ = std::cbrt(m), s_ = std::cbrt(s);
+  return {0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_,
+          1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_,
+          0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_};
+}
+Oklab to_oklab(Rgb c) {
+  return oklab_from_linear(srgb_linear(c.r), srgb_linear(c.g), srgb_linear(c.b));
+}
+
+// Machado, Oliveira & Fernandes (2009) full-severity simulation matrices,
+// applied to LINEAR sRGB (clamped back to 0..1).
+constexpr double kProtanopia[3][3] = {
+    {0.152286, 1.052583, -0.204868}, {0.114503, 0.786281, 0.099216},
+    {-0.003882, -0.048116, 1.051998}};
+constexpr double kDeuteranopia[3][3] = {
+    {0.367322, 0.860646, -0.227968}, {0.280085, 0.672501, 0.047413},
+    {-0.011820, 0.042940, 0.968881}};
+Oklab simulate(Rgb c, bool protan) {
+  const double (*m)[3] = protan ? kProtanopia : kDeuteranopia;
+  const double r = srgb_linear(c.r), g = srgb_linear(c.g), b = srgb_linear(c.b);
+  auto cl = [](double v) { return v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v); };
+  return oklab_from_linear(cl(m[0][0] * r + m[0][1] * g + m[0][2] * b),
+                           cl(m[1][0] * r + m[1][1] * g + m[1][2] * b),
+                           cl(m[2][0] * r + m[2][1] * g + m[2][2] * b));
+}
+
+double oklab_dist(const Oklab& a, const Oklab& b) {
+  const double dL = a.L - b.L, da = a.a - b.a, db = a.b - b.b;
+  return std::sqrt(dL * dL + da * da + db * db) * 100.0;
+}
+
+}  // namespace
+
+double delta_e_oklab100(Rgb a, Rgb b) {
+  return oklab_dist(to_oklab(a), to_oklab(b));
+}
+
+double delta_e_simulated100(Rgb a, Rgb b, const std::string& condition) {
+  const bool protan = condition == "protan";
+  return oklab_dist(simulate(a, protan), simulate(b, protan));
+}
+
+double contrast_ratio(Rgb a, Rgb b) {
+  auto lum = [](Rgb c) {
+    const double r = srgb_linear(c.r), g = srgb_linear(c.g), bl = srgb_linear(c.b);
+    return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+  };
+  const double la = lum(a), lb = lum(b);
+  const double hi = std::max(la, lb), lo = std::min(la, lb);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+std::vector<std::string> validate_series_palette(const std::string& name,
+                                                 const Theme& t) {
+  std::vector<std::string> problems;
+  for (int i = 0; i < 4; ++i)
+    for (int j = i + 1; j < 4; ++j) {
+      // The one sanctioned exception: matrix-green's slots 1<->4 (green
+      // #39FF14 vs khaki #F0E68C) measure 7.1 deutan / 7.9 protan, just under
+      // the general 8.0 floor; allowed at >= 7.0 for both because every
+      // series carries a labelled legend. Keyed on the name AND the exact
+      // color pair, so a custom theme inheriting matrix-green's palette is
+      // covered too.
+      const bool is_matrix_pair =
+          t.series[0] == rgb(0x39, 0xFF, 0x14) &&
+          t.series[3] == rgb(0xF0, 0xE6, 0x8C);
+      const bool exc = (name == "matrix-green" || is_matrix_pair) && i == 0 &&
+                       j == 3;
+      char buf[160];
+      const double norm = delta_e_oklab100(t.series[i], t.series[j]);
+      if (norm < 15.0) {
+        std::snprintf(buf, sizeof buf,
+                      "theme '%s': slots %d<->%d normal-vision dE %.1f < 15",
+                      name.c_str(), i + 1, j + 1, norm);
+        problems.push_back(buf);
+      }
+      for (const char* cond : {"protan", "deutan"}) {
+        const double de = delta_e_simulated100(t.series[i], t.series[j], cond);
+        const double min = exc ? 7.0 : 8.0;
+        if (de < min) {
+          std::snprintf(buf, sizeof buf,
+                        "theme '%s': slots %d<->%d %s dE %.1f < %.1f",
+                        name.c_str(), i + 1, j + 1, cond, de, min);
+          problems.push_back(buf);
+        }
+      }
+    }
+  const Rgb bg = rgb(0x0B, 0x0F, 0x14);
+  for (int i = 0; i < 6; ++i) {
+    const double ct = contrast_ratio(t.series[i], bg);
+    if (ct < 3.0) {
+      char buf[160];
+      std::snprintf(buf, sizeof buf,
+                    "theme '%s': slot %d contrast %.2f:1 < 3:1 vs #0B0F14",
+                    name.c_str(), i + 1, ct);
+      problems.push_back(buf);
+    }
+  }
+  return problems;
+}
+
 Theme Theme::cyberpunk_blue() {
   Theme t;
   t.accent = rgb(0x00, 0xE5, 0xFF);    // #00E5FF
@@ -272,12 +390,15 @@ Theme Theme::cyberpunk_blue() {
   t.axis_text = rgb(0x3E, 0x8C, 0x99);  // #3E8C99
   t.warn = rgb(0xFF, 0x3B, 0x5C);       // #FF3B5C
   t.bg = rgb(0x0B, 0x0F, 0x14);         // #0B0F14 (solid mode)
-  t.series[0] = rgb(0x00, 0xE5, 0xFF);  // #00E5FF cyan
-  t.series[1] = rgb(0x39, 0xFF, 0x88);  // #39FF88 green
-  t.series[2] = rgb(0xFF, 0x4F, 0xD8);  // #FF4FD8 pink
-  t.series[3] = rgb(0xFF, 0xD2, 0x3F);  // #FFD23F amber
-  t.series[4] = rgb(0x4D, 0xA3, 0xFF);  // #4DA3FF blue
-  t.series[5] = rgb(0xC7, 0x7D, 0xFF);  // #C77DFF violet
+  // Role palette (Phase 6, Part C): slot 1 CPU/primary, slot 2 first dGPU,
+  // slot 3 iGPU/secondary, slot 4 second dGPU, slots 5-6 = slots 1/2 mixed
+  // 40 % toward white (extra dGPUs / the second series of pair panels).
+  t.series[0] = rgb(0x00, 0xE5, 0xFF);               // #00E5FF cyan
+  t.series[1] = rgb(0x9D, 0xFF, 0x3A);               // #9DFF3A green
+  t.series[2] = rgb(0xFF, 0x7A, 0x45);               // #FF7A45 orange
+  t.series[3] = rgb(0x8C, 0x7C, 0xFF);               // #8C7CFF violet
+  t.series[4] = mix_toward_white(t.series[0], 0.4);  // #66EFFF
+  t.series[5] = mix_toward_white(t.series[1], 0.4);  // #C4FF89
   return t;
 }
 
@@ -292,12 +413,12 @@ Theme Theme::matrix_green() {
   t.axis_text = rgb(0x3E, 0x8C, 0x55); // #3E8C55
   t.warn = rgb(0xFF, 0x3B, 0x5C);      // #FF3B5C
   t.bg = rgb(0x0A, 0x13, 0x0A);        // #0A130A (solid mode)
-  t.series[0] = rgb(0x39, 0xFF, 0x14);  // #39FF14 green
-  t.series[1] = rgb(0x00, 0xE5, 0xFF);  // #00E5FF cyan
-  t.series[2] = rgb(0xFF, 0xD2, 0x3F);  // #FFD23F amber
-  t.series[3] = rgb(0xFF, 0x4F, 0xD8);  // #FF4FD8 pink
-  t.series[4] = rgb(0x7C, 0xFF, 0xCB);  // #7CFFCB aqua
-  t.series[5] = rgb(0xC7, 0x7D, 0xFF);  // #C77DFF violet
+  t.series[0] = rgb(0x39, 0xFF, 0x14);               // #39FF14 green
+  t.series[1] = rgb(0x2E, 0xC5, 0xFF);               // #2EC5FF blue
+  t.series[2] = rgb(0xFF, 0x7A, 0x3D);               // #FF7A3D orange
+  t.series[3] = rgb(0xF0, 0xE6, 0x8C);               // #F0E68C khaki
+  t.series[4] = mix_toward_white(t.series[0], 0.4);  // #88FF72
+  t.series[5] = mix_toward_white(t.series[1], 0.4);  // #82DCFF
   return t;
 }
 
@@ -312,12 +433,12 @@ Theme Theme::crimson_red() {
   t.axis_text = rgb(0x8C, 0x3E, 0x4A); // #8C3E4A
   t.warn = rgb(0xFF, 0xD2, 0x3F);      // #FFD23F
   t.bg = rgb(0x14, 0x0A, 0x0E);        // #140A0E (solid mode)
-  t.series[0] = rgb(0xFF, 0x2E, 0x4D); // #FF2E4D red
-  t.series[1] = rgb(0xFF, 0xB0, 0x00); // #FFB000 amber
-  t.series[2] = rgb(0x00, 0xE5, 0xFF); // #00E5FF cyan
-  t.series[3] = rgb(0xFF, 0x7A, 0xE0); // #FF7AE0 pink
-  t.series[4] = rgb(0xFF, 0x8A, 0x3D); // #FF8A3D orange
-  t.series[5] = rgb(0xC7, 0x7D, 0xFF); // #C77DFF violet
+  t.series[0] = rgb(0xFF, 0x33, 0x55);               // #FF3355 red
+  t.series[1] = rgb(0xFF, 0xC2, 0x33);               // #FFC233 yellow
+  t.series[2] = rgb(0x4D, 0xDB, 0xFF);               // #4DDBFF cyan
+  t.series[3] = rgb(0xB9, 0x8C, 0xFF);               // #B98CFF violet
+  t.series[4] = mix_toward_white(t.series[0], 0.4);  // #FF8599
+  t.series[5] = mix_toward_white(t.series[1], 0.4);  // #FFDA85
   return t;
 }
 
@@ -332,12 +453,12 @@ Theme Theme::amber() {
   t.axis_text = rgb(0x8C, 0x6D, 0x3E); // #8C6D3E
   t.warn = rgb(0xFF, 0x3B, 0x5C);      // #FF3B5C
   t.bg = rgb(0x14, 0x10, 0x08);        // #141008 (solid mode)
-  t.series[0] = rgb(0xFF, 0xB0, 0x00); // #FFB000 amber
-  t.series[1] = rgb(0x00, 0xE5, 0xFF); // #00E5FF cyan
-  t.series[2] = rgb(0xFF, 0x4F, 0xD8); // #FF4FD8 pink
-  t.series[3] = rgb(0x39, 0xFF, 0x88); // #39FF88 green
-  t.series[4] = rgb(0xFF, 0x6A, 0x3D); // #FF6A3D orange
-  t.series[5] = rgb(0xC7, 0x7D, 0xFF); // #C77DFF violet
+  t.series[0] = rgb(0xFF, 0xB0, 0x00);               // #FFB000 amber
+  t.series[1] = rgb(0xFF, 0x55, 0x33);               // #FF5533 red-orange
+  t.series[2] = rgb(0x5C, 0xD0, 0xFF);               // #5CD0FF blue
+  t.series[3] = rgb(0xE3, 0xFF, 0x7A);               // #E3FF7A lime
+  t.series[4] = mix_toward_white(t.series[0], 0.4);  // #FFD066
+  t.series[5] = mix_toward_white(t.series[1], 0.4);  // #FF9985
   return t;
 }
 
@@ -489,6 +610,9 @@ std::optional<Theme> load_custom(const std::string& name,
       warnings.push_back("theme '" + name + "': unknown key '" + kn +
                          "' — ignoring");
   }
+  // Part C: the resolved palette is checked against the contrast/ΔE rules.
+  // A violation is a WARNING (a toast in the app); the theme still loads.
+  for (const auto& p : validate_series_palette(name, t)) warnings.push_back(p);
   return t;
 }
 

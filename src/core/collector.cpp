@@ -1,8 +1,10 @@
 #include "core/collector.hpp"
 
+#include <cstdio>
 #include <limits>
 
 #include "sources/gpu_amd.hpp"  // finalize_gpus()
+#include "util/trace.hpp"
 
 namespace geth {
 
@@ -36,6 +38,7 @@ bool Collector::any_available() const {
 }
 
 const Snapshot& Collector::sample() {
+  trace::tick();  // --trace: every stage of this tick shares this number
   // A fixed timestamp (set_sample_time, demo virtual clock) is consumed once;
   // otherwise sample at the real steady clock.
   const TimePoint now = _fixed_time ? *_fixed_time : Clock::now();
@@ -53,6 +56,16 @@ const Snapshot& Collector::sample() {
   const bool gap = thr > 0 && _last_suspend &&
                    (susp - *_last_suspend) > std::chrono::milliseconds(thr);
   _last_suspend = susp;
+
+  // The reused snapshot still holds the previous tick's CPU package power
+  // (or, on the first live tick, the warm-up sample's). CpuPowerSource
+  // writes the field only when its backend produced a value — on an APU PPT
+  // machine it never does — so clear it here, every tick, before the sources
+  // run. Without this, apply_apu_package_power's "a counter source already
+  // won" guard below would see the stale value and freeze package power at
+  // the first sample forever (the GPU side does this via GpuSample::reset()).
+  _snap.cpu.package_power_w.reset();
+  _snap.cpu.package_power_source.reset();
 
   for (auto& src : _sources) src->sample(_snap);
   apply_apu_package_power(_snap);
@@ -185,14 +198,29 @@ void Collector::record(const Snapshot& s) {
 // (RAPL/amd_energy/zenpower) produced a value, an active integrated AMD
 // GPU's PPT IS the CPU package power.
 void Collector::apply_apu_package_power(Snapshot& s) {
-  if (s.cpu.package_power_w) return;  // a counter source already won
+  if (s.cpu.package_power_w) {
+    if (trace::matches("cpu.power"))
+      trace::stage("lift", "cpu.power",
+                   std::string("no lift: counter source already won (") +
+                       to_string(*s.cpu.package_power_source) + ")");
+    return;  // a counter source already won
+  }
   for (const auto& g : s.gpus) {
     if (g.vendor != GpuVendor::kAmd || !g.is_integrated) continue;
     if (g.state != GpuState::kActive || !g.ppt_w) continue;
     s.cpu.package_power_w = *g.ppt_w;
     s.cpu.package_power_source = CpuPackagePowerSource::kApuPpt;
+    if (trace::matches("cpu.power")) {
+      char w[32];
+      std::snprintf(w, sizeof(w), "%.3f", *g.ppt_w);
+      trace::stage("lift", "cpu.power",
+                   "APU PPT <- gpu " + g.pci_bus_id + " ppt_w=" + w + " W");
+    }
     break;
   }
+  if (!s.cpu.package_power_w && trace::matches("cpu.power"))
+    trace::stage("lift", "cpu.power",
+                 "no lift: no active integrated AMD GPU with PPT");
 }
 
 }  // namespace geth

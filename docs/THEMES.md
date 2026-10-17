@@ -42,8 +42,8 @@ A theme may set any of these (all colors are `#RRGGBB`):
 | `axis_text` | Graph axis labels |
 | `warn` | Warning toast / config-error foreground |
 | `bg` | Solid-mode screen background (only used when `background = "solid"`) |
-| `fill_mix` | `[0, 1]` — how much of the series color the graph "fill" keeps (default `0.45`) |
-| `series_1` … `series_6` | The six graph series colors, in order (panels wrap through them) |
+| `fill_mix` | `[0, 1]` — how much of the series color the graph "fill" keeps (default `0.30`) |
+| `series_1` … `series_6` | The six graph series colors, assigned by device role (see [Series color slots](#series-color-slots)) |
 
 A field left out (or set to a bad value) falls back to the base theme's
 value, so a theme can override just a few. **Invalid hex values and unknown
@@ -51,6 +51,48 @@ keys never crash the app**: each produces a warning toast (and a
 `geth: theme: …` line on `stderr`) and that field keeps its inherited value.
 An unknown `base`, a missing file, or an unparseable file means the theme
 resolves to nothing and is skipped (with a warning), never a crash.
+
+## Series color slots
+
+The six series colors are assigned **by device role**, so that every series
+inside a panel has a distinct color:
+
+| Slot | Role |
+|---|---|
+| `series_1` | CPU / the primary (first) series of any panel |
+| `series_2` | The first discrete GPU (its usage and VRAM panels) |
+| `series_3` | The integrated GPU (iGPU) |
+| `series_4` | The second discrete GPU |
+| `series_5` | Third discrete GPU — or the next-free slot when a panel has two series of one device |
+| `series_6` | Fourth discrete GPU — or the next-free slot (continued) |
+
+When a panel holds two series of the *same* device (e.g. the iGPU's GTT and
+VRAM, or two CPUs), the second series takes the next free slot. Built-in
+themes set slots 5 and 6 as slots 1 and 2 mixed 40% toward white, so the
+fallback stays in the theme's hue family.
+
+## Series color validation
+
+The four built-in palettes are checked in the test suite, and **custom
+themes are validated at load**: a failing check produces a warning (theme
+name, slots, measured value) but the theme still loads.
+
+- **Pair separation** — every pair among slots 1–4:
+  - normal vision: ΔE ≥ 15 (OKLab, ×100);
+  - under protanopia *and* deuteranopia simulation (Machado 2009 matrices
+    on linear sRGB, then OKLab): ΔE ≥ 8.
+  - One sanctioned exception: `matrix-green`'s slots 1↔4 (`#39FF14` vs
+    `#F0E68C`) measure 7.9 (protan) / 7.1 (deutan) — allowed at ΔE ≥ 7.0 for
+    both simulations, because every series carries a labelled legend. The
+    exception is keyed on the theme name *and* that exact color pair, so a
+    custom theme inheriting the matrix-green palette is covered.
+- **Background contrast** — every one of the six slots against the dark
+  background `#0B0F14`: WCAG contrast ratio ≥ 3:1 (series are graph lines,
+  not text; 3:1 is the WCAG non-text threshold).
+
+Measured margins of the built-ins (smallest per rule): cyberpunk-blue 25.4
+ΔE normal / 5.9:1 contrast, matrix-green 21.5 / 7.1 (the exception) / 9.7:1,
+crimson-red 22.0 / 5.4:1, amber 18.6 / 6.0:1.
 
 ## Background mode
 

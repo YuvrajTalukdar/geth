@@ -37,6 +37,21 @@ int braille_bit(int col, int row);
 // U+2800|mask as UTF-8.
 std::string braille_char(std::uint8_t mask);
 
+// -- Graph styles (Phase 6, Part B) ------------------------------------------
+// braille: 2x4 dots per character, the default. blocks: 2x2 sub-cells per
+// character drawn with the Unicode quadrant/half/full block glyphs (U+2580-
+// U+259F) — solid lines with no inter-glyph gap, half the vertical resolution
+// of braille, lines ONE sub-cell thick (braille lines are two dots thick).
+enum class GraphStyle { kBraille, kBlocks };
+
+// Parses "braille" | "blocks" (case-insensitive); false on anything else.
+bool parse_graph_style(const std::string& s, GraphStyle& out);
+
+// The 2x2 sub-cell glyph for a blocks character: mask bits TL=1, TR=2, BL=4,
+// BR=8 (the same order the renderer sets them). 0 = space, 15 = full block.
+// Exposed for the unit tests.
+std::string blocks_char(std::uint8_t mask);
+
 // -- Y-axis scales (exposed for the unit tests) --------------------------------
 // Round up to a nice power-of-two multiple (1/2/4/8/16/32/64/128 x 1024^n):
 // 15 MiB -> 16 MiB, 100 MiB -> 128 MiB (binary units are powers of two).
@@ -166,6 +181,8 @@ struct FrameChrome {
   // Phase 5: background = "solid" — paint the theme's bg across the whole
   // screen (the single sanctioned background-color path).
   bool solid_bg = false;
+  // Phase 6 (Part B): [general].graph_style — braille (default) or blocks.
+  GraphStyle graph_style = GraphStyle::kBraille;
 };
 
 // The panel-manager overlay (drawn over the live dashboard, which keeps

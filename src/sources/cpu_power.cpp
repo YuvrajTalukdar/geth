@@ -256,6 +256,10 @@ bool CpuPowerSource::probe_zenpower(SourceStatus& st, const std::string& hwmon,
 }
 
 void CpuPowerSource::sample(Snapshot& out) {
+  // Note: this source writes out.cpu.package_power_{w,source} only when a
+  // reading succeeded; the Collector clears them at the top of every tick
+  // (Collector::sample), so a skipped reading shows a gap, never the
+  // previous tick's stale value.
   const TimePoint now = Clock::now();
 
   // zenpower: instantaneous microwatts — sum the two inputs, no baseline.

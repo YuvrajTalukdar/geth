@@ -55,11 +55,12 @@ dependencies are fetched by CMake and pinned to exact versions (see
 
 ## Features
 
-- **Graphs & metrics** — live braille/box-drawing graphs per panel: CPU
-  usage (with per-core), frequency, temperature, package power, RAM/swap,
-  GPU usage and memory (GTT vs VRAM on integrated AMD GPUs), disk and
-  network rates. Gaps (suspend, clock jumps) blank the rate series for that
-  tick instead of showing a bogus spike.
+- **Graphs & metrics** — live braille (or block) graphs per panel, with a
+  `g` key that toggles the line style (saved to the config): CPU usage (with
+  per-core), frequency, temperature, package power, RAM/swap, GPU usage and
+  memory (GTT vs VRAM on integrated AMD GPUs), disk and network rates. Series
+  that share a panel always get distinct colors. Gaps (suspend, clock jumps)
+  blank the rate series for that tick instead of showing a bogus spike.
 - **Multi-GPU** — one usage panel and one memory panel per detected card
   (AMD and NVIDIA, integrated and discrete); GPU renames in the panel
   manager are global (every panel, legend, and the header for that bus).
@@ -132,7 +133,7 @@ and the RAPL/powercap details: [docs/HARDWARE.md](docs/HARDWARE.md).
 Build the package first (next section), then:
 
 ```sh
-sudo pacman -U dist/geth-1.0.2-1-x86_64.pkg.tar.zst   # install
+sudo pacman -U dist/geth-1.0.3-1-x86_64.pkg.tar.zst   # install
 sudo pacman -R geth                                   # uninstall
 rm -r ~/.config/geth                                  # remove your config (optional)
 ```
@@ -193,7 +194,7 @@ cached), and runs `makepkg -f --cleanbuild` — with **no network access in
 `build()`**. Output:
 
 ```
-dist/geth-1.0.2-1-x86_64.pkg.tar.zst
+dist/geth-1.0.3-1-x86_64.pkg.tar.zst
 dist/SHA256SUMS
 ```
 
@@ -233,6 +234,7 @@ Keys (press `?` in the UI for the full list):
 | `t` | Cycle the graph window (30s → 1m → 2m → 5m → 10m) |
 | `c` | Cycle the column count |
 | `T` | Cycle the **theme** (saved to the config) |
+| `g` | Cycle the **graph style** (braille / blocks, saved) |
 
 In the **panel manager** (`e`): `↑` `↓` / `j` `k` select, `space` show/hide a
 panel, `K` `J` (or the mouse) reorder, `r` rename a GPU (applied globally to
@@ -244,9 +246,10 @@ short "saved" toast.
 
 Config: TOML at `$XDG_CONFIG_HOME/geth/config.toml` (or
 `~/.config/geth/config.toml`), covering sampling interval, graph window,
-column count, title, theme, background mode, per-panel order/visibility/
-series, and per-GPU renames. Written only when a setting changes; unknown
-keys are warned, never an error. Full schema and merge rules:
+column count, title, theme, background mode, graph style
+(`graph_style = "braille" | "blocks"`), per-panel order/visibility/series,
+and per-GPU renames. Written only when a setting changes; unknown keys are
+warned, never an error. Full schema and merge rules:
 [docs/CONFIG.md](docs/CONFIG.md).
 
 Themes: four built-in 24-bit palettes, custom themes with inheritance, live

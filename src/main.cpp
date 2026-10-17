@@ -35,6 +35,7 @@
 #include "util/format.hpp"
 #include "util/parse.hpp"
 #include "util/stop.hpp"
+#include "util/trace.hpp"
 
 using namespace geth;
 
@@ -70,6 +71,7 @@ struct Options {
   bool perf = false;          // --perf: relayout + layout-cache benchmarks
   std::string theme;          // --theme NAME ("" = the config's [general] theme)
   bool list_themes = false;   // --list-themes
+  std::string trace_series;   // --trace SERIES_ID: per-tick stage trace (off if empty)
 };
 
 void print_help() {
@@ -85,6 +87,8 @@ void print_help() {
       "  --demo            Use synthetic data; no hardware is accessed\n"
       "  --interval <ms>   Sampling interval in milliseconds (default 1000, min 10)\n"
       "  --count <n>       Stop after n samples (default: run until Ctrl-C)\n"
+      "  --trace <id>      Per-tick stage trace of one series (raw/parse/lift/\n"
+      "                    store/panel), e.g. --trace cpu.power\n"
       "  --render-frame COLSxROWS   Render one frame at that size and exit\n"
       "      [--warmup <n>]  samples to collect first (default 60; no sleep in\n"
       "                      --demo, real interval otherwise)\n"
@@ -153,6 +157,10 @@ int parse_args(int argc, char** argv, Options& o) {
     } else if (a == "--count") {
       const char* v = need_value("--count");
       if (!v || !parse_u64_arg(v, o.count)) return -1;
+    } else if (a == "--trace") {
+      const char* v = need_value("--trace");
+      if (!v) return -1;
+      o.trace_series = v;
     } else if (a == "--ansi") {
       o.ansi = true;
     } else if (a == "--stats") {
@@ -267,6 +275,8 @@ void print_dump(const Snapshot& s) {
               or_na(s.cpu.usage_pct, percent).c_str(), or_na(s.cpu.freq_avg_mhz, freq).c_str(),
               or_na(s.cpu.freq_max_mhz, freq).c_str(), or_na(s.cpu.temp_c, celsius).c_str(),
               cpu_power.c_str());
+  if (trace::matches("cpu.power"))
+    trace::stage("panel", "cpu.power", "power: " + cpu_power);
 
   std::string mem_line =
       "used " + or_na(s.mem.ram_used_bytes, bytes) + " / " + or_na(s.mem.ram_total_bytes, bytes);
@@ -741,6 +751,7 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "geth: --probe and --json are mutually exclusive\n");
     return 2;
   }
+  trace::start(opts.trace_series);  // --trace (empty = off)
 
   // SIGINT/SIGTERM can arrive during the (possibly long) probe phase; install
   // the stop flag before any hardware is touched. (In UI mode FTXUI adds its

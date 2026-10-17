@@ -52,16 +52,11 @@ bool parse_hex(const std::string& s, Rgb& out);
 // Component-wise scale (rounding to the nearest integer).
 Rgb scale(Rgb c, double f);
 
-// The fill tint: the series color scaled to `mix` (0.45 = the default, a
+// The fill tint: the series color scaled to `mix` (0.30 = the default, a
 // darker shade of the series color). In TrueColor this is exactly what is
 // drawn; in 256/16 it is drawn through fill_color(), which keeps the shade in
 // the series' hue family.
 Rgb derive_fill(Rgb series, double mix);
-
-// The lighter variant of a device color: mixed 50 % toward white. Used for a
-// panel's second series from the same device (VRAM + GTT) so the two legend
-// bars visibly differ while the device keeps one base hue.
-Rgb mix_white(Rgb c);
 
 // Hue of c in [0, 360) degrees, or -1 when achromatic (r == g == b).
 double hue_deg(Rgb c);
@@ -99,13 +94,18 @@ struct Theme {
   Rgb grid;        // dotted gridlines
   Rgb axis_text;   // y-axis tick labels
   Rgb warn;        // PAUSED, error-ish
-  Rgb series[6];   // line colors, in legend order
+  // Line colors by ROLE (Phase 6, Part C): slot 1 = CPU/primary, slot 2 =
+  // first dGPU, slot 3 = iGPU/secondary, slot 4 = second dGPU, slots 5-6 =
+  // slot 1 / slot 2 mixed 40 % toward white. Every theme's four role colors
+  // are validated (OKLab ΔE + dichromat simulation + contrast vs the bg) —
+  // see validate_series_palette and the palette tests.
+  Rgb series[6];
 
   // Painted across the whole screen ONLY when background = "solid" (the
   // single sanctioned background path). Never used in transparent mode.
   Rgb bg;
-  // The fill tint fraction (0.45 = the spec default), per theme.
-  double fill_mix = 0.45;
+  // The fill tint fraction (0.30 = the default), per theme.
+  double fill_mix = 0.30;
 
   // Fill colors are derived per series as a tint, so fills read as a shade
   // of the series color rather than grey.
@@ -123,6 +123,32 @@ struct BuiltinTheme {
   Theme theme;
 };
 const std::array<BuiltinTheme, 4>& builtin_themes();
+
+// ---------------------------------------------------------------------------
+// Phase 6 (Part C) palette validation.
+//
+// OKLab (Ottosson) color difference, scaled x100, between two sRGB colors.
+double delta_e_oklab100(Rgb a, Rgb b);
+// The same after a Machado et al. (2009) full-severity dichromat simulation
+// of the pair: condition "protan" (protanopia) or "deutan" (deuteranopia);
+// the matrices are applied to LINEAR sRGB, then the simulated pair is
+// compared in OKLab (x100).
+double delta_e_simulated100(Rgb a, Rgb b, const std::string& condition);
+// WCAG 2.x contrast ratio (1..21) between two sRGB colors.
+double contrast_ratio(Rgb a, Rgb b);
+
+// Validates a theme's series palette. Rules (one string per violation,
+// empty = valid):
+//   - normal vision:   ΔE(OKLab x100) >= 15 for every pair among slots 1-4
+//   - protan + deutan: ΔE >= 8 for every pair among slots 1-4, EXCEPT
+//     matrix-green's slots 1<->4 (measured 7.1 deutan / 7.9 protan; allowed
+//     at >= 7.0 for both because every series carries a labelled legend)
+//   - contrast >= 3:1 against #0B0F14 for all six slots
+// Custom themes are checked at load time (a violation is a WARNING — a toast
+// in the app — and the theme still loads); the unit tests print the full
+// measured matrix for the built-ins.
+std::vector<std::string> validate_series_palette(const std::string& name,
+                                                 const Theme& t);
 
 // $XDG_CONFIG_HOME/geth/themes/<name>.toml, or
 // ~/.config/geth/themes/<name>.toml. `name` is validated ([A-Za-z0-9._-],

@@ -4,7 +4,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(geth
-  VERSION 1.0.2
+  VERSION 1.0.3
   DESCRIPTION "GETH — Geth Engine for Tracking Hardware"
   LANGUAGES CXX)
 
@@ -99,7 +99,8 @@ set(GETH_SOURCES
   src/util/alloc_count.cpp
   src/util/pci_ids.cpp
   src/util/sysfs_file.cpp
-  src/util/terminal.cpp)
+  src/util/terminal.cpp
+  src/util/trace.cpp)
 
 add_executable(geth src/main.cpp ${GETH_SOURCES})
 # The target stays `geth` (the setcap target references it); only the output

@@ -2,10 +2,12 @@
 
 #include "sources/temps.hpp"  // parse_millidegrees()
 #include "util/parse.hpp"
+#include "util/trace.hpp"
 
 #include <algorithm>
 #include <cerrno>
 #include <cctype>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 
@@ -398,14 +400,29 @@ void GpuAmdBackend::sample(const PciDevice& dev, GpuSample& out) {
     // *not* cumulative counters — no rate calculation, no wraparound.
     std::optional<double> ppt;
     if (c->hwmon_power.valid()) {
-      if (const auto v = parse::to_u64(parse::trim(c->hwmon_power.read())))
-        ppt = static_cast<double>(*v) / 1e6;
+      const std::string raw(parse::trim(c->hwmon_power.read()));
+      if (const auto v = parse::to_u64(raw)) ppt = static_cast<double>(*v) / 1e6;
+      if (trace::matches("cpu.power"))
+        trace::stage("raw", "cpu.power", "gpu=" + dev.bus_id + " " +
+                                      c->hwmon_power.path() + " = " + raw +
+                                      " \xC2\xB5W");
     }
     if (!ppt && c->hwmon_power_avg.valid()) {
-      if (const auto v = parse::to_u64(parse::trim(c->hwmon_power_avg.read())))
-        ppt = static_cast<double>(*v) / 1e6;
+      const std::string raw(parse::trim(c->hwmon_power_avg.read()));
+      if (const auto v = parse::to_u64(raw)) ppt = static_cast<double>(*v) / 1e6;
+      if (trace::matches("cpu.power"))
+        trace::stage("raw", "cpu.power", "gpu=" + dev.bus_id + " " +
+                                      c->hwmon_power_avg.path() + " = " + raw +
+                                      " \xC2\xB5W");
     }
-    if (ppt) out.ppt_w = *ppt;  // always kept, raw, for --probe/debugging
+    if (ppt) {
+      out.ppt_w = *ppt;  // always kept, raw, for --probe/debugging
+      if (trace::matches("cpu.power")) {
+        char w[32];
+        std::snprintf(w, sizeof(w), "%.3f", *ppt);
+        trace::stage("parse", "cpu.power", "gpu=" + dev.bus_id + " ppt_w=" + w + " W");
+      }
+    }
 
     if (c->hwmon_temp.valid()) {
       out.temp_c = parse_millidegrees(c->hwmon_temp.read());

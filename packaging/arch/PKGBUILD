@@ -16,7 +16,7 @@
 # `license` must equal CMake's GETH_LICENSE; the packaging script checks it.
 
 pkgname=geth
-pkgver=1.0.2
+pkgver=1.0.3
 pkgrel=1
 pkgdesc="A fast, lightweight terminal system monitor for Linux (C++20, in-process, no subprocesses)"
 url="https://github.com/YuvrajTalukdar/geth"

@@ -200,6 +200,17 @@ Config Config::load(const std::string& path, bool no_save) {
             } else
               c.warnings.push_back(warn(
                   c, line, "general.background must be a string — ignored"));
+          } else if (name == "graph_style") {
+            if (v.is_string()) {
+              const std::string s = v.as<std::string>()->get();
+              if (s == "braille" || s == "blocks") c.graph_style = s;
+              else
+                c.warnings.push_back(warn(
+                    c, line, "general.graph_style must be \"braille\" or "
+                             "\"blocks\" — ignored"));
+            } else
+              c.warnings.push_back(warn(
+                  c, line, "general.graph_style must be a string — ignored"));
           } else {
             c.warnings.push_back(warn(c, line,
                                       "unknown key 'general." + name +
@@ -346,7 +357,8 @@ std::string Config::serialize() const {
     s += "columns = " + std::to_string(columns) + "\n";
   s += "title = \"" + escape_toml(title) + "\"\n";
   s += "theme = \"" + escape_toml(theme) + "\"\n";
-  s += "background = \"" + escape_toml(background) + "\"\n\n";
+  s += "background = \"" + escape_toml(background) + "\"\n";
+  s += "graph_style = \"" + escape_toml(graph_style) + "\"\n\n";
   for (const auto& e : panels) {
     s += "[[panels]]\n";
     s += "id = \"" + escape_toml(e.id) + "\"\n";

@@ -2,6 +2,60 @@
 
 All notable changes to GETH. The format follows the five-phase build plan.
 
+## 1.0.3 — CPU power fix, line visibility, theme palettes (2026-10-18)
+
+### Fix: CPU package power frozen on APU machines
+
+CPU package power stayed frozen at its first value on machines where the
+package counter comes from the APU's PPT (RAPL unreadable without a fix).
+Root cause: the `Collector` reuses one `Snapshot` between ticks, and
+`CpuPowerSource` wrote the power fields only when a backend produced a
+value — so the APU-PPT lift's "a counter source already won" guard read the
+stale value the lift itself had stored on the previous tick, and never ran
+again. Fix: `Collector::sample()` resets `package_power_w` /
+`package_power_source` at the top of every tick. New `--trace <id>` flag
+prints one series' raw read, parsed value, lift decision, and stored value
+per tick (`--trace cpu.power`).
+
+### Line visibility
+
+- Graph lines are now **two dots tall** in braille (the plotted dot plus the
+  dot above it), so lines stay visible at steep slopes and with dense series.
+- Fills are **count-based**: a one-series panel is filled, a two-series panel
+  fills only the primary series, three or more series have no fill. Fills
+  sit under the lines; the primary series is drawn last so it is never
+  covered.
+- **New `blocks` graph style** — 2×2 quadrant glyphs instead of braille,
+  selected with `[general] graph_style = "braille" | "blocks"` or the `g` key
+  (toggles live, saved to the config).
+- **Distinct colors within a panel**: series colors are assigned by device
+  role (CPU = slot 1, first discrete GPU = 2, iGPU = 3, second discrete GPU
+  = 4; extra GPUs and a second series of one device take the next free
+  slot), so two series that share a panel are always distinguishable.
+  `docs/THEMES.md` documents the slots.
+
+### Theme palettes
+
+- The four built-in palettes are now role-based six-slot palettes with slots
+  5–6 as slots 1–2 mixed 40% toward white.
+- **Validation** (test suite for the built-ins; at load for custom themes —
+  a warning, never an error): pairs among slots 1–4 need ΔE ≥ 15 (OKLab,
+  normal vision) and ΔE ≥ 8 under *both* protanopia and deuteranopia
+  simulation (Machado 2009 matrices on linear sRGB); every slot needs ≥ 3:1
+  WCAG contrast against `#0B0F14`. One sanctioned exception: matrix-green's
+  slots 1↔4 measure 7.9 (protan) / 7.1 (deutan) — allowed at ≥ 7.0 for both
+  simulations because every series carries a labelled legend.
+
+### Tests
+
+163 cases / 509,316 assertions, green on Debug (ASan+UBSan) and Release.
+New: four collector regression tests for the power lift (including a
+RAPL→PPT source switch on the same tick), the 16-glyph blocks table
+(verified against Unicode names), graph-style parsing, blocks rendering,
+the count-based fill rule, and the palette validation (all four built-ins,
+a rejected bad palette, and the matrix-green exception under a different
+name).
+
 ## 1.0.2 — Layout: always use the whole window (2026-10-17)
 
 The dashboard could leave blank rows and hide panels without telling

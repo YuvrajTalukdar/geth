@@ -7,9 +7,11 @@
 
 #include <array>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <string>
 #include <vector>
 
@@ -100,26 +102,26 @@ TEST_CASE("built-in palettes match the spec table exactly") {
       rgb(0x00, 0xE5, 0xFF), rgb(0x00, 0xE5, 0xFF), rgb(0x9E, 0xEF, 0xFF),
       rgb(0x4F, 0xA3, 0xB3), rgb(0x0F, 0x5A, 0x66), rgb(0x0A, 0x3A, 0x42),
       rgb(0x3E, 0x8C, 0x99), rgb(0xFF, 0x3B, 0x5C), rgb(0x00, 0xE5, 0xFF),
-      rgb(0x39, 0xFF, 0x88), rgb(0xFF, 0x4F, 0xD8), rgb(0xFF, 0xD2, 0x3F),
-      rgb(0x4D, 0xA3, 0xFF), rgb(0xC7, 0x7D, 0xFF)};
+      rgb(0x9D, 0xFF, 0x3A), rgb(0xFF, 0x7A, 0x45), rgb(0x8C, 0x7C, 0xFF),
+      rgb(0x66, 0xEF, 0xFF), rgb(0xC4, 0xFF, 0x89)};
   const std::array<Rgb, 14> matrix = {
       rgb(0x39, 0xFF, 0x14), rgb(0x39, 0xFF, 0x14), rgb(0xB6, 0xFF, 0xB0),
       rgb(0x4F, 0xAF, 0x5F), rgb(0x0F, 0x5A, 0x2A), rgb(0x0A, 0x3A, 0x1C),
       rgb(0x3E, 0x8C, 0x55), rgb(0xFF, 0x3B, 0x5C), rgb(0x39, 0xFF, 0x14),
-      rgb(0x00, 0xE5, 0xFF), rgb(0xFF, 0xD2, 0x3F), rgb(0xFF, 0x4F, 0xD8),
-      rgb(0x7C, 0xFF, 0xCB), rgb(0xC7, 0x7D, 0xFF)};
+      rgb(0x2E, 0xC5, 0xFF), rgb(0xFF, 0x7A, 0x3D), rgb(0xF0, 0xE6, 0x8C),
+      rgb(0x88, 0xFF, 0x72), rgb(0x82, 0xDC, 0xFF)};
   const std::array<Rgb, 14> crimson = {
       rgb(0xFF, 0x2E, 0x4D), rgb(0xFF, 0x2E, 0x4D), rgb(0xFF, 0xC2, 0xCB),
       rgb(0xB3, 0x50, 0x5F), rgb(0x5A, 0x14, 0x20), rgb(0x3A, 0x0D, 0x15),
-      rgb(0x8C, 0x3E, 0x4A), rgb(0xFF, 0xD2, 0x3F), rgb(0xFF, 0x2E, 0x4D),
-      rgb(0xFF, 0xB0, 0x00), rgb(0x00, 0xE5, 0xFF), rgb(0xFF, 0x7A, 0xE0),
-      rgb(0xFF, 0x8A, 0x3D), rgb(0xC7, 0x7D, 0xFF)};
+      rgb(0x8C, 0x3E, 0x4A), rgb(0xFF, 0xD2, 0x3F), rgb(0xFF, 0x33, 0x55),
+      rgb(0xFF, 0xC2, 0x33), rgb(0x4D, 0xDB, 0xFF), rgb(0xB9, 0x8C, 0xFF),
+      rgb(0xFF, 0x85, 0x99), rgb(0xFF, 0xDA, 0x85)};
   const std::array<Rgb, 14> amber = {
       rgb(0xFF, 0xB0, 0x00), rgb(0xFF, 0xB0, 0x00), rgb(0xFF, 0xE2, 0xA8),
       rgb(0xB3, 0x89, 0x3E), rgb(0x5A, 0x41, 0x10), rgb(0x3A, 0x2A, 0x0A),
       rgb(0x8C, 0x6D, 0x3E), rgb(0xFF, 0x3B, 0x5C), rgb(0xFF, 0xB0, 0x00),
-      rgb(0x00, 0xE5, 0xFF), rgb(0xFF, 0x4F, 0xD8), rgb(0x39, 0xFF, 0x88),
-      rgb(0xFF, 0x6A, 0x3D), rgb(0xC7, 0x7D, 0xFF)};
+      rgb(0xFF, 0x55, 0x33), rgb(0x5C, 0xD0, 0xFF), rgb(0xE3, 0xFF, 0x7A),
+      rgb(0xFF, 0xD0, 0x66), rgb(0xFF, 0x99, 0x85)};
 
   const Theme cb = Theme::cyberpunk_blue();
   const Theme mg = Theme::matrix_green();
@@ -129,10 +131,10 @@ TEST_CASE("built-in palettes match the spec table exactly") {
   CHECK(same_flat(flat(mg), matrix));
   CHECK(same_flat(flat(cr), crimson));
   CHECK(same_flat(flat(am), amber));
-  CHECK(cb.fill_mix == doctest::Approx(0.45));
-  CHECK(mg.fill_mix == doctest::Approx(0.45));
-  CHECK(cr.fill_mix == doctest::Approx(0.45));
-  CHECK(am.fill_mix == doctest::Approx(0.45));
+  CHECK(cb.fill_mix == doctest::Approx(0.30));
+  CHECK(mg.fill_mix == doctest::Approx(0.30));
+  CHECK(cr.fill_mix == doctest::Approx(0.30));
+  CHECK(am.fill_mix == doctest::Approx(0.30));
 }
 
 TEST_CASE("16-color mapping: six distinct slots for every built-in theme") {
@@ -148,6 +150,46 @@ TEST_CASE("16-color mapping: six distinct slots for every built-in theme") {
   }
 }
 
+TEST_CASE("built-in palettes pass the Part C validation (matrix printed)") {
+  // Part C: every built-in series palette must satisfy
+  //   - normal vision:   dE(OKLab x100) >= 15 for all pairs among slots 1-4
+  //   - protan + deutan: dE >= 8 for all pairs among slots 1-4 (matrix-green
+  //     slots 1<->4 allowed at >= 7.0 for both — labelled legend)
+  //   - contrast >= 3:1 vs #0B0F14 for all six slots
+  // The full measured matrix is printed for the release report.
+  for (const auto& b : builtin_themes()) {
+    const Theme& t = b.theme;
+    std::cout << "\n=== " << b.name << " ===\n";
+    std::cout << "  pair   norm   protan  deutan\n";
+    for (int i = 0; i < 4; ++i)
+      for (int j = i + 1; j < 4; ++j) {
+        char line[128];
+        std::snprintf(line, sizeof line, "  S%dxS%d %6.2f %6.2f %6.2f\n", i + 1,
+                      j + 1, delta_e_oklab100(t.series[i], t.series[j]),
+                      delta_e_simulated100(t.series[i], t.series[j], "protan"),
+                      delta_e_simulated100(t.series[i], t.series[j], "deutan"));
+        std::cout << line;
+      }
+    for (int i = 0; i < 6; ++i) {
+      char line[128];
+      std::snprintf(line, sizeof line, "  S%d contrast vs #0B0F14: %.2f:1\n",
+                    i + 1, contrast_ratio(t.series[i], rgb(0x0B, 0x0F, 0x14)));
+      std::cout << line;
+    }
+    CHECK(validate_series_palette(b.name, t).empty());
+  }
+}
+
+TEST_CASE("validate_series_palette: a bad palette is rejected, matrix-green copy is not") {
+  // Two identical slots -> dE 0 (< 15).
+  Theme t = Theme::cyberpunk_blue();
+  t.series[1] = t.series[0];  // slot 2 == slot 1
+  CHECK(!validate_series_palette("bad-test", t).empty());
+  // A theme that is EXACTLY matrix-green's colors but has a different name
+  // still gets the sanctioned exception (it is keyed on the color pair).
+  CHECK(validate_series_palette("a-copy-of-matrix-green", Theme::matrix_green()).empty());
+}
+
 TEST_CASE("resolve_theme: built-in names, unknown name -> nullopt") {
   std::vector<std::string> warn;
   CHECK(resolve_theme("cyberpunk-blue", &warn).has_value());
@@ -159,17 +201,19 @@ TEST_CASE("resolve_theme: built-in names, unknown name -> nullopt") {
 
 TEST_CASE("custom theme: base + inheritance, missing fields inherit") {
   ThemeDirGuard g;
+  // series_2 is a color that passes the Part C palette rules (a dark
+  // override like #445566 would now correctly raise a contrast warning).
   const std::string n = g.write("child",
       "base = \"cyberpunk-blue\"\n"
       "accent = \"#112233\"\n"
-      "series_2 = \"#445566\"\n");
+      "series_2 = \"#FFD23F\"\n");
   std::vector<std::string> warn;
   const auto t = resolve_theme(n, &warn);
   REQUIRE(t.has_value());
   CHECK(warn.empty());
   // Overridden:
   CHECK(same((*t).accent, rgb(0x11, 0x22, 0x33)));
-  CHECK(same((*t).series[1], rgb(0x44, 0x55, 0x66)));
+  CHECK(same((*t).series[1], rgb(0xFF, 0xD2, 0x3F)));
   // Inherited from cyberpunk-blue:
   CHECK(same((*t).title, rgb(0x00, 0xE5, 0xFF)));
   CHECK(same((*t).series[0], rgb(0x00, 0xE5, 0xFF)));
@@ -192,7 +236,7 @@ TEST_CASE("custom theme: invalid hex / out-of-range fill_mix -> warn + base valu
   CHECK(same((*t).accent, rgb(0x00, 0xE5, 0xFF)));
   CHECK(same((*t).warn, rgb(0xFF, 0x3B, 0x5C)));
   CHECK(same((*t).series[0], rgb(0x00, 0xE5, 0xFF)));
-  CHECK((*t).fill_mix == doctest::Approx(0.45));
+  CHECK((*t).fill_mix == doctest::Approx(0.30));
 }
 
 TEST_CASE("custom theme: unknown key -> warning, value ignored") {

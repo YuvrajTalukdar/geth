@@ -1,5 +1,7 @@
 #include "ui/panel_spec.hpp"
 
+#include <algorithm>
+
 #include "util/format.hpp"
 #include "util/names.hpp"
 #include "util/parse.hpp"
@@ -36,6 +38,39 @@ std::vector<std::size_t> gpu_order(const Hardware& hw) {
   for (std::size_t i = 0; i < hw.gpus.size(); ++i)
     if (hw.gpus[i].is_integrated) out.push_back(i);
   return out;
+}
+
+// The palette slot (index into Theme::series[6]) for a device, by ROLE
+// (Phase 6, Part C) so the same device keeps one color in every panel:
+//   slot 1 (0) CPU/primary   slot 2 (1) first dGPU
+//   slot 3 (2) iGPU          slot 4 (3) second dGPU
+//   slot 5 (4) / slot 6 (5)  third / fourth dGPU (rare)
+int device_color_index(const Hardware& hw, std::size_t gpu_i) {
+  if (hw.gpus[gpu_i].is_integrated) return 2;  // slot 3
+  int d = 0;  // this dGPU's ordinal among the discrete GPUs
+  for (std::size_t i = 0; i < gpu_i; ++i)
+    if (!hw.gpus[i].is_integrated) ++d;
+  static const int kDgpuSlot[4] = {1, 3, 4, 5};  // slots 2, 4, 5, 6
+  return kDgpuSlot[std::min(d, 3)];
+}
+
+// The smallest palette slot not already used by an earlier series of the same
+// panel (Phase 6, Part B: no two series in a panel share a color; the second
+// series — GTT next to VRAM — takes the next free slot).
+int next_free_slot(const std::vector<int>& used) {
+  for (int s = 0; s < 6; ++s)
+    if (std::find(used.begin(), used.end(), s) == used.end()) return s;
+  return used.empty() ? 0 : used.back();
+}
+
+// The Phase 6 Part B fill rule, applied to a whole panel by series count:
+//   1 series  -> its one series is filled
+//   2 series  -> only the PRIMARY (first) is filled
+//   3+ series -> nothing is filled (Temperature, Power)
+void apply_fill_rule(PanelSpec& p) {
+  const int n = static_cast<int>(p.series.size());
+  for (int i = 0; i < n; ++i)
+    p.series[i].fill = (n == 1) ? true : (n == 2 ? i == 0 : false);
 }
 
 }  // namespace
@@ -96,13 +131,14 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
         {"Maximum CPU Frequency",
          [](const Snapshot& s) { return v_freq(s.cpu.freq_max_mhz); }, -1},
     };
+    apply_fill_rule(p);
     page.push_back(std::move(p));
   }
 
   // 2. One usage panel per GPU ---------------------------------------------
   for (std::size_t k = 0; k < order.size(); ++k) {
     const auto& g = hw.gpus[order[k]];
-    const int ci = static_cast<int>(k) + 1;
+    const int ci = device_color_index(hw, order[k]);
     const std::string title = gpu_title(g);
     const std::string bus = g.bus_id;
     PanelSpec p;
@@ -132,6 +168,7 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
          },
          -1},
     };
+    apply_fill_rule(p);
     page.push_back(std::move(p));
   }
 
@@ -149,13 +186,14 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
     };
     p.y_scale.kind = ScaleSpec::Kind::kAbsolute;
     p.y_scale.absolute_max = hw.ram_total_bytes;
+    apply_fill_rule(p);
     page.push_back(std::move(p));
   }
 
   // 4. One VRAM panel per GPU (same order) -----------------------------------
   for (std::size_t k = 0; k < order.size(); ++k) {
     const auto& g = hw.gpus[order[k]];
-    const int ci = static_cast<int>(k) + 1;
+    const int ci = device_color_index(hw, order[k]);
     const std::string title = gpu_title(g);
     const std::string bus = g.bus_id;
     PanelSpec p;
@@ -165,20 +203,19 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
     p.title = title + " \xC2\xB7 Memory";
     p.gpu_bus = bus;
     if (g.is_integrated) {
-      // Integrated: GTT is the primary FILLED series (the aperture the OS
-      // actually uses), and the fixed BIOS VRAM carve-out is a line. Same
-      // device, so the VRAM line keeps the device's base color in its lighter
-      // variant (the hard-coded pink used to collide with the Cezanne line).
+      // Integrated: GTT is the primary series (the aperture the OS actually
+      // uses) in the device's color; the fixed BIOS VRAM carve-out is the
+      // SECOND series, which takes the next theme slot not used in this panel
+      // (Phase 6: no two series of a panel share a color).
+      const int vram_ci = next_free_slot({ci});
       p.series = {
           {.id = SeriesId("gpu." + bus + ".gtt"), .label = "GTT", .color_index = ci,
-           .fill = true,
            .value_fn = [bus](const Snapshot& s) {
              for (const auto& x : s.gpus)
                if (x.pci_bus_id == bus) return v_bytes(x.gtt_used_bytes);
              return std::string("—");
            }},
-          {.id = SeriesId("gpu." + bus + ".vram"), .label = "VRAM", .color_index = ci,
-           .variant = true,
+          {.id = SeriesId("gpu." + bus + ".vram"), .label = "VRAM", .color_index = vram_ci,
            .value_fn = [bus](const Snapshot& s) {
              for (const auto& x : s.gpus)
                if (x.pci_bus_id == bus) return v_bytes(x.vram_used_bytes);
@@ -211,6 +248,7 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
          },
          -1},
     };
+    apply_fill_rule(p);
     page.push_back(std::move(p));
   }
 
@@ -226,7 +264,7 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
       const std::string bus = g.bus_id;
       p.series.push_back({.id = SeriesId("gpu." + bus + ".temp"),
                           .label = gpu_title(g),
-                          .color_index = static_cast<int>(k) + 1,
+                          .color_index = device_color_index(hw, order[k]),
                           .value_fn = [bus](const Snapshot& s) {
                             for (const auto& x : s.gpus)
                               if (x.pci_bus_id == bus) return v_celsius(x.temp_c);
@@ -234,6 +272,7 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
                           }});
     }
     p.y_scale.kind = ScaleSpec::Kind::kTemperature;
+    apply_fill_rule(p);
     page.push_back(std::move(p));
   }
 
@@ -253,7 +292,7 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
       const std::string bus = g.bus_id;
       p.series.push_back({.id = SeriesId("gpu." + bus + ".power"),
                           .label = gpu_title(g),
-                          .color_index = static_cast<int>(k) + 1,
+                          .color_index = device_color_index(hw, order[k]),
                           .value_fn = [bus](const Snapshot& s) {
                             for (const auto& x : s.gpus)
                               if (x.pci_bus_id == bus) return v_watts(x.power_w);
@@ -262,6 +301,7 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
     }
     p.y_scale.kind = ScaleSpec::Kind::kWatts;
     p.y_scale.floor_ = 20.0;  // minimum ceiling: 20 W (nice_watts' floor)
+    apply_fill_rule(p);
     page.push_back(std::move(p));
   }
 
@@ -278,6 +318,7 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
     };
     p.y_scale.kind = ScaleSpec::Kind::kBytesPerSec;
     p.y_scale.floor_ = 64.0 * 1024.0;  // minimum ceiling: 64 KiB/s
+    apply_fill_rule(p);
     page.push_back(std::move(p));
   }
 
@@ -294,6 +335,7 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
     };
     p.y_scale.kind = ScaleSpec::Kind::kBytesPerSec;
     p.y_scale.floor_ = 1024.0 * 1024.0;  // minimum ceiling: 1 MiB/s
+    apply_fill_rule(p);
     page.push_back(std::move(p));
   }
 

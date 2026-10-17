@@ -252,6 +252,7 @@ bool Dashboard::OnEvent(ftxui::Event event) {
   if (event == ftxui::Event::Character('t')) return (cycle_window(), true);
   if (event == ftxui::Event::Character('c')) return (cycle_columns(), true);
   if (event == ftxui::Event::Character('T')) return (cycle_theme(), true);
+  if (event == ftxui::Event::Character('g')) return (cycle_graph_style(), true);
 
   // Scrolling (no-ops unless the page overflows).
   auto line_scroll = [&](int dir) {
@@ -308,6 +309,8 @@ ftxui::Element Dashboard::OnRender() {
   chrome.toast_until = _toast_until;
   chrome.title_override = _cfg.title;
   chrome.solid_bg = (_cfg.background == "solid");
+  chrome.graph_style =
+      (_cfg.graph_style == "blocks") ? GraphStyle::kBlocks : GraphStyle::kBraille;
 
   ManagerOverlay mg;
   bool show_manager = false;
@@ -357,6 +360,7 @@ ftxui::Element Dashboard::OnRender() {
         {"t", "cycle the graph window (30 s \xE2\x80\xA6 10 m)"},
         {"c", "cycle the columns (auto, 1 \xE2\x80\xA6 8)"},
         {"T", "cycle the theme (saves)"},
+        {"g", "toggle the graph style (braille / blocks, saves)"},
         {"\xE2\x86\x91 / \xE2\x86\x93 \xC2\xB7 j / k", "scroll one row"},
         {"PgUp / PgDn", "scroll one page"},
         {"Home / End", "top / bottom"},
@@ -526,6 +530,13 @@ void Dashboard::cycle_theme() {
   if (_theme_cycle.empty()) return;
   if (_theme_cycle.size() > 1)
     _theme_idx = (_theme_idx + 1) % (int)_theme_cycle.size();
+  _dirty = true;
+  save_now();
+}
+
+void Dashboard::cycle_graph_style() {
+  // g flips braille <-> blocks and saves the choice.
+  _cfg.graph_style = (_cfg.graph_style == "blocks") ? "braille" : "blocks";
   _dirty = true;
   save_now();
 }

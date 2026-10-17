@@ -17,7 +17,10 @@
 #include <vector>
 
 #include "core/collector.hpp"
+#include "fake_pci_tree.hpp"
+#include "sources/cpu_power.hpp"
 #include "sources/demo.hpp"
+#include "sources/gpu_registry.hpp"
 #include "ui/frame.hpp"
 #include "ui/panel_spec.hpp"
 #include "ui/theme.hpp"
@@ -341,24 +344,31 @@ void diag_color_mode(const std::string& out, const ui::Theme& th) {
 
 TEST_SUITE("ui") {
 
-TEST_CASE("no background color is ever emitted (160x48, all color modes)") {
+TEST_CASE("no background color is ever emitted (160x48, all modes, both styles)") {
   const UiFixture fx;
   const ui::Theme theme = ui::Theme::cyberpunk_blue();
   const ui::ColorMode modes[] = {ui::ColorMode::TrueColor, ui::ColorMode::Color256,
                                  ui::ColorMode::Color16};
-  for (auto mode : modes) {
-    ui::FrameState state;
-    ui::LayoutCache cache = cache_for(fx.page);
-    ftxui::Screen screen(160, 48);
-    screen.Clear();
-    ui::render_frame(screen, fx.hw, fx.page, fx.c.store(), fx.c.latest(), nullptr, state,
-                     theme, mode, /*paused=*/false, 1000, cache, 0, kWinNs);
-    const std::string out = screen.ToString();
-    // Sanity: a frame was actually drawn (borders, title, footer).
-    CHECK(!out.empty());
-    CHECK(out.find('\xe2') != std::string::npos);  // some UTF-8 (box/braille) glyph
-    CHECK(!has_forbidden_style(out));
-  }
+  // Part B: the transparency guarantee holds in BOTH graph styles (braille and
+  // blocks) — the blocks glyphs are foreground-only too.
+  const ui::GraphStyle styles[] = {ui::GraphStyle::kBraille, ui::GraphStyle::kBlocks};
+  for (auto mode : modes)
+    for (auto style : styles) {
+      ui::FrameState state;
+      ui::LayoutCache cache = cache_for(fx.page);
+      ftxui::Screen screen(160, 48);
+      screen.Clear();
+      ui::FrameChrome chrome;
+      chrome.graph_style = style;
+      ui::render_frame(screen, fx.hw, fx.page, fx.c.store(), fx.c.latest(), nullptr,
+                       state, theme, mode, /*paused=*/false, 1000, cache, 0, kWinNs,
+                       chrome);
+      const std::string out = screen.ToString();
+      // Sanity: a frame was actually drawn (borders, title, footer).
+      CHECK(!out.empty());
+      CHECK(out.find('\xe2') != std::string::npos);  // some UTF-8 (box/block) glyph
+      CHECK(!has_forbidden_style(out));  // no background SGR in either style
+    }
 }
 
 // v1.0.1 Part A.3: every BUILT-IN theme renders in all three color modes
@@ -487,7 +497,9 @@ TEST_CASE("graph history: 0->100% ramp over 60 s at 60 columns is monotonic") {
   render_ramp(/*gap=*/false, screen);
   const int gx = 8, gy = 2, Wg = 129, Hg = 7;
   const int dot_cols = 2 * Wg, dot_rows = 4 * Hg;
-  CHECK_EQ(top_dot(screen, gx, gy, 0, Hg), dot_rows - 1);  // 0 % -> bottom
+  // The braille line is two dots tall, so at 0 % its TOP dot sits one row
+  // above the bottom; at 100 % it is a single top dot.
+  CHECK_EQ(top_dot(screen, gx, gy, 0, Hg), dot_rows - 2);  // 0 % -> bottom-1
   CHECK_EQ(top_dot(screen, gx, gy, dot_cols - 1, Hg), 0);  // 100 % -> top
   // Heights never decrease left -> right.
   for (int xc = 1; xc < dot_cols; ++xc)
@@ -529,8 +541,14 @@ TEST_CASE("filled graph: line in series color, fill below in the derived color")
     for (int cy = 0; cy < Hg; ++cy) {
       if (mask_at(screen, gx, gy, 2 * ccol, cy) == 0) continue;  // grid/empty
       const int lo = 4 * cy, hi = 4 * cy + 3;
-      const bool has_line = (line_row[2 * ccol] >= lo && line_row[2 * ccol] <= hi) ||
-                            (line_row[2 * ccol + 1] >= lo && line_row[2 * ccol + 1] <= hi);
+      // The braille line is TWO dots tall (the top dot and the one directly
+      // below it), so a cell shows the line color if EITHER of those dots
+      // falls in it — the top dot alone would leave the cell holding the
+      // lower line dot misclassified as fill.
+      auto in_cell = [&](int d) { return d >= lo && d <= hi; };
+      const bool has_line =
+          in_cell(line_row[2 * ccol]) || in_cell(line_row[2 * ccol] + 1) ||
+          in_cell(line_row[2 * ccol + 1]) || in_cell(line_row[2 * ccol + 1] + 1);
       CHECK_EQ(screen.PixelAt(gx + ccol, gy + cy).foreground_color,
                has_line ? line_c : fill_c);
     }
@@ -665,22 +683,35 @@ TEST_CASE("256-color fills stay dark shades of their own series hue") {
           pal256_rgb(ui::nearest256(theme.series[i])).r +
           pal256_rgb(ui::nearest256(theme.series[i])).g +
           pal256_rgb(ui::nearest256(theme.series[i])).b);
-    if (i != 0) CHECK(idx != border_idx);  // cyan's fill IS the border's teal
+    // A series in the border's own hue family (within fill_color's 30-degree
+    // constraint) may legitimately share the border's 256 index; every other
+    // series must not. (The old special case "i != 0" was the cyan slot 1;
+    // the new slot 5 is slot 1 mixed 40 % toward white, so it is in the same
+    // teal family and is covered by the hue check too.)
+    const double hb = ui::hue_deg(theme.border);
+    const double dfam = (hs >= 0.0 && hb >= 0.0)
+                            ? std::min(std::fabs(hs - hb), 360.0 - std::fabs(hs - hb))
+                            : 360.0;
+    if (dfam > 30.0) CHECK(idx != border_idx);
   }
 }
 
-TEST_CASE("same-device second series uses the lighter 50%-white variant") {
-  // Phase 4 A2: VRAM + GTT — one device, one base color; the GTT series
-  // (variant) draws in mix_white(base) so the legend bars visibly differ.
+TEST_CASE("same-device second series takes the next free slot") {
+  // Phase 6 (Part B): the second series of a panel from the SAME device no
+  // longer draws a lighter 50%-white variant. Instead, no two series of a
+  // panel may share a color: GTT keeps the device's role color (the iGPU's
+  // slot 3, index 2) and VRAM takes the next free theme slot in that panel
+  // (slot 1, index 0).
   const ui::Theme theme = ui::Theme::cyberpunk_blue();
-  const ftxui::Color base_c =
+  const ftxui::Color gtt_c =
       ui::to_ftxui(theme.series[2], ui::ColorMode::TrueColor);
-  const ftxui::Color var_c =
-      ui::to_ftxui(ui::mix_white(theme.series[2]), ui::ColorMode::TrueColor);
-  CHECK(base_c != var_c);
+  const ftxui::Color vram_c =
+      ui::to_ftxui(theme.series[0], ui::ColorMode::TrueColor);
+  CHECK(gtt_c != vram_c);
 
-  // A single panel with the iGPU's two VRAM-series shapes: VRAM (base) and
-  // GTT (variant), like build_default_page emits for Cezanne (ci = 2).
+  // The iGPU VRAM panel build_default_page emits for Cezanne (ci = 2): GTT
+  // is the primary (first) series in the device color; VRAM is second and
+  // takes the next free slot.
   {
     const UiFixture fx;  // real demo data: the iGPU reports GTT
     const ui::PanelSpec* vram = nullptr;
@@ -688,13 +719,18 @@ TEST_CASE("same-device second series uses the lighter 50%-white variant") {
       if (p.id == "gpu.0000:07:00.0.vram") vram = &p;
     REQUIRE(vram != nullptr);
     REQUIRE_EQ(vram->series.size(), static_cast<std::size_t>(2));
+    CHECK(vram->series[0].id == SeriesId("gpu.0000:07:00.0.gtt"));
     CHECK_EQ(vram->series[0].color_index, 2);
-    CHECK(!vram->series[0].variant);
-    CHECK_EQ(vram->series[1].color_index, 2);  // same device -> same base
-    CHECK(vram->series[1].variant);
+    CHECK(vram->series[0].fill);  // 2-series rule: only the primary is filled
+    CHECK(vram->series[1].id == SeriesId("gpu.0000:07:00.0.vram"));
+    CHECK_EQ(vram->series[1].color_index, 0);  // next free slot (slot 1)
+    CHECK(!vram->series[1].fill);
+    // No two series of the panel share a color.
+    CHECK(vram->series[0].color_index != vram->series[1].color_index);
   }
 
-  // Rendered: the two legend bars ("▌") are base and variant, in order.
+  // Rendered: the two legend bars ("▌") are the two distinct series colors,
+  // in panel order (GTT then VRAM).
   Collector c;
   c.add(std::make_unique<DemoSource>());
   c.probe_all(/*warm_up=*/true);
@@ -704,12 +740,12 @@ TEST_CASE("same-device second series uses the lighter 50%-white variant") {
   ui::PanelSpec p;
   p.id = "vram";
   p.title = "T \xC2\xB7 Memory";
-  p.series.push_back({.id = SeriesId("gpu.0000:07:00.0.vram"), .label = "VRAM",
-                      .color_index = 2, .fill = true,
-                      .value_fn = [](const Snapshot&) { return std::string("1 GiB"); }});
   p.series.push_back({.id = SeriesId("gpu.0000:07:00.0.gtt"), .label = "GTT",
-                      .color_index = 2, .variant = true,
+                      .color_index = 2, .fill = true,
                       .value_fn = [](const Snapshot&) { return std::string("128 MiB"); }});
+  p.series.push_back({.id = SeriesId("gpu.0000:07:00.0.vram"), .label = "VRAM",
+                      .color_index = 0, .fill = false,
+                      .value_fn = [](const Snapshot&) { return std::string("1 GiB"); }});
   std::vector<ui::PanelSpec> page{p};
   ui::FrameState state;
   ui::LayoutCache cache = cache_for(page);
@@ -725,8 +761,8 @@ TEST_CASE("same-device second series uses the lighter 50%-white variant") {
     if (screen.at(x, 9) == "\xE2\x96\x8C")  // ▌ U+258C
       bars[found++] = x;
   REQUIRE_EQ(found, 2);
-  CHECK_EQ(screen.PixelAt(bars[0], 9).foreground_color, base_c);
-  CHECK_EQ(screen.PixelAt(bars[1], 9).foreground_color, var_c);
+  CHECK_EQ(screen.PixelAt(bars[0], 9).foreground_color, gtt_c);
+  CHECK_EQ(screen.PixelAt(bars[1], 9).foreground_color, vram_c);
 }
 
 TEST_CASE("0->max->0 spike over 3 samples: unbroken line on both slopes") {
@@ -739,9 +775,10 @@ TEST_CASE("0->max->0 spike over 3 samples: unbroken line on both slopes") {
   const int dot_cols = 2 * Wg, dot_rows = 4 * Hg;
   const int bottom = dot_rows - 1;
 
-  // Before the spike (~column 248) the line sits at 0: a single bottom dot.
+  // Before the spike (~column 248) the line sits at 0: the two-dot-tall
+  // braille line at the bottom (dots bottom-1 and bottom).
   for (int xc = 0; xc <= 246; ++xc) {
-    CHECK_EQ(top_dot(screen, gx, gy, xc, Hg), bottom);
+    CHECK_EQ(top_dot(screen, gx, gy, xc, Hg), bottom - 1);
     CHECK_EQ(bottom_dot(screen, gx, gy, xc, Hg), bottom);
   }
   // The spike region: every column's dots form one contiguous run, and
@@ -1056,3 +1093,195 @@ TEST_CASE("resize sequence: the layout retiles at every step (in-process)") {
 }
 
 }  // TEST_SUITE
+
+// ---------------------------------------------------------------------------
+// v1.0.3 Part A: the RENDERED Power value must follow a changing PPT, with
+// the iGPU panels visible, hidden, and toggled mid-run. Real sources
+// (CpuPowerSource + GpuRegistrySource) over a fake /sys whose power1_input
+// is rewritten between ticks — the pre-fix freeze showed up here first, in
+// the frame, not in the snapshot.
+
+namespace {
+
+struct ApuRenderFixture {
+  test::FakePciTree tree;
+  Collector c;
+  ui::Hardware hw;
+  std::vector<ui::PanelSpec> page;
+  std::string bus = "0000:07:00.0";
+
+  ApuRenderFixture() {
+    tree.add_device(bus, "1002", "1638", "amdgpu", true, "active", 0);
+    tree.write_dev_file(bus, "hwmon/hwmon0/name", "amdgpu\n");
+    tree.write_dev_file(bus, "hwmon/hwmon0/power1_input", "20000000\n");
+    tree.write_dev_file(bus, "gpu_busy_percent", "3\n");
+    tree.write_dev_file(bus, "mem_info_vram_total", "536870912\n");  // 512 MiB
+    tree.write_dev_file(bus, "mem_info_vram_used", "104857600\n");
+
+    c.add(std::make_unique<CpuPowerSource>(tree.root.string()));
+    auto reg = std::make_unique<GpuRegistrySource>();
+    reg->set_sysfs_roots(tree.root.string(), (tree.root / "class/drm").string());
+    reg->set_pci_ids_path(std::string(GETH_TEST_FIXTURES) + "/pci_ids.txt");
+    c.add(std::move(reg));
+    c.probe_all(/*warm_up=*/true);
+    for (int i = 0; i < 10; ++i) {  // history to fill the Power graph
+      tree.write_dev_file(bus, "hwmon/hwmon0/power1_input",
+                          std::to_string(20000000 + i * 1000000) + "\n");
+      c.sample();
+    }
+    hw = ui::hardware_from(c.latest(), "Fake APU");
+    page = ui::build_default_page(hw);
+  }
+};
+
+}  // namespace
+
+TEST_SUITE("apu_power_render") {
+  // The 160x48 frame as plain text (no SGR codes).
+  std::string render_frame_text(ApuRenderFixture& fx) {
+    ui::FrameState state;
+    ui::LayoutCache cache = cache_for(fx.page);
+    ftxui::Screen screen(160, 48);
+    screen.Clear();
+    ui::render_frame(screen, fx.hw, fx.page, fx.c.store(), fx.c.latest(), nullptr,
+                     state, ui::Theme::cyberpunk_blue(), ui::ColorMode::TrueColor,
+                     /*paused=*/false, 1000, cache, 0, kWinNs);
+    return ui::screen_to_text(screen);
+  }
+
+  // Rewrite the fake sensor and take one tick, as the app would.
+  void set_watts(ApuRenderFixture& fx, double w) {
+    fx.tree.write_dev_file(fx.bus, "hwmon/hwmon0/power1_input",
+                           std::to_string(static_cast<unsigned long long>(w * 1e6)) +
+                               "\n");
+    fx.c.sample();
+  }
+
+  TEST_CASE("rendered Power follows a changing PPT (visible / hidden / toggled)") {
+    ApuRenderFixture fx;
+    int gpu_panels = 0, power = 0;
+    for (const auto& p : fx.page) {
+      if (p.id.rfind("gpu.", 0) == 0) ++gpu_panels;
+      if (p.id == "power") ++power;
+    }
+    REQUIRE_EQ(gpu_panels, 2);
+    REQUIRE_EQ(power, 1);
+
+    // iGPU panels visible: the rendered watts follow the sensor.
+    set_watts(fx, 30.0);
+    CHECK(render_frame_text(fx).find("30.0 W") != std::string::npos);
+    set_watts(fx, 40.0);
+    CHECK(render_frame_text(fx).find("40.0 W") != std::string::npos);
+
+    // Hide both iGPU panels (the user's 5600H configuration).
+    for (auto& p : fx.page)
+      if (p.id == "gpu.0000:07:00.0.usage" || p.id == "gpu.0000:07:00.0.vram")
+        p.visible = false;
+    set_watts(fx, 50.0);
+    CHECK(render_frame_text(fx).find("50.0 W") != std::string::npos);
+
+    // Toggle one back mid-run: still follows.
+    for (auto& p : fx.page)
+      if (p.id == "gpu.0000:07:00.0.usage") p.visible = true;
+    set_watts(fx, 35.0);
+    CHECK(render_frame_text(fx).find("35.0 W") != std::string::npos);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6, Part B — the blocks graph style and the count-based fill rule.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("blocks_char: the 16 2x2 quadrant glyphs (verified vs Unicode names)") {
+  // Mask bits: TL=1, TR=2, BL=4, BR=8. Each glyph below was cross-checked
+  // against the authoritative Unicode quadrant-block names (U+2598 = UPPER
+  // LEFT, U+2596 = LOWER LEFT, ...). Masks 11 and 14 — the two "all but one
+  // corner" triples — are the easiest to swap, so they are pinned.
+  const std::uint8_t masks[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
+  const char* expect[] = {
+      " ",                 // 0  empty
+      "\xE2\x96\x98",      // 1  TL
+      "\xE2\x96\x9D",      // 2  TR
+      "\xE2\x96\x80",      // 3  TL+TR  (upper half)
+      "\xE2\x96\x96",      // 4  BL
+      "\xE2\x96\x8C",      // 5  TL+BL  (left half)
+      "\xE2\x96\x9E",      // 6  TR+BL
+      "\xE2\x96\x9B",      // 7  TL+TR+BL  (all but BR)
+      "\xE2\x96\x97",      // 8  BR
+      "\xE2\x96\x9A",      // 9  TL+BR
+      "\xE2\x96\x90",      // 10 TR+BR  (right half)
+      "\xE2\x96\x9C",      // 11 TL+TR+BR  (all but BL)
+      "\xE2\x96\x84",      // 12 BL+BR  (lower half)
+      "\xE2\x96\x99",      // 13 TL+BL+BR  (all but TR)
+      "\xE2\x96\x9F",      // 14 TR+BL+BR  (all but TL)
+      "\xE2\x96\x88"};     // 15 full block
+  for (int i = 0; i < 16; ++i) CHECK(ui::blocks_char(masks[i]) == expect[i]);
+  // All 16 masks map to distinct glyphs (no two share a glyph).
+  for (int i = 0; i < 16; ++i)
+    for (int j = i + 1; j < 16; ++j)
+      CHECK(ui::blocks_char(masks[i]) != ui::blocks_char(masks[j]));
+}
+
+TEST_CASE("parse_graph_style: braille/blocks accepted case-insensitively, else false") {
+  ui::GraphStyle g{};
+  CHECK(ui::parse_graph_style("braille", g));
+  CHECK(g == ui::GraphStyle::kBraille);
+  CHECK(ui::parse_graph_style("blocks", g));
+  CHECK(g == ui::GraphStyle::kBlocks);
+  CHECK(ui::parse_graph_style("BLOCKS", g));
+  CHECK(g == ui::GraphStyle::kBlocks);
+  CHECK(ui::parse_graph_style("Braille", g));
+  CHECK(g == ui::GraphStyle::kBraille);
+  CHECK_FALSE(ui::parse_graph_style("dots", g));
+  CHECK_FALSE(ui::parse_graph_style("", g));
+  CHECK_FALSE(ui::parse_graph_style("braille blocks", g));
+}
+
+TEST_CASE("blocks style renders block glyphs (not braille) in the graphs") {
+  const UiFixture fx;
+  const ui::Theme theme = ui::Theme::cyberpunk_blue();
+  ui::FrameState state;
+  ui::LayoutCache cache = cache_for(fx.page);
+  ftxui::Screen screen(160, 48);
+  screen.Clear();
+  ui::FrameChrome chrome;
+  chrome.graph_style = ui::GraphStyle::kBlocks;
+  ui::render_frame(screen, fx.hw, fx.page, fx.c.store(), fx.c.latest(), nullptr, state,
+                   theme, ui::ColorMode::TrueColor, /*paused=*/false, 1000, cache, 0,
+                   kWinNs, chrome);
+  const std::string out = screen.ToString();
+  // Block elements (E2 96 xx) are present ...
+  CHECK(out.find("\xE2\x96") != std::string::npos);
+  // ... and braille (E2 A0..A3 xx) is absent. Box-drawing is E2 94/95 xx, so
+  // any E2 A0-A3 byte would be a braille dot cell.
+  for (const char* p : {"\xE2\xA0", "\xE2\xA1", "\xE2\xA2", "\xE2\xA3"})
+    CHECK(out.find(p) == std::string::npos);
+}
+
+TEST_CASE("fill rule: 1 series filled, 2 primary-only, 3+ none") {
+  const UiFixture fx;  // demo: 1 dGPU + 1 iGPU
+  const auto find = [&](const char* id) -> const ui::PanelSpec* {
+    for (const auto& p : fx.page)
+      if (p.id == id) return &p;
+    return nullptr;
+  };
+  // CPU: a single series -> filled.
+  auto* cpu = find("cpu");
+  REQUIRE(cpu != nullptr);
+  CHECK_EQ(cpu->series.size(), static_cast<std::size_t>(1));
+  CHECK(cpu->series[0].fill);
+  // Two-series panels (Memory/Network/Disk): only the primary (first) is
+  // filled, the secondary is line-only.
+  for (const char* id : {"mem", "net", "disk"}) {
+    auto* p = find(id);
+    REQUIRE(p != nullptr);
+    CHECK_EQ(p->series.size(), static_cast<std::size_t>(2));
+    CHECK(p->series[0].fill);    // primary
+    CHECK(!p->series[1].fill);   // secondary
+  }
+  // Temperature: CPU + 2 GPUs = 3 series -> nothing is filled.
+  auto* temps = find("temps");
+  REQUIRE(temps != nullptr);
+  CHECK(temps->series.size() >= 3);
+  for (const auto& s : temps->series) CHECK(!s.fill);
+}

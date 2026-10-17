@@ -14,6 +14,7 @@
 //   title = ""                # header title override ("" = the auto title)
 //   theme = "cyberpunk-blue"  # a built-in or a custom themes/<name>.toml
 //   background = "transparent"  # "transparent" | "solid" (paints the theme's bg)
+//   graph_style = "braille"   # "braille" | "blocks" (the graph line style)
 //
 //   [[panels]]                # one table per panel, in display order
 //   id = "cpu"
@@ -73,6 +74,10 @@ struct Config {
   // (the theme's bg color is painted across the whole screen — the only
   // sanctioned background path).
   std::string background = "transparent";
+  // "braille" (default: 2-dot-tall lines on the 4×2 dot grid) or "blocks"
+  // (quadrant-block glyphs, 2×2 sub-cells per character — half the vertical
+  // resolution). Toggled live with `g`.
+  std::string graph_style = "braille";
 
   std::vector<PanelEntry> panels;  // file order
   std::map<std::string, GpuEntry> gpus;  // PCI bus id -> override

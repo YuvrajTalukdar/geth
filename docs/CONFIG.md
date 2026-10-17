@@ -25,6 +25,7 @@ columns = "auto"        # "auto" | 1..8
 title = ""              # header title override ("" = auto: CPU & GPU names)
 theme = "cyberpunk-blue"# built-in or custom theme name (see --list-themes)
 background = "transparent"  # "transparent" | "solid" (paints the theme bg)
+graph_style = "braille"     # "braille" | "blocks" (the graph line style)
 
 # One [[panels]] table per panel, in display order.
 [[panels]]
