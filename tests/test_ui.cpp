@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <sstream>
@@ -286,6 +287,41 @@ ui::Rgb pal256_rgb(int i) {
           static_cast<std::uint8_t>(g)};
 }
 
+// The color-mode checks below are deterministic: render_frame takes the mode
+// as a parameter (no COLORTERM/TERM/TTY reads anywhere in the path), and the
+// demo fixture data is constant (DemoSource's clock starts at 0 on the first
+// sample). A failure therefore points at a transient fault in the running
+// test binary (a bit error in RAM) rather than at the app — so on failure
+// dump what the frame actually contained: which SGRs survived, and what
+// to_ftxui itself produced. The first recurrence is then diagnosable instead
+// of a mystery.
+void diag_color_mode(const std::string& out, const ui::Theme& th) {
+  const std::string tc = ui::to_ftxui(th.title, ui::ColorMode::TrueColor).Print(false);
+  const std::string c256 = ui::to_ftxui(th.title, ui::ColorMode::Color256).Print(false);
+  std::fprintf(stderr, "\ngeth: [diag] color-mode check failed; theme.title = #%02X%02X%02X\n",
+               th.title.r, th.title.g, th.title.b);
+  std::fprintf(stderr, "geth: [diag] to_ftxui(title): truecolor=\"%s\" 256=\"%s\"\n", tc.c_str(),
+               c256.c_str());
+  std::fprintf(stderr,
+               "geth: [diag] frame: %zu bytes, has '38;2;': %s, has '38;5;': %s\n", out.size(),
+               out.find("38;2;") != std::string::npos ? "yes" : "no",
+               out.find("38;5;") != std::string::npos ? "yes" : "no");
+  std::string esc;
+  esc.reserve(600);
+  for (std::size_t i = 0; i < out.size() && i < 400; ++i) {
+    const unsigned char ch = static_cast<unsigned char>(out[i]);
+    if (ch == 0x1b)
+      esc += "\\x1b";
+    else if (ch < 32) {
+      char b[8];
+      std::snprintf(b, sizeof b, "\\x%02x", ch);
+      esc += b;
+    } else
+      esc += static_cast<char>(ch);
+  }
+  std::fprintf(stderr, "geth: [diag] frame head: %s\n", esc.c_str());
+}
+
 }  // namespace
 
 TEST_SUITE("ui") {
@@ -330,12 +366,16 @@ TEST_CASE("every built-in theme renders in truecolor, 256 and 16 colors") {
       CHECK(!out.empty());
       CHECK(out.find('\xe2') != std::string::npos);  // box/braille glyphs drawn
       CHECK(!has_forbidden_style(out));  // no background SGR in any mode
-      if (mode == ui::ColorMode::TrueColor)
+      if (mode == ui::ColorMode::TrueColor) {
+        if (out.find("38;2;") == std::string::npos) diag_color_mode(out, theme);
         CHECK(out.find("38;2;") != std::string::npos);  // 24-bit fg present
-      else if (mode == ui::ColorMode::Color256)
+      } else if (mode == ui::ColorMode::Color256) {
+        if (out.find("38;5;") == std::string::npos) diag_color_mode(out, theme);
         CHECK(out.find("38;5;") != std::string::npos);  // 256-color fg present
-      else
+      } else {
+        if (out.find("38;5;") != std::string::npos) diag_color_mode(out, theme);
         CHECK(out.find("38;5;") == std::string::npos);  // 16: palette SGRs only
+      }
     }
 }
 
