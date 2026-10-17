@@ -65,6 +65,17 @@ every mode, including while scrolling.
   scrolling (their axes now use the abbreviated form, as any panel
   narrower than 60 inner columns does).
 
+### Screenshots
+
+- All nine `docs/screenshots/` images recaptured live from a Konsole
+  window running `geth --demo` (Spectacle, 1920×1080 screen): themes,
+  panel manager, and help at 205×58 (windowed, 11 pt), the wide layout
+  at 236×71 (fullscreen, 10 pt), the narrow layout at 111×31, and the
+  compact layout at 85×25. The abbreviated axes are visible in every
+  panel narrower than 60 inner columns; at 85×25 all ten panels now
+  fit in two columns with no scrolling (previously one column hid
+  seven).
+
 ## 1.0.1 — Release polish (2026-10-16)
 
 Distribution-ready: first-frame positioning fix, install layout, Arch
