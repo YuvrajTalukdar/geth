@@ -132,7 +132,7 @@ and the RAPL/powercap details: [docs/HARDWARE.md](docs/HARDWARE.md).
 Build the package first (next section), then:
 
 ```sh
-sudo pacman -U dist/geth-1.0.1-1-x86_64.pkg.tar.zst   # install
+sudo pacman -U dist/geth-1.0.2-1-x86_64.pkg.tar.zst   # install
 sudo pacman -R geth                                   # uninstall
 rm -r ~/.config/geth                                  # remove your config (optional)
 ```
@@ -193,7 +193,7 @@ cached), and runs `makepkg -f --cleanbuild` — with **no network access in
 `build()`**. Output:
 
 ```
-dist/geth-1.0.1-1-x86_64.pkg.tar.zst
+dist/geth-1.0.2-1-x86_64.pkg.tar.zst
 dist/SHA256SUMS
 ```
 

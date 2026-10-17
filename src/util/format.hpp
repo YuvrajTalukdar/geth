@@ -124,4 +124,75 @@ inline std::string compact_percent(double p) {
   return b;
 }
 
+// ---------------------------------------------------------------------------
+// Abbreviated variants for the y-axis of NARROW panels (inner width < 60):
+// single-letter units, no spaces, no trailing zeros — "100%", "100°",
+// "24G", "768K", "1.5T", "20W", "1.5kW", "768K/s", "1.5M/s". Each kind stays
+// within the max width the layout engine budgets for its axis (see
+// ui/layout.hpp: abbrev_axis_width).
+
+namespace detail {
+// "%.1f" with trailing ".0" (and zeros) stripped: 1.5 -> "1.5", 2.0 -> "2",
+// 9.95 -> "9.9", 9.999 -> "10".
+inline std::string one_dec(double v) {
+  char b[16];
+  std::snprintf(b, sizeof(b), "%.1f", v);
+  std::string s(b);
+  while (!s.empty() && s.back() == '0') s.pop_back();
+  if (!s.empty() && s.back() == '.') s.pop_back();
+  return s;
+}
+}  // namespace detail
+
+inline std::string abbrev_percent(double p) {
+  if (!std::isfinite(p) || p < 0) return "n/a";
+  char b[16];
+  std::snprintf(b, sizeof(b), "%d%%", static_cast<int>(std::lround(p)));
+  return b;  // "100%" — max 4
+}
+
+inline std::string abbrev_celsius(double c) {
+  if (!std::isfinite(c) || c < -273.15) return "n/a";
+  // "°" as a hex escape so the source encoding never matters.
+  char b[24];  // long long needs <= 21 bytes (sign + 19 digits + NUL)
+  std::snprintf(b, sizeof(b), "%lld\xC2\xB0",
+               static_cast<long long>(std::llround(c)));
+  return b;  // "100°" — max 4
+}
+
+inline std::string abbrev_bytes(double v) {
+  if (!std::isfinite(v) || v < 0) return "n/a";
+  static const char kUnits[] = "BKMGTP";
+  double x = v;
+  int u = 0;
+  while (x >= 1024.0 && u < 5) {
+    x /= 1024.0;
+    ++u;
+  }
+  if (x >= 10.0) {
+    long long r = std::llround(x);
+    if (r >= 1024 && u < 5) { r /= 1024; ++u; }  // carry from rounding
+    char b[24];  // long long needs <= 21 bytes (sign + 19 digits + NUL)
+    std::snprintf(b, sizeof(b), "%lld", r);
+    return std::string(b) + kUnits[u];  // "768K" — max 4
+  }
+  return detail::one_dec(x) + kUnits[u];  // "1.5T" — max 4
+}
+
+inline std::string abbrev_rate(double v) {
+  if (!std::isfinite(v) || v < 0) return "n/a";
+  return abbrev_bytes(v) + "/s";  // "1.5M/s" — max 6
+}
+
+inline std::string abbrev_watts(double w) {
+  if (!std::isfinite(w) || w < 0) return "n/a";
+  if (w >= 1000.0) return detail::one_dec(w / 1000.0) + "kW";  // "1.5kW"
+  if (w >= 100.0) {
+    char b[24];  // long long needs <= 21 bytes (sign + 19 digits + NUL)
+    std::snprintf(b, sizeof(b), "%lld", static_cast<long long>(std::llround(w)));
+    return std::string(b) + "W";  // "500W"
+  }
+  return detail::one_dec(w) + "W";  // "20W" — max 5
+}
+
 }  // namespace geth::format

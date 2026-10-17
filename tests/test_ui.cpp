@@ -901,4 +901,158 @@ TEST_CASE("header: [general].title overrides the auto title; without it, the aut
   }
 }
 
+// ---------------------------------------------------------------------------
+// v1.0.2: the scroll indicator and the resize sequence
+
+// The footer line (the last line of the frame) as plain text.
+std::string footer_text(const ftxui::Screen& screen, int H) {
+  const std::string text = ui::screen_to_text(screen);
+  std::vector<std::string> lines;
+  std::size_t start = 0;
+  for (std::size_t i = 0; i <= text.size(); ++i)
+    if (i == text.size() || text[i] == '\n') {
+      lines.push_back(text.substr(start, i - start));
+      start = i + 1;
+    }
+  return lines.size() >= (std::size_t)H ? lines[H - 1] : "";
+}
+
+// The v1.0.2 invariant in its render-level form: the VISIBLE panels tile the
+// content area exactly — no overlaps, and either the panel rects' areas sum
+// to the whole region (no scrolling) or each visible row tiles the full width
+// and the k rows sum to the content height (scrolling). The full version is
+// the sweep in test_layout.cpp.
+void check_tiles(const ui::Layout& lo, int W, int H) {
+  const int ch = H - 2;
+  CHECK_EQ(lo.content_height, ch);
+  int sum = 0;
+  for (int rh : lo.row_heights) sum += rh;
+  CHECK_EQ(sum, ch);  // the visible rows fill the viewport exactly
+  for (int i = 0; i < (int)lo.panels.size(); ++i) {
+    const auto& a = lo.panels[i].rect;
+    CHECK(a.x >= 0);
+    CHECK(a.x + a.w <= W);
+    CHECK(a.y >= 0);
+    for (int j = i + 1; j < (int)lo.panels.size(); ++j) {
+      const auto& b = lo.panels[j].rect;
+      const bool overlap = a.x < b.x + b.w && b.x < a.x + a.w &&
+                           a.y < b.y + b.h && b.y < a.y + a.h;
+      CHECK_FALSE(overlap);  // no overlap
+    }
+  }
+  if (!lo.scrolling) {
+    // Contained + non-overlapping + areas sum to the region's area
+    //  =>  the union is exactly the region: no gaps, no blank rows.
+    long long area = 0;
+    for (const auto& pl : lo.panels)
+      area += static_cast<long long>(pl.rect.w) * pl.rect.h;
+    CHECK_EQ(area, static_cast<long long>(W) * ch);
+  } else {
+    CHECK(lo.total_rows > lo.rows());
+    for (int r = 0; r < lo.rows(); ++r) {  // the stored (offset-0) visible rows
+      int rowmin = 1 << 30, rowmax = 0, rowsum = 0;
+      bool any = false;
+      for (const auto& pl : lo.panels) {
+        const auto& rc = pl.rect;
+        if (rc.row != r) continue;
+        any = true;
+        rowmin = std::min(rowmin, rc.x);
+        rowmax = std::max(rowmax, rc.x + rc.w);
+        rowsum += rc.w;
+      }
+      CHECK(any);
+      CHECK_EQ(rowmin, 0);
+      CHECK_EQ(rowmax, W);
+      CHECK_EQ(rowsum, W);  // + non-overlap => no horizontal gaps
+      CHECK(lo.row_heights[r] >= ui::tight_height());
+    }
+  }
+}
+
+TEST_CASE("scroll indicator: 'N more' with conditional arrows (10-panel page)") {
+  UiFixture fx;
+  // 60x20: content 18 rows -> k = 4 visible Tight rows of a 10-row grid,
+  // 6 rows hidden, offset 0..6.
+  auto foot_at = [&](int top_row) {
+    ui::FrameState st;
+    ui::LayoutCache cache = cache_for(fx.page);
+    ftxui::Screen screen(60, 20);
+    screen.Clear();
+    ui::render_frame(screen, fx.hw, fx.page, fx.c.store(), fx.c.latest(), nullptr, st,
+                     ui::Theme::cyberpunk_blue(), ui::ColorMode::TrueColor,
+                     /*paused=*/false, 1000, cache, top_row, kWinNs);
+    return footer_text(screen, 20);
+  };
+  const std::string kUp = "\xE2\x96\xB2";    // "▲"
+  const std::string kDown = "\xE2\x96\xBC";  // "▼"
+  const std::string kUpDown = "\xE2\x86\x91\xE2\x86\x93";  // "↑↓"
+  const std::string top = foot_at(0);
+  CHECK(top.find("6 more " + kDown) != std::string::npos);
+  CHECK(top.find(kUp) == std::string::npos);  // nothing hidden above
+  const std::string mid = foot_at(3);
+  CHECK(mid.find(kUp + " 6 more " + kDown) != std::string::npos);
+  const std::string bottom = foot_at(6);
+  CHECK(bottom.find(kUp + " 6 more") != std::string::npos);
+  CHECK(bottom.find(kDown) == std::string::npos);  // nothing hidden below
+  // The "↑↓ scroll" hint is present at every position.
+  for (const auto& f : {top, mid, bottom})
+    CHECK(f.find(kUpDown + " scroll") != std::string::npos);
+}
+
+TEST_CASE("scroll indicator survives right-truncation at narrow widths") {
+  UiFixture fx;
+  // 44x20: one column, 10 rows -> scrolls (6 hidden). The full footer (hints
+  // + scroll tail) is far wider than 44, so the KEY HINTS are the part that
+  // gets cut — the scroll tail must still be fully visible, right-aligned.
+  ui::FrameState st;
+  ui::LayoutCache cache = cache_for(fx.page);
+  ftxui::Screen screen(44, 20);
+  screen.Clear();
+  ui::render_frame(screen, fx.hw, fx.page, fx.c.store(), fx.c.latest(), nullptr, st,
+                   ui::Theme::cyberpunk_blue(), ui::ColorMode::TrueColor,
+                   /*paused=*/false, 1000, cache, 0, kWinNs);
+  const std::string foot = footer_text(screen, 20);
+  CHECK(foot.find("\xE2\x86\x91\xE2\x86\x93 scroll") != std::string::npos);
+  CHECK(foot.find("6 more") != std::string::npos);
+  CHECK(foot.find("\xE2\x96\xBC") != std::string::npos);  // at top: "6 more ▼"
+  // The frame must still be exactly 44x20: hints truncated, tail intact.
+  const ui::GeometryReport rep =
+      ui::check_geometry(ui::screen_to_text(screen), 44);
+  CHECK_EQ(rep.lines, 20);
+  CHECK(rep.bad_lines.empty());
+}
+
+TEST_CASE("resize sequence: the layout retiles at every step (in-process)") {
+  // The work-order resize sequence, driven through compute_layout + the frame
+  // renderer at each size (the in-process form of the SIGWINCH test).
+  UiFixture fx;
+  const ui::Theme theme = ui::Theme::cyberpunk_blue();
+  const std::vector<std::pair<int, int>> seq = {
+      {300, 80}, {210, 20}, {120, 40}, {80, 24}, {160, 48}};
+  for (const auto& [W, H] : seq) {
+    const ui::Layout lo = ui::compute_layout(W, H, fx.page, ui::LayoutPrefs{});
+    check_tiles(lo, W, H);
+    ui::FrameState st;
+    ui::LayoutCache cache = cache_for(fx.page);
+    ftxui::Screen screen(W, H);
+    screen.Clear();
+    ui::render_frame(screen, fx.hw, fx.page, fx.c.store(), fx.c.latest(), nullptr,
+                     st, theme, ui::ColorMode::TrueColor, /*paused=*/false, 1000,
+                     cache, 0, kWinNs);
+    const ui::GeometryReport rep =
+        ui::check_geometry(ui::screen_to_text(screen), W);
+    CHECK_EQ(rep.lines, H);
+    CHECK(rep.bad_lines.empty());
+    if (lo.scrolling)  // the indicator is present whenever scrolling
+      CHECK(footer_text(screen, H).find("more") != std::string::npos);
+  }
+  // 160x48 is the standing non-regression size: all Full, no scrolling.
+  {
+    const ui::Layout lo =
+        ui::compute_layout(160, 48, fx.page, ui::LayoutPrefs{});
+    CHECK_FALSE(lo.scrolling);
+    for (const auto& pl : lo.panels) CHECK_EQ(pl.mode, ui::PanelMode::kFull);
+  }
+}
+
 }  // TEST_SUITE

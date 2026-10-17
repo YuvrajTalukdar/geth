@@ -623,37 +623,48 @@ int run_layout_report(const ui::Hardware& hw_in, int W, int H, const Options& op
               vis.size(), hidden_note.c_str(), pin.c_str());
 
   std::printf("\nfeasible candidates (ascending column count):\n");
-  std::printf("  cols  mode      valid  min_graph_h  total_graph_area\n");
+  std::printf("  cols  mode      valid  degraded  min_graph_h  total_graph_area\n");
   for (const auto& cr : cands) {
     const char* mode = !cr.valid ? "invalid" : (cr.all_full ? "all-full" : "mixed");
-    std::printf("  %4d  %-8s  %-5s  %11d  %16lld%s\n", cr.columns, mode,
-                cr.valid ? "yes" : "no", cr.min_graph_h, cr.total_graph_area,
+    std::printf("  %4d  %-8s  %-5s  %8d  %11d  %16lld%s\n", cr.columns, mode,
+                cr.valid ? "yes" : "no", cr.degraded, cr.min_graph_h,
+                cr.total_graph_area,
                 cr.columns == lo.columns ? "   <-- chosen" : "");
   }
 
-  bool all_full = !lo.panels.empty();
+  int n_full = 0, n_compact = 0, n_tight = 0;
   for (const auto& pl : lo.panels)
-    if (pl.mode != ui::PanelMode::kFull) {
-      all_full = false;
-      break;
-    }
-  std::printf("\nchosen: %d column%s, mode=%s, scrolling=%s, page_height=%d "
-              "content_height=%d\n",
-              lo.columns, lo.columns == 1 ? "" : "s",
-              all_full ? "all-Full" : (lo.scrolling ? "compact" : "mixed"),
+    if (pl.mode == ui::PanelMode::kFull) ++n_full;
+    else if (pl.mode == ui::PanelMode::kCompact) ++n_compact;
+    else ++n_tight;
+  std::printf("\nchosen: %d column%s, %d full / %d compact / %d tight, "
+              "scrolling=%s, page_height=%d content_height=%d\n",
+              lo.columns, lo.columns == 1 ? "" : "s", n_full, n_compact, n_tight,
               lo.scrolling ? "yes" : "no", lo.page_height, lo.content_height);
+  if (lo.scrolling)
+    std::printf("  scroll window: %d of %d rows visible, offset 0..%d "
+                "(the visible rows stretch to fill the viewport at every offset)\n",
+                lo.rows(), lo.total_rows, lo.total_rows - lo.rows());
 
   std::printf("\npanels (reading order; rect x,y is content-relative, 0 = the "
               "top row under the header):\n");
+  if (lo.scrolling)
+    std::printf("  (scroll mode: y/h/mode below the first window are the offset-0 "
+                "form; the renderer recomputes them per offset)\n");
   std::printf("  %-22s %4s %4s %4s %4s  %-8s  graph\n", "id", "x", "y", "w", "h",
               "mode");
   for (std::size_t i = 0; i < vis.size(); ++i) {
     const ui::LayoutRect& r = lo.panels[i].rect;
-    const bool full = lo.panels[i].mode == ui::PanelMode::kFull;
-    const int gw = ui::graph_w(vis[i], r.w);
-    const int gh = full ? ui::full_graph_h(vis[i], r.w, r.h) : ui::compact_graph_h(r.h);
+    const ui::PanelMode m = lo.panels[i].mode;
+    const char* mname = m == ui::PanelMode::kFull     ? "full"
+                      : m == ui::PanelMode::kCompact ? "compact"
+                                                     : "tight";
+    const int gw = ui::graph_w(vis[i], r.w, ui::uses_abbrev_labels(r.w - 2));
+    const int gh = m == ui::PanelMode::kFull       ? ui::full_graph_h(vis[i], r.w, r.h)
+                  : m == ui::PanelMode::kCompact   ? ui::compact_graph_h(r.h)
+                                                   : ui::tight_graph_h(r.h);
     std::printf("  %-22s %4d %4d %4d %4d  %-8s  %dx%d\n", vis[i].id.c_str(), r.x, r.y,
-                r.w, r.h, full ? "full" : "compact", gw, gh);
+                r.w, r.h, mname, gw, gh);
   }
   return 0;
 }

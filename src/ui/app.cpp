@@ -435,18 +435,31 @@ void Dashboard::focus_at(int x, int y) {
   if (lo.panels.empty()) return;
   const int tr =
       lo.scrolling ? std::clamp(_top_row, 0, max_top_row(lo, _h - 2)) : 0;
-  int scroll_top = 0;
-  for (int r = 0; r < tr && r < (int)lo.row_heights.size(); ++r)
-    scroll_top += lo.row_heights[r];
-  for (int i = 0; i < (int)lo.panels.size(); ++i) {
-    const LayoutRect& rc = lo.panels[i].rect;
-    if (rc.row < tr) continue;  // scrolled above the visible area
-    const int py = 1 + rc.y - scroll_top;
-    if (x >= rc.x && x < rc.x + rc.w && y >= py && y < py + rc.h) {
-      _focus = _cache.visible_idx[i];
-      return;
+  const int last_visible =
+      lo.scrolling ? std::min(lo.total_rows, tr + lo.rows()) : lo.rows();
+  // The on-screen position of a visible panel: when not scrolling the stored
+  // rect is already screen-ready (rect.y is content-relative, offset 0). When
+  // scrolling, the stored rect is the offset-0 reference form, so the y and
+  // height are recomputed from the k stretched visible rows — exactly as
+  // render_frame does (the stored rect is never drawn in scroll mode).
+  for (int r = tr; r < last_visible; ++r)
+    for (int i = 0; i < (int)lo.panels.size(); ++i) {
+      const LayoutRect& rc = lo.panels[i].rect;
+      if (rc.row != r) continue;
+      int py = 1 + rc.y;
+      int ph = rc.h;
+      if (lo.scrolling) {
+        const int vis = r - tr;  // 0 .. k-1 within the visible window
+        int top = 1;
+        for (int q = 0; q < vis; ++q) top += lo.row_heights[q];
+        py = top;
+        ph = lo.row_heights[vis];
+      }
+      if (x >= rc.x && x < rc.x + rc.w && y >= py && y < py + ph) {
+        _focus = _cache.visible_idx[i];
+        return;
+      }
     }
-  }
 }
 
 // -- Settings -----------------------------------------------------------------

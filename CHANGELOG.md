@@ -2,6 +2,69 @@
 
 All notable changes to GETH. The format follows the five-phase build plan.
 
+## 1.0.2 — Layout: always use the whole window (2026-10-17)
+
+The dashboard could leave blank rows and hide panels without telling
+the user in short terminals (repro: `geth --demo` at 210×19 scrolled
+and left up to 5 blank rows above the footer). Panels now tile the
+content area exactly — no blank rows or columns, at every size and in
+every mode, including while scrolling.
+
+### New: the Tight panel mode and abbreviated axis labels
+
+- **Tight**: graph ≥ 2 rows, top/bottom axis labels only, abbreviated
+  labels. Values stay in the border title. Minimum height 4 (border 2
+  + graph 2).
+- **Compact** no longer spends a row on a one-line legend by default
+  (the values appear once, in the border title); a legend line is
+  drawn only when the border title truncated with "…" and a spare row
+  exists. Minimum height 5.
+- **Abbreviated axis labels** (`100%`, `100°`, `24G`, `1.5T`, `20W`,
+  `1.5kW`, `768K/s`, `1.5M/s`) whenever a panel's inner width is
+  below 60 columns, in any mode. The narrower axis also lowers the
+  minimum panel width (e.g. the network panel: 42 → 34 columns), so
+  more columns fit.
+
+### Layout selection
+
+- For every candidate column count the engine gives each panel the
+  best mode that fits (Full → Compact → Tight) and splits the content
+  height equally among the rows (leftover to the top rows). A
+  candidate is feasible when every panel fits at least Tight.
+- Ranking: an all-Full layout always beats a degraded one; within a
+  tier the candidates rank by the largest smallest graph height, then
+  the largest total graph area, then the fewest degraded (non-Full)
+  panels. Ties keep the fewer columns.
+- Scrolling only starts when no column count fits every panel at
+  Tight.
+
+### Scrolling fills the screen
+
+- The scroll window shows `k = content_height / 4` consecutive grid
+  rows, stretched to fill the viewport exactly at every offset — no
+  blank rows, no snapping to fixed row boundaries.
+- The footer count is now the number of hidden rows (`total − k`,
+  constant while scrolling) with conditional arrows: `3 more ▼` at
+  the top, `▲ 3 more ▼` in the middle, `▲ 3 more` at the bottom.
+- The scroll tail can never be truncated: on narrow terminals the key
+  hints are the part that gets cut, so the indicator is always
+  visible.
+- Mouse-click panel focus in scroll mode follows the same window
+  model as the renderer.
+
+### Tests
+
+- New: a 1,230-size sweep (widths 40–320 step 7 × heights 12–100
+  step 3) over 10/8/6-panel pages asserting the tiling invariant
+  (no gaps, no overlaps, exact coverage); scroll-indicator tests
+  (top/middle/bottom, and the truncation fix at 44 columns); a
+  resize-sequence test (300×80 → 210×20 → 120×40 → 80×24 → 160×48)
+  asserting the re-layout at every step. 152 cases / 508,882
+  assertions, green on Debug and Release.
+- The 160×48 and 250×70 non-regression sizes stay all-Full with no
+  scrolling (their axes now use the abbreviated form, as any panel
+  narrower than 60 inner columns does).
+
 ## 1.0.1 — Release polish (2026-10-16)
 
 Distribution-ready: first-frame positioning fix, install layout, Arch

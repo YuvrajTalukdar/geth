@@ -28,9 +28,17 @@ namespace geth::ui {
 
 // How a panel is rendered inside its rect.
 enum class PanelMode {
-  kFull,    // the current look: border + graph (>=4 rows) + legend rows + info rows
-  kCompact, // key values in the top border, one legend line, no info rows, graph >=3
+  kFull,    // border + graph (>=4 rows) + legend rows + info rows
+  kCompact, // values in the top border, graph >=3, no info rows; legend only if
+            // the title truncated and a spare row exists
+  kTight,   // values in the top border, graph >=2, abbreviated axis, top/bottom
+            // labels only
 };
+
+// Smallest panel height (borders included) for each mode: Full is width/panel
+// dependent (see full_height), Compact and Tight are fixed.
+constexpr int kCompactMinH = 5;  // border 2 + graph 3
+constexpr int kTightMinH   = 4;  // border 2 + graph 2
 
 struct LayoutRect {
   int x = 0;   // terminal column
@@ -49,12 +57,20 @@ struct PanelLayout {
 };
 
 struct Layout {
-  std::vector<PanelLayout> panels;  // parallel to the input panels
+  std::vector<PanelLayout> panels;  // parallel to the input panels (all of them)
   int columns = 1;                  // chosen column count
-  std::vector<int> row_heights;     // one entry per row (top -> bottom)
+  // Heights of the VISIBLE rows: every row when not scrolling, or the k
+  // stretched window rows when scrolling. Always sums to content_height, so
+  // the visible area is tiled exactly (no blank rows).
+  std::vector<int> row_heights;
   int content_height = 0;           // term_h - header - footer
-  int page_height = 0;              // sum(row_heights); > content_height iff scrolling
-  bool scrolling = false;           // the page is taller than the content area
+  int page_height = 0;              // == content_height (the visible area fills)
+  int total_rows = 0;               // rows in the full grid; > rows() while scrolling
+  bool scrolling = false;           // more grid rows than fit in the viewport
+  // The visible rows: all rows when not scrolling, the window (k rows) when
+  // scrolling. A panel's visible row is rect.row (non-scroll) or rect.row -
+  // offset (scroll); the renderer maps it to a terminal row via the prefix
+  // sum of row_heights.
   int rows() const { return static_cast<int>(row_heights.size()); }
 };
 
@@ -78,8 +94,9 @@ Layout compute_layout(int term_w, int term_h, std::span<const PanelSpec> panels,
 // best_full / best_mixed winner, i.e. the one compute_layout returns.
 struct CandidateReport {
   int columns = 0;               // this candidate's column count
-  bool valid = false;            // every panel fits in Full or Compact
+  bool valid = false;            // every panel fits at least Tight
   bool all_full = false;         // and every one of them in Full mode
+  int degraded = 0;              // panels not in Full mode (Compact + Tight)
   int min_graph_h = 0;           // smallest graph height across the panels
   long long total_graph_area = 0;  // sum of graph_h x graph_w
 };
@@ -88,10 +105,11 @@ std::vector<CandidateReport> score_layout_candidates(int term_w, int term_h,
                                                      const LayoutPrefs& prefs);
 
 // Scrolling helpers (used by both the renderer and the event loop).
-// The largest top_row (row index) that keeps the bottom of the page from
-// scrolling past the bottom of the content area; 0 when not scrolling.
+// The largest scroll offset (the index of the topmost visible row):
+// total_rows - k while scrolling, 0 otherwise.
 int max_top_row(const Layout& lo, int content_h);
-// How many rows (from the top) fit in a content area `content_h` rows tall.
+// How many rows the viewport shows at once: the window size k while
+// scrolling, all rows otherwise.
 int rows_fitting(const Layout& lo, int content_h);
 
 // ---------------------------------------------------------------------------
@@ -100,14 +118,22 @@ int rows_fitting(const Layout& lo, int content_h);
 // panel needs to be or how wide its graph is.
 // ---------------------------------------------------------------------------
 
-// Display columns of the widest y-axis tick label for this scale kind.
-// Conservative per-kind maxima of the compact formatters in format.hpp:
-//   "100 %" (5), "120 °C" (6), "512 MiB" (7), "1.5 kW" (6), "128 MiB/s" (9).
-int axis_label_width(ScaleSpec::Kind k);
+// Display columns of the widest y-axis tick label for this scale kind, in the
+// full ("100 %", "512 MiB", "128 MiB/s") or the abbreviated ("100%", "24G",
+// "1.5M/s") form. The abbreviated form is narrower, so a panel can be narrower
+// and more columns fit.
+int axis_label_width(ScaleSpec::Kind k);    // full form
+int abbrev_axis_width(ScaleSpec::Kind k);   // abbreviated form
 
-// Smallest panel width whose graph still meets the 32-column minimum:
-// W = graph_w(32) + axis_label + 2 (the " ┤" separator) + 2 (borders).
-int min_panel_width(const PanelSpec& p);
+// A panel uses abbreviated axis labels when its INNER width is below this, in
+// any mode. That narrows the axis and lowers the minimum panel width.
+constexpr int kAbbrevInnerW = 60;
+inline bool uses_abbrev_labels(int inner_w) { return inner_w < kAbbrevInnerW; }
+
+// Smallest panel width whose graph meets the mode's minimum (32 for
+// Full/Compact, 24 for Tight), using the abbreviated axis (the narrowest case):
+// W = min_graph_w(mode) + abbrev_axis + 2 (the " ┤" separator) + 2 (borders).
+int min_panel_width(const PanelSpec& p, PanelMode mode);
 
 // Legend columns at an interior width: 3 at >=96, 2 at >=56, else 1.
 int legend_cols(int inner_w);
@@ -118,16 +144,24 @@ int legend_rows(const PanelSpec& p, int inner_w);
 // Panel height (borders included) Full mode needs at a given panel width.
 int full_height(const PanelSpec& p, int panel_w);
 
-// Panel height Compact mode needs (width-independent): border + 3 graph rows
-// + one legend line, no info rows.
-int compact_height();
+// Smallest Compact-mode panel height (width-independent): border + 3 graph
+// rows, no legend (the legend is a render-time extra, shown only when the
+// title truncated and a spare row exists).
+int compact_height();   // == kCompactMinH
+// Smallest Tight-mode panel height (width-independent): border + 2 graph rows.
+int tight_height();     // == kTightMinH
 
-// Graph height (rows) of a Full-mode panel given its rect.
+// Graph height (rows) of a panel given its rect, per mode.
 int full_graph_h(const PanelSpec& p, int panel_w, int panel_h);
-// Graph height (rows) of a Compact-mode panel given its rect.
 int compact_graph_h(int panel_h);
+int tight_graph_h(int panel_h);
 
-// Graph width (columns) of a panel given its width.
-int graph_w(const PanelSpec& p, int panel_w);
+// Graph width (columns) of a panel given its width, full or abbreviated axis.
+int graph_w(const PanelSpec& p, int panel_w, bool abbreviated);
+
+// The best mode the panel can use at a rect of `w`x`h`; false when it cannot
+// even fit Tight. Used by the selector and by the renderer (in scroll mode the
+// visible height — and therefore the mode — depends on the scroll offset).
+bool best_mode(const PanelSpec& p, int w, int h, PanelMode& mode);
 
 }  // namespace geth::ui

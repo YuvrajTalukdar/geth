@@ -324,6 +324,20 @@ std::string tick_label(ScaleSpec::Kind k, double f, double vmax) {
   return "0";
 }
 
+// Abbreviated tick labels for narrow panels (inner width < 60, any mode):
+// single-letter units, no spaces — "100%", "100°", "24G", "20W", "1.5M/s".
+// The layout engine budgets the axis with the SAME rule (uses_abbrev_labels).
+std::string abbrev_tick_label(ScaleSpec::Kind k, double f, double vmax) {
+  switch (k) {
+    case ScaleSpec::Kind::kPercent: return format::abbrev_percent(f * vmax);
+    case ScaleSpec::Kind::kTemperature: return format::abbrev_celsius(f * vmax);
+    case ScaleSpec::Kind::kAbsolute: return format::abbrev_bytes(f * vmax);
+    case ScaleSpec::Kind::kWatts: return format::abbrev_watts(f * vmax);
+    case ScaleSpec::Kind::kBytesPerSec: return format::abbrev_rate(f * vmax);
+  }
+  return "0";
+}
+
 // ---------------------------------------------------------------------------
 // braille graph (braille_bit / braille_char are the exported versions above)
 // ---------------------------------------------------------------------------
@@ -642,12 +656,16 @@ void draw_panel(ftxui::Screen& s, int x0, int y0, int W, int H, const PanelSpec&
     put_px(s, x0 + W - 1, y0 + y, "│", bc);
   }
 
-  // Full: the panel title. Compact: the title plus the key values.
-  std::string title =
-      (mode == PanelMode::kCompact) ? compact_title(p, legend_values, snap)
-                                    : p.title;
+  // Full: the panel title. Compact/Tight: the title plus the key values (the
+  // values live in the border, so no separate legend row by default).
+  const bool full = (mode == PanelMode::kFull);
+  const bool tight = (mode == PanelMode::kTight);
+  std::string title = full ? p.title : compact_title(p, legend_values, snap);
   const std::string suffix = sleeping ? " \xC2\xB7 sleeping" : "";
   title = truncate(title, std::max(0, W - 8 - utf8_cols(suffix)));
+  const bool title_truncated =
+      title.size() >= 3 &&
+      title.compare(title.size() - 3, 3, "\xE2\x80\xA6") == 0;  // ends in "…"
   if (W >= 8 && !title.empty()) {
     put_px(s, x0 + 2, y0, " ", c.border);
     put_str(s, x0 + 3, y0, title, c.title);
@@ -667,29 +685,48 @@ void draw_panel(ftxui::Screen& s, int x0, int y0, int W, int H, const PanelSpec&
       legend_idx.push_back((int)i);
       ++n_legend;
     }
-  const bool compact = (mode == PanelMode::kCompact);
   const int ipr = legend_cols(iw);  // 3 at >=96, 2 at >=56, else 1
-  // Compact: exactly one legend line, no info rows. Full: legend rows + info rows.
-  const int legend_rows = compact ? 1 : (n_legend + ipr - 1) / ipr;
-  const int info_n = compact ? 0 : static_cast<int>(p.info_rows.size());
+  // Full: legend rows + info rows, the graph takes what is left. Compact: the
+  // graph takes the WHOLE interior (spare height goes to the graph); a
+  // one-line legend is drawn only when the border title truncated with "…"
+  // and a spare row exists, so the values are not lost. Tight: whole interior
+  // for the graph, no legend at all.
+  int legend_rows = full ? (n_legend + ipr - 1) / ipr : 0;
+  const int info_n = full ? static_cast<int>(p.info_rows.size()) : 0;
   int Hg = ih - legend_rows - info_n;
-  if (Hg < 3) Hg = 0;  // not enough room: legend only, never overflow
+  if (!full && !tight && title_truncated && n_legend > 0 && Hg > 3) {
+    ++legend_rows;  // spend one spare row on the legend (graph min is 3)
+    --Hg;
+  }
+  // Minimum graph height per mode (the layout engine guarantees it):
+  // Full 4, Compact 3, Tight 2.
+  const int hg_min = full ? 4 : (tight ? 2 : 3);
+  if (Hg < hg_min) Hg = 0;  // not enough room: legend only, never overflow
 
-  // Tick fractions (top -> bottom): 0/25/50/75/100, or 3 when short.
+  // Tick fractions (top -> bottom): Tight shows only the top and bottom
+  // label; Full/Compact show 0/25/50/75/100, or 3 when short.
   std::vector<double> fracs;
-  if (Hg >= 6)
+  if (tight)
+    fracs = {1.0, 0.0};
+  else if (Hg >= 6)
     fracs = {1.0, 0.75, 0.5, 0.25, 0.0};
   else if (Hg >= 3)
     fracs = {1.0, 0.5, 0.0};
 
+  // Narrow panels (inner width < 60) use the abbreviated axis form in EVERY
+  // mode — the same rule the layout engine sizes the axis with
+  // (layout.hpp: uses_abbrev_labels), so the two can never disagree.
+  const bool abbrev = uses_abbrev_labels(iw);
   int L = 0;
   std::vector<std::string> ticks;
   for (double f : fracs) {
-    const std::string lab = tick_label(p.y_scale.kind, f, vmax);
+    const std::string lab =
+        abbrev ? abbrev_tick_label(p.y_scale.kind, f, vmax)
+               : tick_label(p.y_scale.kind, f, vmax);
     ticks.push_back(lab);
     L = std::max(L, utf8_cols(lab));
   }
-  const bool have_graph = Hg >= 3 && iw - L - 2 >= 2 && vmax > 0;
+  const bool have_graph = Hg >= hg_min && iw - L - 2 >= 2 && vmax > 0;
   const int Wg = iw - L - 2;  // label column + " ┤"
   const int gx = ix0 + L + 2;
   const int gy = iy0;
@@ -739,12 +776,13 @@ void draw_panel(ftxui::Screen& s, int x0, int y0, int W, int H, const PanelSpec&
   // --- legend rows (below the graph) ---------------------------------------------
   // Full: 1/2/3 columns; each value is right-aligned inside its own column and
   // two blank columns separate the columns, so a value can never run into the
-  // neighbour's "▌" ("12.00 GiB▌ Swap" is impossible). Compact: all series on
-  // one line.
+  // neighbour's "▌" ("12.00 GiB▌ Swap" is impossible). Compact: at most the
+  // one truncation-rescue line (legend_rows > 0); Tight: none.
   {
     const int y0leg = iy0 + Hg;
-    if (compact) {
-      draw_compact_legend(s, ix0, y0leg, iw, p, legend_values, c);
+    if (!full) {
+      if (legend_rows > 0)
+        draw_compact_legend(s, ix0, y0leg, iw, p, legend_values, c);
     } else {
       const int gutter = 2;
       std::vector<int> cw(ipr), cx(ipr);
@@ -768,8 +806,8 @@ void draw_panel(ftxui::Screen& s, int x0, int y0, int W, int H, const PanelSpec&
     }
   }
 
-  // --- info rows (Full mode only; Compact drops them) -----------------------------
-  if (!compact) {
+  // --- info rows (Full mode only; Compact/Tight drop them) ------------------------
+  if (full) {
     int y = iy0 + Hg + legend_rows;
     for (std::size_t i = 0; i < p.info_rows.size(); ++i) {
       const InfoRow& r = p.info_rows[i];
@@ -971,19 +1009,15 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
   // Responsive layout: recomputed only when the terminal size changed.
   const Layout& lo = cache.get(W, H);
   const int content_h = H - 2;
+  // The visible window: every row when not scrolling; k = lo.rows()
+  // consecutive grid rows (offset tr) when scrolling. The k rows are
+  // stretched to fill the viewport exactly (row_heights sums to content_h),
+  // so the visible area is tiled with no blank rows; visible row r starts at
+  // terminal row 1 + the sum of the visible rows' heights before it.
   const int tr =
       lo.scrolling ? std::clamp(top_row, 0, max_top_row(lo, content_h)) : 0;
-  int scroll_top = 0;
-  for (int r = 0; r < tr; ++r) scroll_top += lo.row_heights[r];
-  // The rows drawn are those whose top edge is above the bottom of the
-  // visible content area (a bottom row may be cut off by the footer).
-  int last_visible = tr - 1;
-  for (int r = tr; r < lo.rows(); ++r) {
-    int ry = 0;
-    for (int q = 0; q < r; ++q) ry += lo.row_heights[q];
-    if (ry < scroll_top + content_h) last_visible = r;
-    else break;
-  }
+  const int last_visible =
+      lo.scrolling ? std::min(lo.total_rows, tr + lo.rows()) : lo.rows();
 
   const TimePoint now = Clock::now();
 
@@ -1030,12 +1064,29 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
 
   // --- panel grid: the visible rows of the layout -------------------------------
   // lo.panels is parallel to the VISIBLE panels; map back to the page index.
-  for (int r = tr; r <= last_visible && r < lo.rows(); ++r)
+  // When not scrolling the stored rect is already screen-ready (rect.y is an
+  // offset from the top of the content area). When scrolling, a panel's
+  // on-screen y, height and mode all depend on the current offset, so they
+  // are recomputed from the k stretched visible rows (the stored rect is
+  // only the offset-0 form, which is never drawn in scroll mode).
+  for (int r = tr; r < last_visible; ++r)
     for (int i = 0; i < (int)lo.panels.size(); ++i)
       if (lo.panels[i].rect.row == r) {
         const auto& pl = lo.panels[i];
-        render_one(cache.visible_idx[i], pl.rect.x, 1 + pl.rect.y - scroll_top,
-                   pl.rect.w, pl.rect.h, pl.mode);
+        const int pi = cache.visible_idx[i];
+        int py = 1 + pl.rect.y;
+        int ph = pl.rect.h;
+        PanelMode pm = pl.mode;
+        if (lo.scrolling) {
+          const int vis = r - tr;  // 0 .. k-1 within the visible window
+          int top = 1;
+          for (int q = 0; q < vis; ++q) top += lo.row_heights[q];
+          py = top;
+          ph = lo.row_heights[vis];
+          PanelMode m2;
+          pm = best_mode(page[pi], pl.rect.w, ph, m2) ? m2 : PanelMode::kTight;
+        }
+        render_one(pi, pl.rect.x, py, pl.rect.w, ph, pm);
       }
 
   // --- header: <CPU> & <dGPU>  [PAUSED] <interval> <window> <time> --------------
@@ -1073,27 +1124,32 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
   // --- footer --------------------------------------------------------------------
   {
     for (int x = 0; x < W; ++x) put_px(screen, x, H - 1, " ", c.label_dim);
-    // Truncated from the RIGHT on narrow terminals (truncate below).
     std::string foot = "q quit \xC2\xB7 space pause \xC2\xB7 t window \xC2\xB7 e panels \xC2\xB7 ? help";
+    // Scrolling: "· ↑↓ scroll · [▲ ]N more[ ▼]" — N is the number of hidden
+    // rows (total - k, constant while scrolling); "▲ " only when there are
+    // hidden rows above, " ▼" only when there are hidden rows below. This
+    // tail must ALWAYS survive right-truncation, so on narrow terminals the
+    // key hints (foot) are the part that gets cut, never the scroll info.
+    std::string scroll_part;
     if (lo.scrolling) {
-      foot += " \xC2\xB7 \xE2\x86\x91\xE2\x86\x93 scroll";  // "· ↑↓ scroll"
-      // Rows out of sight: every row above the current top row (tr — we snap
-      // to row boundaries, so rows < tr are fully above the fold) PLUS any row
-      // at or below it whose BOTTOM edge is past the visible area (partially
-      // clipped by the footer). The page is taller than the content area, so
-      // at least one row is always hidden.
-      int hidden = tr;
-      for (int r = tr; r < lo.rows(); ++r) {
-        int ry = 0;
-        for (int q = 0; q < r; ++q) ry += lo.row_heights[q];
-        if (ry + lo.row_heights[r] > scroll_top + content_h) ++hidden;
-      }
+      const int k = lo.rows();  // visible rows
+      const int hidden = lo.total_rows - k;
+      const bool at_top = (tr == 0);
+      const bool at_bottom = (tr == lo.total_rows - k);
+      scroll_part = " \xC2\xB7 \xE2\x86\x91\xE2\x86\x93 scroll";  // "· ↑↓ scroll"
       if (hidden > 0)
-        foot += " \xC2\xB7 \xE2\x96\xB2 " + std::to_string(hidden) +
-                " more \xE2\x96\xBC";  // "· ▲ N more ▼"
+        scroll_part += std::string(" \xC2\xB7 ") +
+                       (at_top ? "" : "\xE2\x96\xB2 ") +  // "▲ "
+                       std::to_string(hidden) + " more" +
+                       (at_bottom ? "" : " \xE2\x96\xBC");  // " ▼"
     }
+    const int scroll_w = utf8_cols(scroll_part);
+    // Truncate the key hints to reserve the scroll tail's full width.
+    const std::string shown_foot =
+        scroll_w > 0 ? truncate(foot, std::max(0, W - scroll_w)) : foot;
     // Right side: a broken config is warned about PERMANENTLY; otherwise a
-    // transient toast (e.g. "saved") while now < toast_until.
+    // transient toast (e.g. "saved") while now < toast_until. It sits between
+    // the hints and the scroll tail, and is dropped when no room is left.
     const bool toast_live =
         !chrome.toast.empty() && Clock::now() < chrome.toast_until;
     if (!chrome.config_warning.empty() || toast_live) {
@@ -1103,13 +1159,14 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
                                         ") \xE2\x80\x94 using defaults, not saving";
       const ftxui::Color mc =
           chrome.config_warning.empty() ? c.text : c.warn;
-      const int room = W - utf8_cols(truncate(foot, W)) - 2;
+      const int room = W - scroll_w - utf8_cols(shown_foot) - 2;
       if (room > 6) {
         const std::string shown = truncate(msg, room);
-        put_str(screen, W - utf8_cols(shown) - 1, H - 1, shown, mc);
+        put_str(screen, W - scroll_w - utf8_cols(shown) - 1, H - 1, shown, mc);
       }
     }
-    put_str(screen, 0, H - 1, truncate(foot, W), c.label_dim);
+    put_str(screen, 0, H - 1, shown_foot, c.label_dim);
+    if (scroll_w > 0) put_str(screen, W - scroll_w, H - 1, scroll_part, c.label_dim);
   }
 
   // --- Phase 4 overlays (last, on top of everything) ---------------------------
