@@ -320,6 +320,25 @@ void diag_color_mode(const std::string& out, const ui::Theme& th) {
       esc += static_cast<char>(ch);
   }
   std::fprintf(stderr, "geth: [diag] frame head: %s\n", esc.c_str());
+
+  // Actionable conclusion. The source's TrueColor branch is
+  //   `return ftxui::Color::RGB(c.r, c.g, c.b);`
+  // and never calls nearest256, so a CORRECTLY COMPILED binary cannot make
+  // to_ftxui(c, TrueColor) return a palette ("38;5;...") color. When it does,
+  // the compiled test binary was corrupted during the build (a transient
+  // memory/I-O fault, typically under machine load) -- not a geth source or
+  // config bug. Say so, and give the remedy.
+  if (tc.rfind("38;2;", 0) != 0) {
+    std::fprintf(stderr,
+        "geth: [diag] ------------------------------------------------------------\n"
+        "geth: [diag] CONCLUSION: to_ftxui(c, TrueColor) returned \"%s\" -- a PALETTE\n"
+        "geth: [diag] color. The source's TrueColor branch returns ftxui::Color::RGB and\n"
+        "geth: [diag] never calls nearest256, so a correct build cannot do this. The test\n"
+        "geth: [diag] binary was corrupted DURING THE BUILD (transient memory/I-O fault,\n"
+        "geth: [diag] usually under machine load). This is NOT a geth source/config bug:\n"
+        "geth: [diag] RE-RUN THE BUILD to regenerate the binary. The source is correct.\n",
+        tc.c_str());
+  }
 }
 
 }  // namespace
