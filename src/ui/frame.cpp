@@ -514,12 +514,13 @@ void draw_compact_legend(ftxui::Screen& s, int x, int y, int iw,
   }
 }
 
-void draw_panel(ftxui::Screen& s, int x0, int y0, int W, int H, const PanelSpec& p,
-                PanelMode mode, bool sleeping, const std::vector<RawWindow>& raws,
-                const std::vector<std::string>& legend_values,
-                const Snapshot& snap, double vmax, const Colors& c,
-                bool pixels, bool focused = false) {
-  if (W < 4 || H < 2) return;
+GraphGeom draw_panel(ftxui::Screen& s, int x0, int y0, int W, int H,
+                     const PanelSpec& p, PanelMode mode, bool sleeping,
+                     const std::vector<RawWindow>& raws,
+                     const std::vector<std::string>& legend_values,
+                     const Snapshot& snap, double vmax, const Colors& c,
+                     bool pixels, bool focused = false) {
+  if (W < 4 || H < 2) return GraphGeom{};
 
   // --- rounded border + title --------------------------------------------------
   // The focused panel (Tab / click) gets the accent border.
@@ -561,7 +562,7 @@ void draw_panel(ftxui::Screen& s, int x0, int y0, int W, int H, const PanelSpec&
   const GraphGeom g = compute_graph_geom(x0, y0, W, H, mode, p,
                                          title_truncated, vmax);
   const int ix0 = g.ix0, iy0 = g.iy0, iw = g.iw, ih = g.ih;
-  if (iw < 3 || ih < 1) return;
+  if (iw < 3 || ih < 1) return g;
   const int legend_rows = g.legend_rows, ipr = g.ipr;
   const std::vector<int>& legend_idx = g.legend_idx;
   const int Hg = g.Hg, Wg = g.Wg, gx = g.gx, gy = g.gy;
@@ -679,6 +680,7 @@ void draw_panel(ftxui::Screen& s, int x0, int y0, int W, int H, const PanelSpec&
                      r.label, value, c.text, c.accent);
     }
   }
+  return g;
 }
 
 // The graph window, for the header ("30s", "1m", "2m", "5m", "10m").
@@ -845,6 +847,7 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
                   int focus_panel, const ManagerOverlay* manager,
                   const HelpOverlay* help) {
   screen.Clear();
+  state.graph_images.clear();  // v1.1.0: filled as the panels draw (pixels mode)
   const int W = screen.dimx(), H = screen.dimy();
   const Colors c = build_colors(theme, mode);
   const Snapshot& snap = frozen ? frozen->snap : latest;
@@ -924,8 +927,30 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
           trace::stage("panel", p.series[i].id,
                        p.title + ": " + p.series[i].label + " = " + legend_values[i]);
 
-    draw_panel(screen, px, py, pw, ph, p, pm, sleeping, raws, legend_values, snap,
-               vmax, c, chrome.pixels, pi == focus_panel);
+    const GraphGeom gg =
+        draw_panel(screen, px, py, pw, ph, p, pm, sleeping, raws, legend_values,
+                   snap, vmax, c, chrome.pixels, pi == focus_panel);
+
+    // Pixel mode: record this panel's rasterized graph image for placement one
+    // round later (same thread, at exactly (gg.gx, gg.gy), size gg.Wg x gg.Hg
+    // cells — the rect the text layer just left blank). The data path is the
+    // SAME one the text renderer uses, so the two can never disagree.
+    if (chrome.pixels && gg.have_graph && gg.Wg > 0 && gg.Hg > 0 &&
+        chrome.cell_w > 0 && chrome.cell_h > 0) {
+      std::vector<Decimated> decs(p.series.size());
+      for (std::size_t i = 0; i < p.series.size(); ++i)
+        if (!p.series[i].hidden) decs[i] = decimate(raws[i], gg.dot_cols);
+      const RasterArgs ra{gg, chrome.cell_w, chrome.cell_h, theme,
+                          chrome.solid_bg, raws, decs, p.series};
+      GraphImage gi;
+      gi.panel_idx = pi;
+      gi.x = gg.gx;
+      gi.y = gg.gy;
+      gi.w = gg.Wg;
+      gi.h = gg.Hg;
+      gi.raster = raster_panel(ra);
+      if (gi.raster.valid()) state.graph_images.push_back(std::move(gi));
+    }
   };
 
   // --- panel grid: the visible rows of the layout -------------------------------

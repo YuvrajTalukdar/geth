@@ -1,7 +1,10 @@
 #include "util/terminal.hpp"
 
+#include <atomic>
+#include <cstddef>
 #include <csignal>
 #include <fcntl.h>
+#include <string>
 #include <termios.h>
 #include <unistd.h>
 
@@ -12,6 +15,17 @@ namespace {
 struct termios g_saved_termios{};
 bool g_have_termios = false;
 int g_tty_fd = -1;
+
+// The live image set's delete-all, as a pre-built byte stream the SIGHUP
+// handler can write without any allocation or lock. Double-buffered: the
+// setter writes the INACTIVE buffer, then atomically repoints the active
+// pointer; the handler only ever reads the ACTIVE buffer. So a write never
+// overlaps the handler's read (the one theoretical window — two setter calls
+// inside the handler's nanosecond load-to-write gap — would require two UI
+// ticks in that gap, which cannot happen).
+std::string g_img_seq_a;
+std::string g_img_seq_b;
+std::atomic<const std::string*> g_img_seq_active{nullptr};
 
 // The one sequence the SIGHUP path emits: mouse tracking off (SGR, urxvt,
 // any-event, button-event, normal), line wrap back on (FTXUI disables it),
@@ -32,14 +46,32 @@ constexpr char kRestoreSeq[] =
 void on_sighup(int sig) {
   // Async-signal-safe by construction: write + tcsetattr (the universal
   // practice for this) + _exit.
-  if (g_tty_fd >= 0)
+  if (g_tty_fd >= 0) {
+    // Delete the live kitty images first (before leaving the alternate
+    // screen) — see set_image_cleanup_seq. Load the pointer once, then a
+    // single write(); the active buffer is never written while referenced.
+    if (const std::string* s =
+            g_img_seq_active.load(std::memory_order_acquire)) {
+      const char* d = s->data();
+      const std::size_t n = s->size();
+      if (n) (void)!write(g_tty_fd, d, n);
+    }
     (void)!write(g_tty_fd, kRestoreSeq, sizeof(kRestoreSeq) - 1);
+  }
   if (g_have_termios)
     (void)tcsetattr(STDIN_FILENO, TCSANOW, &g_saved_termios);
   _exit(128 + sig);
 }
 
 }  // namespace
+
+void set_image_cleanup_seq(const std::string& seq) {
+  const std::string* active =
+      g_img_seq_active.load(std::memory_order_acquire);
+  std::string* spare = (active == &g_img_seq_a) ? &g_img_seq_b : &g_img_seq_a;
+  spare->assign(seq);
+  g_img_seq_active.store(spare, std::memory_order_release);
+}
 
 void install_sighup_restore() {
   struct termios t{};
@@ -60,6 +92,10 @@ void uninstall_sighup_restore() {
   sigemptyset(&sa.sa_mask);
   sa.sa_flags = 0;
   sigaction(SIGHUP, &sa, nullptr);
+  // The UI already ran its image cleanup on the normal exit path; a later
+  // SIGHUP must not emit a stale delete-all. (The buffers themselves are left
+  // intact — a handler in flight may still be reading one.)
+  g_img_seq_active.store(nullptr, std::memory_order_release);
   if (g_tty_fd > 0 && g_tty_fd != STDOUT_FILENO) close(g_tty_fd);
   g_tty_fd = -1;
   g_have_termios = false;

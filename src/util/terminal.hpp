@@ -19,6 +19,8 @@
 // the default so a later SIGHUP gets the usual behavior.
 #pragma once
 
+#include <string>
+
 namespace geth::util {
 
 // ignore_tty_stop_signals() — call before anything touches the terminal
@@ -36,5 +38,16 @@ void ignore_tty_stop_signals();
 
 void install_sighup_restore();
 void uninstall_sighup_restore();
+
+// v1.1.0: kitty graphics images live in the terminal's image layer and outlive
+// the alternate screen. The SIGHUP handler (which _exit()s without running the
+// normal UI cleanup) must emit the live image set's delete-all BEFORE leaving
+// the alternate screen, or the graphs would float over the user's main screen.
+// The UI thread calls this after every ImageSet::round() (the only place the
+// live id set changes) with the current delete-all byte stream ("" = no
+// images). It is double-buffered: the handler only ever reads the active
+// buffer, the setter only ever writes the inactive one before swapping, so the
+// signal handler never observes a half-written string.
+void set_image_cleanup_seq(const std::string& seq);
 
 }  // namespace geth::util

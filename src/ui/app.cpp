@@ -13,6 +13,7 @@
 #include <thread>
 
 #include "ftxui/component/component.hpp"
+#include "ftxui/component/loop.hpp"
 #include "ftxui/component/screen_interactive.hpp"
 
 #include "util/alloc_count.hpp"
@@ -310,8 +311,11 @@ ftxui::Element Dashboard::OnRender() {
   chrome.title_override = _cfg.title;
   chrome.solid_bg = (_cfg.background == "solid");
   // v1.1.0: the text layer leaves the graph rects as plain spaces when the
-  // resolved renderer is pixels (the pixel backend paints them over).
+  // resolved renderer is pixels (the pixel backend paints them over). The cell
+  // size (from the probe) is what rasterizes each graph rect to pixels.
   chrome.pixels = _pixels_layer;
+  chrome.cell_w = _probe.cell_w;
+  chrome.cell_h = _probe.cell_h;
 
   ManagerOverlay mg;
   bool show_manager = false;
@@ -560,6 +564,58 @@ void Dashboard::cycle_graph_renderer() {
     toast("no image protocol in this terminal — staying on text");
   else
     toast("renderer: " + renderer_name(p));
+}
+
+// -- v1.1.0 pixel backend -------------------------------------------------------
+
+std::string Dashboard::render_images(const ftxui::Screen::Cursor& park) {
+  // No protocol (the text renderer): nothing to place. This is ALSO the path
+  // that deletes any stale images left over from a pixels session (e.g. right
+  // after `g` flipped to text).
+  if (_proto == ImageProto::kNone) {
+    const std::string s = _images.delete_all();
+    _images.reset();
+    util::set_image_cleanup_seq("");
+    return s;
+  }
+  // An overlay (the panel manager or the help screen) is text drawn over the
+  // whole screen; the graphs float above ALL text, so hide them while an
+  // overlay is up. They are re-placed on the first clean round after it closes.
+  if (_manager_open || _help_open) {
+    const std::string s = _images.delete_all();
+    _images.reset();
+    util::set_image_cleanup_seq("");
+    return s;
+  }
+  // Pixels: place one image per panel recorded this frame (render_one filled
+  // _state.graph_images). Keyed by panel id, so a stable kitty id per panel.
+  _images.proto = _proto;  // round() keys its encoder on the live protocol
+  _images.bg = &theme().bg;  // the sixel compositing color (kitty ignores it)
+  std::vector<ImagePlace> places;
+  places.reserve(_state.graph_images.size());
+  // Move the raster out: render_frame clears and refills _state.graph_images
+  // every round (before the next render_images), so the moved-from slots are
+  // never read. Saves a per-panel RGBA copy each tick.
+  for (GraphImage& gi : _state.graph_images) {
+    if (gi.panel_idx < 0 || gi.panel_idx >= (int)_page.size()) continue;
+    ImagePlace pl;
+    pl.key = _page[gi.panel_idx].id;
+    pl.x = gi.x;
+    pl.y = gi.y;
+    pl.img = std::move(gi.raster);
+    places.push_back(std::move(pl));
+  }
+  const std::string s = _images.round(places, park);
+  // The SIGHUP handler needs the delete-all of the CURRENT live set.
+  util::set_image_cleanup_seq(_images.delete_all());
+  return s;
+}
+
+std::string Dashboard::cleanup_images() {
+  const std::string s = _images.delete_all();
+  _images.reset();
+  util::set_image_cleanup_seq("");
+  return s;
 }
 
 // -- The panel manager ---------------------------------------------------------
@@ -1151,7 +1207,29 @@ int run_ui(Collector& collector, const Hardware& hw_in, const UiOptions& opts) {
             << "\x1b[2J";      // clear the alternate screen
   std::cout.flush();
 
-  screen.Loop(component);  // blocks until q / Esc / Ctrl-C (or count ticks)
+  // v1.1.0: drive the loop manually so the pixel backend can emit its image
+  // bytes right after each frame — same thread, so they land byte-ordered
+  // after FTXUI's frame. screen.Loop() is just Loop::Run() =
+  // while(!quitted) RunOnceBlocking(); we add one render_images() per round.
+  {
+    ftxui::Loop loop(&screen, component);  // PreMain (installs FTXUI signals)
+    while (!loop.HasQuitted()) {
+      loop.RunOnceBlocking();
+      const std::string bytes = component->render_images(screen.cursor());
+      if (!bytes.empty()) {
+        std::cout << bytes;
+        std::cout.flush();
+      }
+    }
+    // Normal exit: delete every live image BEFORE the loop's dtor restores
+    // the terminal (PostMain leaves the alternate screen, which would
+    // otherwise strand the graphs over the main screen).
+    const std::string del = component->cleanup_images();
+    if (!del.empty()) {
+      std::cout << del;
+      std::cout.flush();
+    }
+  }
   util::uninstall_sighup_restore();
 
   quit = true;

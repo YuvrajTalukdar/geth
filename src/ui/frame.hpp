@@ -22,6 +22,7 @@
 #include "ftxui/dom/elements.hpp"
 #include "ftxui/screen/screen.hpp"
 
+#include "ui/graph_image.hpp"
 #include "ui/layout.hpp"
 #include "ui/panel_spec.hpp"
 #include "ui/theme.hpp"
@@ -104,6 +105,17 @@ struct FrameStats {
   void print() const;
 };
 
+// One panel's graph rect + its raster, for the pixel backend (v1.1.0).
+// render_frame records these (pixels mode only) as it draws the text layer;
+// the image injection one round later (same thread, run_ui) places each
+// raster at exactly (x,y) — the rect the text layer left blank — so the two
+// renderers can never disagree.
+struct GraphImage {
+  int panel_idx = -1;  // index into the page passed to render_frame
+  int x = 0, y = 0, w = 0, h = 0;  // the graph rect (cells)
+  RasterImage raster;              // w*cell_w x h*cell_h RGBA8
+};
+
 // Per-panel scale state that must survive across frames: the auto-scale
 // hysteresis ("shrink only after 10 s below 50 %") and the sticky
 // temperature ceiling (100 -> 110 -> 120).
@@ -115,6 +127,9 @@ struct FrameState {
     bool below = false;
   };
   std::map<std::string, Auto> auto_scale;  // keyed by panel id
+  // v1.1.0: the graph rects + rasters of THIS frame (pixels mode); cleared
+  // at the start of every render_frame, filled as the panels draw.
+  std::vector<GraphImage> graph_images;
 };
 
 // The y-axis max for this frame, updating the sticky/hysteresis state.
@@ -171,6 +186,10 @@ struct FrameChrome {
   // gridlines, no SGR) — the pixel backend draws the graph image on top of
   // exactly that rectangle, one round later.
   bool pixels = false;
+  // v1.1.0: the terminal's cell size in pixels (cell_w x cell_h), from the
+  // startup probe. Rasterizing a panel needs it (w = Wg*cell_w, etc.); 0 means
+  // unknown, in which case no image is produced for that frame.
+  int cell_w = 0, cell_h = 0;
 };
 
 // The panel-manager overlay (drawn over the live dashboard, which keeps

@@ -15,6 +15,7 @@
 #include "core/collector.hpp"
 #include "ui/config.hpp"
 #include "ui/frame.hpp"
+#include "ui/graph_backends.hpp"
 #include "ui/panel_spec.hpp"
 #include "ui/term_probe.hpp"
 #include "ui/theme.hpp"
@@ -119,6 +120,18 @@ class Dashboard : public ftxui::ComponentBase {
   const ProbeResult& probe_result() const { return _probe; }
   ImageProto renderer_proto() const { return _proto; }
   const std::string& renderer_intent() const { return _renderer_eff; }
+
+  // v1.1.0 pixel backend: build the image byte stream for one round. Called by
+  // run_ui AFTER each FTXUI frame is drawn (same thread, so the bytes land
+  // byte-ordered after the frame). `park` is FTXUI's cursor position — the
+  // stream re-parks the cursor there at the end (its next frame's preamble is
+  // relative from it). Returns "" in text mode / when an overlay is open (the
+  // images are deleted in that case, and the delete stream is returned).
+  std::string render_images(const ftxui::Screen::Cursor& park);
+  // Normal exit (or a renderer switch): delete every live image, clear the id
+  // set and the signal cleanup seq. Returns the delete stream ("" if none were
+  // live).
+  std::string cleanup_images();
 
   bool OnEvent(ftxui::Event event) override;
   ftxui::Element OnRender() override;
@@ -232,6 +245,10 @@ class Dashboard : public ftxui::ComponentBase {
   // What the TEXT layer draws: true = the resolved renderer is pixels, so
   // the graph rects are left plain spaces for the pixel backend.
   bool _pixels_layer = false;
+  // The live placed images (one stable kitty id per visible panel, keyed by
+  // panel id). round() emits one tick's byte stream; delete_all() feeds the
+  // SIGHUP handler.
+  ImageSet _images;
 };
 
 // Parse one --script token into a synthetic FTXUI Event:

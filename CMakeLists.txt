@@ -93,7 +93,9 @@ set(GETH_SOURCES
   src/ui/app.cpp
   src/ui/config.cpp
   src/ui/frame.cpp
+  src/ui/graph_backends.cpp
   src/ui/graph_data.cpp
+  src/ui/graph_image.cpp
   src/ui/layout.cpp
   src/ui/panel_spec.cpp
   src/ui/term_probe.cpp
@@ -249,6 +251,10 @@ if(GETH_BUILD_TESTS)
     tests/test_dashboard.cpp
     tests/test_theme.cpp
     tests/test_collector.cpp
+    tests/test_rasterizer.cpp
+    tests/test_kitty.cpp
+    tests/test_sixel.cpp
+    tests/test_detect.cpp
     ${GETH_SOURCES})
   target_include_directories(geth_tests PRIVATE src)
   # Absolute path so the test binary can find the fixture files from anywhere.
