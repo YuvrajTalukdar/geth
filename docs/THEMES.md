@@ -42,7 +42,7 @@ A theme may set any of these (all colors are `#RRGGBB`):
 | `axis_text` | Graph axis labels |
 | `warn` | Warning toast / config-error foreground |
 | `bg` | Solid-mode screen background (only used when `background = "solid"`) |
-| `fill_mix` | `[0, 1]` — how much of the series color the graph "fill" keeps (default `0.30`) |
+| `fill_mix` | **Deprecated** — no longer used by either chart renderer (the pixel renderer uses fixed gradient strengths, the text renderer no longer fills multi-series panels). Still parsed, so existing themes that set it don't warn |
 | `series_1` … `series_6` | The six graph series colors, assigned by device role (see [Series color slots](#series-color-slots)) |
 
 A field left out (or set to a bad value) falls back to the base theme's

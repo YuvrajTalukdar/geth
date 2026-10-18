@@ -1,6 +1,6 @@
 .\" GETH \- Geth Engine for Tracking Hardware
 .\" Installed as geth.1 (the name follows the GETH_BINARY_NAME build option).
-.Dd October 16, 2026
+.Dd October 18, 2026
 .Dt GETH 1
 .Os Linux
 .Sh NAME
@@ -16,8 +16,16 @@ starts the interactive dashboard.
 .Sh DESCRIPTION
 .Nm
 is a terminal dashboard that samples CPU, GPU (multiple cards), memory,
-power, temperature, disk and network and draws them as real-time graphs
+power, temperature, disk and network and draws them as real-time charts
 inspired by the KDE System Monitor.
+When the terminal speaks the Kitty graphics protocol or Sixel, each graph
+is a pixel image with smooth anti-aliased lines and a soft translucent
+fill; otherwise the charts are drawn in text (solid area charts for
+single-series panels, one-dot braille lines for multi-series panels).
+The active renderer can be cycled with the
+.Sy g
+key or forced with
+.Sy -renderer .
 It is built for transparent and blurred terminals: nothing is ever drawn
 with a background color, so the terminal background shows through.
 It never requires root, except optionally enabling RAPL CPU package power
@@ -27,6 +35,11 @@ through the shipped udev rule.
 .It Sy -probe
 List every data source, its availability and a fix hint, then exit.
 This is the only mode in which a brief NVML enumeration session runs.
+.It Sy -probe-terminal
+Probe the terminal image capabilities (Kitty graphics protocol, Sixel,
+cell pixel size), print them and the renderer the selection rules would
+choose, and exit.
+Needs a terminal; with none, it says so.
 .It Sy -dump
 Print human-readable samples to stdout and exit on interrupt.
 .It Sy -json
@@ -49,6 +62,17 @@ The sub-options
 (emit full SGR escape codes instead of plain text) apply only here, as does
 .Sy -script Ar events
 (see below).
+.It Sy "-render-png Ar COLSxROWS"
+Composite a single frame \- the generated background, the text glyphs and,
+in pixels mode, the graph rasters \- into an 8-bit RGB PNG written to
+stdout, and exit.
+Also accepts
+.Sy -warmup Ar n ,
+.Sy -demo ,
+.Sy -renderer Ar mode ,
+.Sy -theme Ar name
+and
+.Sy -script Ar events .
 .It Sy "-layout-report Ar COLSxROWS"
 Print the layout engine's decision (candidate scores, chosen layout,
 per-panel rectangles) at the given size and exit.
@@ -66,6 +90,18 @@ or
 .Sy 16 .
 Default: auto-detect from
 .Ev COLORTERM .
+.It Sy "-renderer Ar mode"
+Force the chart renderer for this run only (not saved):
+.Sy pixels
+or
+.Sy text .
+Default: the
+.Sq Ar graph_renderer
+value from the
+.Sq general
+section of the config file
+(Sy auto
+resolves to pixels when the terminal supports an image protocol).
 .It Sy "-config Ar path"
 Path to the config file (default:
 .Pa $XDG_CONFIG_HOME/geth/config.toml ,
@@ -84,7 +120,9 @@ Never write the config file (read-only).
 .It Sy "-script Ar events"
 Valid with
 .Sy -render-frame
-only: replay a comma-separated list of synthetic events (keys,
+and
+.Sy -render-png
+: replay a comma-separated list of synthetic events (keys,
 .Sy enter ,
 .Sy space ,
 .Sy tab ,
@@ -122,6 +160,8 @@ Cycle the graph window (30 s to 10 m).
 Cycle the column count (auto, 1 to 8).
 .It Sy T
 Cycle the theme (saves the config).
+.It Sy g
+Cycle the graph renderer (pixels / text; saves the config).
 .It Sy "Up / Down or j / k"
 Scroll one row (when the page overflows).
 .It Sy "PgUp / PgDn"
@@ -227,6 +267,16 @@ geth --json --count 5 --interval 250
 Render one 120x40 frame with SGR colors (useful for screenshots):
 .Bd -literal -offset indent
 geth --render-frame 120x40 --demo --ansi --warmup 30
+.Ed
+.Pp
+Composite one 200x56 frame into a PNG file:
+.Bd -literal -offset indent
+geth --render-png 200x56 --demo > frame.png
+.Ed
+.Pp
+Which image protocol does this terminal speak?
+.Bd -literal -offset indent
+geth --probe-terminal
 .Ed
 .Pp
 Two columns with the amber theme:

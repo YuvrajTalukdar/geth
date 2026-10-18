@@ -55,12 +55,17 @@ dependencies are fetched by CMake and pinned to exact versions (see
 
 ## Features
 
-- **Graphs & metrics** — live braille (or block) graphs per panel, with a
-  `g` key that toggles the line style (saved to the config): CPU usage (with
-  per-core), frequency, temperature, package power, RAM/swap, GPU usage and
-  memory (GTT vs VRAM on integrated AMD GPUs), disk and network rates. Series
-  that share a panel always get distinct colors. Gaps (suspend, clock jumps)
-  blank the rate series for that tick instead of showing a bogus spike.
+- **Charts & metrics** — a live chart per panel, with a `g` key that
+  switches the renderer (saved to the config). When the terminal speaks the
+  Kitty graphics protocol (or Sixel), each graph is a pixel image: smooth
+  anti-aliased lines, a soft translucent fill, faint gridlines on a
+  transparent background. Otherwise the text fallback: a solid area chart
+  for single-series panels and one-dot braille lines for multi-series ones.
+  The metrics: CPU usage (with per-core), frequency, temperature, package
+  power, RAM/swap, GPU usage and memory (GTT vs VRAM on integrated AMD
+  GPUs), disk and network rates. Series that share a panel always get
+  distinct colors. Gaps (suspend, clock jumps) blank the rate series for
+  that tick instead of showing a bogus spike.
 - **Multi-GPU** — one usage panel and one memory panel per detected card
   (AMD and NVIDIA, integrated and discrete); GPU renames in the panel
   manager are global (every panel, legend, and the header for that bus).
@@ -89,7 +94,7 @@ dependencies are fetched by CMake and pinned to exact versions (see
 Live captures from a Konsole window running `geth --demo` on a 1920×1080
 screen. Cell sizes: 205×58 (themes, manager, help), 236×71 (wide),
 111×31 (narrow), 85×25 (compact). For CI-style static frames, see
-`--render-frame` and `tools/frame2png.py` in
+`--render-frame`, `--render-png` and `tools/frame2png.py` in
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 | Cyberpunk Blue (default) | Matrix Green |
@@ -133,7 +138,7 @@ and the RAPL/powercap details: [docs/HARDWARE.md](docs/HARDWARE.md).
 Build the package first (next section), then:
 
 ```sh
-sudo pacman -U dist/geth-1.0.3-1-x86_64.pkg.tar.zst   # install
+sudo pacman -U dist/geth-1.1.0-1-x86_64.pkg.tar.zst   # install
 sudo pacman -R geth                                   # uninstall
 rm -r ~/.config/geth                                  # remove your config (optional)
 ```
@@ -163,7 +168,9 @@ ctest --test-dir build --output-on-failure     # unit tests
 ```
 
 FTXUI, toml++, and doctest are fetched into the build directory (pinned
-versions, checksum-verified); nothing is installed system-wide.
+versions, checksum-verified); nothing is installed system-wide. zlib is a
+system library (the pixel renderer's image payloads and `--render-png`):
+Arch `zlib`, Debian/Ubuntu `zlib1g-dev`, Fedora `zlib-devel`.
 
 Install to a prefix (user-local or system):
 
@@ -194,7 +201,7 @@ cached), and runs `makepkg -f --cleanbuild` — with **no network access in
 `build()`**. Output:
 
 ```
-dist/geth-1.0.3-1-x86_64.pkg.tar.zst
+dist/geth-1.1.0-1-x86_64.pkg.tar.zst
 dist/SHA256SUMS
 ```
 
@@ -207,6 +214,9 @@ geth --probe                # which sources work on this machine, and why
 geth --dump --interval 1000 # human-readable samples
 geth --json --count 5       # JSON, one object per sample
 geth --render-frame 160x48  # render one frame at that size and exit
+geth --render-png 200x56    # composite one frame to an 8-bit RGB PNG (stdout)
+geth --probe-terminal       # which image protocol (kitty/sixel), cell size
+geth --renderer pixels      # force the renderer for this run (not saved)
 geth --stats                # print render-time + alloc stats on exit
 geth --color 256            # force a color mode: truecolor | 256 | 16
 geth --theme matrix-green   # select a theme (see --list-themes)
@@ -234,7 +244,7 @@ Keys (press `?` in the UI for the full list):
 | `t` | Cycle the graph window (30s → 1m → 2m → 5m → 10m) |
 | `c` | Cycle the column count |
 | `T` | Cycle the **theme** (saved to the config) |
-| `g` | Cycle the **graph style** (braille / blocks, saved) |
+| `g` | Cycle the **graph renderer** (pixels / text, saved) |
 
 In the **panel manager** (`e`): `↑` `↓` / `j` `k` select, `space` show/hide a
 panel, `K` `J` (or the mouse) reorder, `r` rename a GPU (applied globally to
@@ -246,9 +256,9 @@ short "saved" toast.
 
 Config: TOML at `$XDG_CONFIG_HOME/geth/config.toml` (or
 `~/.config/geth/config.toml`), covering sampling interval, graph window,
-column count, title, theme, background mode, graph style
-(`graph_style = "braille" | "blocks"`), per-panel order/visibility/series,
-and per-GPU renames. Written only when a setting changes; unknown keys are
+column count, title, theme, background mode, graph renderer
+(`graph_renderer = "auto" | "pixels" | "text"`, default `auto`), per-panel
+order/visibility/series, and per-GPU renames. Written only when a setting changes; unknown keys are
 warned, never an error. Full schema and merge rules:
 [docs/CONFIG.md](docs/CONFIG.md).
 
@@ -318,6 +328,12 @@ wakes a sleeping dGPU. Details:
   font must cover box-drawing (U+2500–U+257F) and braille (U+2800–U+28FF).
   DejaVu Sans Mono, JetBrains Mono, and Fira Code all do; pick a monospace
   font with full Unicode coverage in your terminal's settings.
+- **No pixel charts (text renderer only).** The pixel renderer needs the
+  terminal to speak the Kitty graphics protocol or Sixel — `geth
+  --probe-terminal` shows exactly what it detected (and under tmux/screen
+  it always falls back to text, since multiplexers strip those escapes).
+  Konsole (≥ 25.08), kitty, and Ghostty all support Kitty; wezterm and
+  mlterm support Sixel. `g` or `--renderer text` forces the text renderer.
 - **Colors look wrong / no color.** Force a mode with
   `--color truecolor|256|16`, and make sure the terminal advertises it
   (`COLORTERM=truecolor` for 24-bit).
@@ -352,3 +368,5 @@ MIT — see [LICENSE](LICENSE). Copyright (c) 2026 Yuvraj Talukdar.
   pinned at v2.4.11.
 - [pci.ids](https://pci-ids.ucw.cz/) — the PCI device database used to name
   AMD GPUs.
+- [zlib](https://zlib.net/) — compression of the pixel renderer's image
+  payloads (Kitty `o=z`) and of the `--render-png` output (IDAT).

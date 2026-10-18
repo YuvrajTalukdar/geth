@@ -25,7 +25,7 @@ columns = "auto"        # "auto" | 1..8
 title = ""              # header title override ("" = auto: CPU & GPU names)
 theme = "cyberpunk-blue"# built-in or custom theme name (see --list-themes)
 background = "transparent"  # "transparent" | "solid" (paints the theme bg)
-graph_style = "braille"     # "braille" | "blocks" (the graph line style)
+graph_renderer = "auto"     # "auto" | "pixels" | "text" (the chart renderer)
 
 # One [[panels]] table per panel, in display order.
 [[panels]]
@@ -40,6 +40,11 @@ hidden_series = []      # series ids hidden in this panel
 name = "RTX 3050"
 integrated = "auto"     # "auto" | true | false
 ```
+
+The retired v1.0.3 key `graph_style` (the graph line style, `"braille" |
+"blocks"`) is still accepted so old configs keep loading: it is ignored in
+favor of `graph_renderer`, a one-time warning is shown, and it is dropped
+the next time the config file is saved.
 
 ### Panel and series ids
 

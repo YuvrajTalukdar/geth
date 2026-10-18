@@ -16,17 +16,17 @@
 # `license` must equal CMake's GETH_LICENSE; the packaging script checks it.
 
 pkgname=geth
-pkgver=1.0.3
+pkgver=1.1.0
 pkgrel=1
 pkgdesc="A fast, lightweight terminal system monitor for Linux (C++20, in-process, no subprocesses)"
 url="https://github.com/YuvrajTalukdar/geth"
 arch=(x86_64)
 license=(MIT)
-depends=(gcc-libs glibc)
+depends=(gcc-libs glibc zlib)
 optdepends=(
   'nvidia-utils: NVIDIA GPU monitoring via NVML (dlopened at runtime, never linked)'
 )
-makedepends=(cmake git)
+makedepends=(cmake git zlib)
 
 # The GETH tarball (created by tools/package-arch.sh from the commit) plus
 # the pinned, checksummed dependency tarballs.
