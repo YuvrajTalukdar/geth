@@ -1,37 +1,56 @@
 #include "ui/graph_image.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdint>
 
 namespace geth::ui {
 
 namespace {
 
-// Straight-alpha "over" compositing (8-bit), destination in place.
-// out_c = (c_s*a_s + c_d*a_d*(1-a_s)) / out_a, out_a = a_s + a_d*(1-a_s).
-void blend_over(std::uint8_t* px, int r, int g, int b, int a) {
+// The canvas accumulates PREMULTIPLIED color (c*a in 0..65025, a in 0..255).
+// Straight-alpha "over" in that form divides only by the constant 255 (the
+// compiler turns it into a multiply + shift), whereas straight accumulation
+// divides by the per-pixel output alpha. `inv` turns premultiplied back into
+// straight: c = (c_p * inv[a] + 2^15) / 2^16 ~ c_p / a.
+struct Prem {
+  std::uint16_t r = 0, g = 0, b = 0;
+  std::uint8_t a = 0;
+};
+
+void prem_over(Prem& d, int r, int g, int b, int a) {
   a = std::clamp(a, 0, 255);
   if (a <= 0) return;
-  const int da = px[3];
-  const int oa = a + (da * (255 - a)) / 255;
-  if (oa <= 0) return;
-  const int ws = a * 255;
-  const int wd = da * (255 - a);
-  px[0] = (std::uint8_t)((r * ws + px[0] * wd) / (oa * 255));
-  px[1] = (std::uint8_t)((g * ws + px[1] * wd) / (oa * 255));
-  px[2] = (std::uint8_t)((b * ws + px[2] * wd) / (oa * 255));
-  px[3] = (std::uint8_t)oa;
+  const int i = 255 - a;  // dest's surviving fraction numerator
+  const int da = d.a;
+  // r*a + c_p*(255-a)/255 <= 255*(a + 255 - a) = 65025: uint16-safe.
+  d.r = (std::uint16_t)(r * a + (int)d.r * i / 255);
+  d.g = (std::uint16_t)(g * a + (int)d.g * i / 255);
+  d.b = (std::uint16_t)(b * a + (int)d.b * i / 255);
+  d.a = (std::uint8_t)(a + da * i / 255);
 }
 
-// Distance from (px,py) to the segment (x0,y0)-(x1,y1).
-double seg_dist(double px, double py, double x0, double y0, double x1,
-                double y1) {
+// ~ 65536/a rounded, for a = 1..255 (unpremultiply in fixed point).
+const std::array<std::uint32_t, 256>& prem_inv() {
+  static const std::array<std::uint32_t, 256> v = [] {
+    std::array<std::uint32_t, 256> t{};
+    for (int a = 1; a < 256; ++a) t[(std::size_t)a] = (65536u + a / 2) / a;
+    return t;
+  }();
+  return v;
+}
+
+// Squared distance from (px,py) to the segment (x0,y0)-(x1,y1). No sqrt:
+// the caller only takes one, for the handful of pixels on the capsule edge.
+double seg_dist_sq(double px, double py, double x0, double y0, double x1,
+                   double y1) {
   const double dx = x1 - x0, dy = y1 - y0;
   const double l2 = dx * dx + dy * dy;
   double t = l2 > 0.0 ? ((px - x0) * dx + (py - y0) * dy) / l2 : 0.0;
   t = std::clamp(t, 0.0, 1.0);
-  const double cx = x0 + t * dx, cy = y0 + t * dy;
-  return std::hypot(px - cx, py - cy);
+  const double ex = px - (x0 + t * dx), ey = py - (y0 + t * dy);
+  return ex * ex + ey * ey;
 }
 
 // One line in pixel space: the sample points P[k] = (k/2, y[k]) — twice the
@@ -89,19 +108,19 @@ RasterImage raster_panel(const RasterArgs& a) {
   if (w < 1 || h < 1 || a.cell_w < 1 || a.cell_h < 1) return out;
   out.w = w;
   out.h = h;
-  out.rgba.assign((std::size_t)w * h * 4, 0);
+  const std::size_t np = (std::size_t)w * h;
+  out.rgba.assign(np * 4, 0);  // so the image is valid even on an early return
+  std::vector<Prem> px(np);
 
   // 1. Background: transparent by default, the theme's bg in solid mode.
   if (a.solid_bg) {
     const Rgb& bg = a.theme.bg;
-    for (int y = 0; y < h; ++y)
-      for (int x = 0; x < w; ++x) {
-        std::uint8_t* px = out.at(x, y);
-        px[0] = bg.r;
-        px[1] = bg.g;
-        px[2] = bg.b;
-        px[3] = 255;
-      }
+    for (std::size_t i = 0; i < np; ++i)
+      px[i] = Prem{
+          (std::uint16_t)(bg.r * 255),
+          (std::uint16_t)(bg.g * 255),
+          (std::uint16_t)(bg.b * 255),
+          255};
   }
 
   // 2. Gridlines: 1 px at each tick row (the SAME row the text tick label
@@ -110,8 +129,8 @@ RasterImage raster_panel(const RasterArgs& a) {
     const int row =
         std::clamp((int)std::lround(g.tick_y_px(i, a.cell_h)), 0, h - 1);
     for (int x = 0; x < w; ++x)
-      blend_over(out.at(x, row), a.theme.grid.r, a.theme.grid.g,
-                 a.theme.grid.b, 153);
+      prem_over(px[(std::size_t)row * w + x], a.theme.grid.r, a.theme.grid.g,
+                a.theme.grid.b, 153);
   }
 
   // Which series draw, in DRAW order: the secondaries first (legend order),
@@ -120,7 +139,9 @@ RasterImage raster_panel(const RasterArgs& a) {
   for (std::size_t i = 1; i < a.series.size(); ++i)
     if (!a.series[i].hidden) order.push_back((int)i);
   if (!a.series.empty() && !a.series[0].hidden) order.push_back(0);
-  if (order.empty()) return out;
+  // (No early return for an empty order: the background and gridlines are
+  // still drawn, and the fill/line loops below are no-ops — and the
+  // unpremultiply at the end must always run.)
 
   std::vector<LineSamples> ls(order.size());
   for (std::size_t i = 0; i < order.size(); ++i)
@@ -145,15 +166,16 @@ RasterImage raster_panel(const RasterArgs& a) {
       if (!std::isfinite(ytop)) continue;
       const double top = std::clamp(ytop, 0.0, (double)h);
       const int py0 = std::max(0, (int)std::ceil(top - 1.0));
+      const double span = h > (int)top ? (double)h - top : 1.0;
+      const double inv_span = 1.0 / span;
       for (int py = py0; py < h; ++py) {
         const double frac = std::clamp(py + 1.0 - top, 0.0, 1.0);
         // The gradient at the pixel center: 35 % at the line, 5 % at the
         // bottom of the image.
-        const double span = h > (int)top ? (double)h - top : 1.0;
         const double grad = 0.35 +
-            (0.05 - 0.35) * std::clamp((py + 0.5 - top) / span, 0.0, 1.0);
+            (0.05 - 0.35) * std::clamp((py + 0.5 - top) * inv_span, 0.0, 1.0);
         const int alpha = (int)std::lround(255.0 * strength * grad * frac);
-        blend_over(out.at(x, py), fc.r, fc.g, fc.b, alpha);
+        prem_over(px[(std::size_t)py * w + x], fc.r, fc.g, fc.b, alpha);
       }
     }
   }
@@ -162,6 +184,9 @@ RasterImage raster_panel(const RasterArgs& a) {
   //    the series color at full strength; the row range per column is the
   //    segment band, so flat lines touch a handful of rows, not all of h.
   const double width = std::max(1.5, (double)a.cell_h / 9.0);
+  const double r = width * 0.5;
+  const double r2hi = (r + 0.5) * (r + 0.5);  // d^2 outside this: cov = 0
+  const double r2lo = (r - 0.5) * (r - 0.5);  // d^2 inside this: cov = 1
   for (std::size_t si = 0; si < order.size(); ++si) {
     if (!ls[si].has_data) continue;
     const Rgb& col = a.theme.series[a.series[order[si]].color_index];
@@ -190,14 +215,32 @@ RasterImage raster_panel(const RasterArgs& a) {
       for (int py = py0; py <= py1; ++py) {
         double best = 1e9;
         for (int s2 = 0; s2 < nseg; ++s2)
-          best = std::min(best, seg_dist(x + 0.5, py + 0.5, sx[s2][0],
-                                         sx[s2][1], sx[s2][2], sx[s2][3]));
-        const double cov = std::clamp(0.5 + (width * 0.5 - best), 0.0, 1.0);
-        if (cov <= 0.0) continue;
-        blend_over(out.at(x, py), col.r, col.g, col.b,
-                   (int)std::lround(255.0 * cov));
+          best = std::min(best,
+                          seg_dist_sq(x + 0.5, py + 0.5, sx[s2][0], sx[s2][1],
+                                      sx[s2][2], sx[s2][3]));
+        if (best >= r2hi) continue;  // fully outside: no coverage
+        double cov;
+        if (best <= r2lo)
+          cov = 1.0;  // fully inside
+        else
+          cov = 0.5 + r - std::sqrt(best);  // the edge: the only sqrt
+        prem_over(px[(std::size_t)py * w + x], col.r, col.g, col.b,
+                  (int)std::lround(255.0 * cov));
       }
     }
+  }
+
+  // Unpremultiply into the straight RGBA the encoders consume.
+  const auto& inv = prem_inv();
+  out.rgba.resize(np * 4);
+  for (std::size_t i = 0; i < np; ++i) {
+    const Prem& p = px[i];
+    if (p.a == 0) continue;  // stays 0,0,0,0
+    const std::uint32_t m = inv[p.a];
+    out.rgba[i * 4 + 0] = (std::uint8_t)((p.r * m + 32768u) >> 16);
+    out.rgba[i * 4 + 1] = (std::uint8_t)((p.g * m + 32768u) >> 16);
+    out.rgba[i * 4 + 2] = (std::uint8_t)((p.b * m + 32768u) >> 16);
+    out.rgba[i * 4 + 3] = p.a;
   }
 
   // The sixel encoder's palette (the kitty encoder ignores it): the grid,
