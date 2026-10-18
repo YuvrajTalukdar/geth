@@ -93,11 +93,13 @@ set(GETH_SOURCES
   src/ui/app.cpp
   src/ui/config.cpp
   src/ui/frame.cpp
+  src/ui/glyphs.cpp
   src/ui/graph_backends.cpp
   src/ui/graph_data.cpp
   src/ui/graph_image.cpp
   src/ui/layout.cpp
   src/ui/panel_spec.cpp
+  src/ui/png.cpp
   src/ui/term_probe.cpp
   src/ui/theme.cpp
   src/util/alloc_count.cpp

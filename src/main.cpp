@@ -66,7 +66,9 @@ struct Options {
   unsigned long long warmup = 60;  // --render-frame: samples to collect
   bool render_frame = false;  // --render-frame COLSxROWS
   std::string render_size;    // "COLSxROWS"
-  std::string color_mode;     // "" = auto, else truecolor|256|16
+  bool render_png = false;     // --render-png COLSxROWS
+  std::string render_png_size; // "COLSxROWS" for --render-png
+  std::string color_mode;      // "" = auto, else truecolor|256|16
   int columns = 0;            // --columns N: pin the layout column count (0 = auto)
   bool layout_report = false;  // --layout-report COLSxROWS
   std::string layout_size;    // "COLSxROWS" for --layout-report
@@ -97,6 +99,9 @@ void print_help() {
       "      [--warmup <n>]  samples to collect first (default 60; no sleep in\n"
       "                      --demo, real interval otherwise)\n"
       "      [--ansi]        emit full SGR escape codes instead of plain text\n"
+      "  --render-png COLSxROWS     Render one frame to an 8-bit RGB PNG on\n"
+      "                             stdout (background + text glyphs + the pixel\n"
+      "                             rasters with --renderer pixels); always truecolor\n"
       "  --layout-report COLSxROWS  Print the layout decision (candidates, per-\n"
       "                             panel rects/modes) at that size and exit\n"
       "  --perf            Benchmark relayout + layout-cache reuse and exit\n"
@@ -185,6 +190,11 @@ int parse_args(int argc, char** argv, Options& o) {
       if (!v) return -1;
       o.render_frame = true;
       o.render_size = v;
+    } else if (a == "--render-png") {
+      const char* v = need_value("--render-png");
+      if (!v) return -1;
+      o.render_png = true;
+      o.render_png_size = v;
     } else if (a == "--color") {
       const char* v = need_value("--color");
       if (!v) return -1;
@@ -894,6 +904,29 @@ int main(int argc, char** argv) {
     u.theme = opts.theme;
     u.renderer = opts.renderer;
     return ui::run_render_frame(collector, hw, W, H, opts.warmup, u);
+  }
+
+  if (opts.render_png) {
+    int W = 0, H = 0;
+    if (!parse_size(opts.render_png_size, W, H)) {
+      std::fprintf(stderr, "geth: --render-png needs COLSxROWS, got '%s'\n",
+                   opts.render_png_size.c_str());
+      return 2;
+    }
+    ui::UiOptions u;
+    u.interval_ms = opts.interval_ms;
+    u.interval_explicit = opts.interval_explicit;
+    u.color_mode = opts.color_mode;
+    u.demo = opts.demo;
+    u.ansi = opts.ansi;
+    u.stats = opts.stats;
+    u.columns = opts.columns;
+    u.config_path = opts.config_path;
+    u.no_save = opts.no_save;
+    u.script = opts.script;
+    u.theme = opts.theme;
+    u.renderer = opts.renderer;
+    return ui::run_render_png(collector, hw, W, H, opts.warmup, u);
   }
 
   if (!opts.dump && !opts.json) {

@@ -1,5 +1,8 @@
 #include "ui/app.hpp"
 
+#include "ui/glyphs.hpp"
+#include "ui/png.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -15,6 +18,7 @@
 #include "ftxui/component/component.hpp"
 #include "ftxui/component/loop.hpp"
 #include "ftxui/component/screen_interactive.hpp"
+#include "ftxui/screen/terminal.hpp"
 
 #include "util/alloc_count.hpp"
 #include "util/stop.hpp"
@@ -314,8 +318,9 @@ ftxui::Element Dashboard::OnRender() {
   // resolved renderer is pixels (the pixel backend paints them over). The cell
   // size (from the probe) is what rasterizes each graph rect to pixels.
   chrome.pixels = _pixels_layer;
-  chrome.cell_w = _probe.cell_w;
-  chrome.cell_h = _probe.cell_h;
+  // --render-png injects the cell size (no probe there); otherwise the probe.
+  chrome.cell_w = _cell_w > 0 ? _cell_w : _probe.cell_w;
+  chrome.cell_h = _cell_h > 0 ? _cell_h : _probe.cell_h;
 
   ManagerOverlay mg;
   bool show_manager = false;
@@ -1346,6 +1351,208 @@ int run_render_frame(Collector& collector, const Hardware& hw_in, int W, int H,
   std::fflush(stdout);
 
   if (opts.stats) stats.print();
+  return 0;
+}
+
+// -- --render-png -------------------------------------------------------------
+
+namespace {
+
+// The xterm 256-color palette (16 system + 6x6x6 cube + 24 gray ramp), used
+// only if a cell foreground is not truecolor (defensive; --render-png forces
+// truecolor).
+void xterm256(int n, int& r, int& g, int& b) {
+  static const int base[16][3] = {
+      {0, 0, 0},      {205, 0, 0},    {0, 205, 0},     {205, 205, 0},
+      {0, 0, 238},     {205, 0, 205},  {0, 205, 205},   {229, 229, 229},
+      {127, 127, 127}, {255, 0, 0},    {0, 255, 0},     {255, 255, 0},
+      {92, 92, 255},   {255, 0, 255},  {0, 255, 255},   {255, 255, 255}};
+  if (n < 0) n = 0;
+  if (n > 255) n = 255;
+  if (n < 16) {
+    r = base[n][0]; g = base[n][1]; b = base[n][2];
+    return;
+  }
+  if (n < 232) {
+    n -= 16;
+    static const int v[6] = {0, 95, 135, 175, 215, 255};
+    r = v[n / 36]; g = v[(n / 6) % 6]; b = v[n % 6];
+    return;
+  }
+  const int x = 8 + (n - 232) * 10;
+  r = g = b = x;
+}
+
+// Resolve a cell foreground to concrete RGB. --render-png forces truecolor, so
+// a colored cell is TrueColor ("38;2;R;G;B"); the default/transparent color
+// maps to the default fg. 256/16 are handled defensively.
+void cell_fg(const ftxui::Color& c, int& r, int& g, int& b) {
+  const int def_r = 215, def_g = 220, def_b = 228;
+  const std::string s = c.Print(false);
+  if (s.empty() || s == "39") {
+    r = def_r; g = def_g; b = def_b;
+    return;
+  }
+  if (s.rfind("38;2;", 0) == 0) {
+    int rr = 0, gg = 0, bb = 0;
+    std::sscanf(s.c_str(), "38;2;%d;%d;%d", &rr, &gg, &bb);
+    r = rr; g = gg; b = bb;
+    return;
+  }
+  if (s.rfind("38;5;", 0) == 0) {
+    int n = 0;
+    std::sscanf(s.c_str() + 5, "%d", &n);
+    xterm256(n, r, g, b);
+    return;
+  }
+  if (s.size() == 2 && s[0] == '3' && s[1] >= '0' && s[1] <= '7') {
+    xterm256(s[1] - '0', r, g, b);
+    return;
+  }
+  if (s.size() == 2 && s[0] == '9' && s[1] >= '0' && s[1] <= '7') {
+    xterm256(8 + (s[1] - '0'), r, g, b);
+    return;
+  }
+  r = def_r; g = def_g; b = def_b;
+}
+
+// The first UTF-8 code point of a grapheme (32 for an empty cell).
+std::uint32_t utf8_first_cp(const std::string& s) {
+  if (s.empty()) return 32;
+  const unsigned char* p = (const unsigned char*)s.data();
+  if (p[0] < 0x80) return p[0];
+  int n;
+  std::uint32_t cp;
+  if ((p[0] & 0xE0) == 0xC0) { n = 2; cp = p[0] & 0x1F; }
+  else if ((p[0] & 0xF0) == 0xE0) { n = 3; cp = p[0] & 0x0F; }
+  else if ((p[0] & 0xF8) == 0xF0) { n = 4; cp = p[0] & 0x07; }
+  else return p[0];
+  const int limit = std::min(n, (int)s.size());
+  for (int i = 1; i < limit; ++i) cp = (cp << 6) | (p[i] & 0x3F);
+  return cp;
+}
+
+}  // namespace
+
+int run_render_png(Collector& collector, const Hardware& hw_in, int W, int H,
+                   unsigned long long warmup, const UiOptions& opts) {
+  if (W < 1 || H < 1) {
+    std::fprintf(stderr, "geth: --render-png size must be at least 1x1\n");
+    return 2;
+  }
+  // Force truecolor: --render-png reads each cell's exact foreground, so the
+  // colors must not be downgraded by the (absent) terminal's ColorSupport.
+  ftxui::Terminal::SetColorSupport(ftxui::Terminal::Color::TrueColor);
+  const ColorMode mode = ColorMode::TrueColor;
+
+  const std::string path =
+      opts.config_path.empty() ? Config::default_path() : opts.config_path;
+  Config cfg = Config::load(path, opts.no_save);
+  const bool solid_bg = (cfg.background == "solid");  // before the move
+  const Effective eff = effective_settings(opts, cfg);
+
+  std::vector<std::string> twarn;
+  int theme_idx = 0;
+  auto themes = resolve_themes(opts, cfg, theme_idx, twarn);
+
+  // Warmup (the same virtual-clock scheme as run_render_frame).
+  if (opts.demo) {
+    TimePoint vnow = collector.latest().time;
+    for (unsigned long long i = 0; i < warmup; ++i) {
+      vnow += std::chrono::milliseconds(eff.interval_ms);
+      collector.set_sample_time(vnow);
+      collector.sample();
+    }
+  } else {
+    for (unsigned long long i = 0; i < warmup; ++i) {
+      collector.sample();
+      if (i + 1 < warmup)
+        std::this_thread::sleep_for(std::chrono::milliseconds(eff.interval_ms));
+    }
+  }
+
+  FrameStats stats;
+  ftxui::Screen screen(W, H);
+  screen.Clear();
+  auto dash = ftxui::Make<Dashboard>(collector, hw_in, std::move(cfg),
+                                     std::move(themes), theme_idx, mode,
+                                     eff.interval_ms, /*count=*/0,
+                                     eff.window_idx, eff.columns, stats);
+  if (!twarn.empty()) dash->note_warning("theme: " + twarn.front());
+  collector.set_interval_ms(eff.interval_ms);
+  dash->set_size(W, H);
+  const bool pixels = (opts.renderer == "pixels");
+  dash->set_pixels_layer(pixels);
+  // Rasterize each graph at exactly the PNG's cell size (the embedded glyph
+  // metrics), so the rasters fill their cell rects.
+  dash->set_cell_px(kGlyphCw, kGlyphCh);
+
+  // --script: replay synthetic events (the final state is what's rendered).
+  if (!opts.script.empty()) {
+    std::size_t start = 0;
+    for (std::size_t i = 0; i <= opts.script.size(); ++i) {
+      if (i != opts.script.size() && opts.script[i] != ',') continue;
+      const std::string tok = opts.script.substr(start, i - start);
+      start = i + 1;
+      if (tok.empty()) continue;
+      ftxui::Event ev;
+      if (!parse_script_token(tok, ev)) {
+        std::fprintf(stderr, "geth: --script: unknown token '%s'\n",
+                     tok.c_str());
+        return 2;
+      }
+      dash->OnEvent(ev);
+    }
+  }
+
+  const ftxui::Element el = dash->OnRender();
+  ftxui::Render(screen, el);
+
+  // The text layer: per-cell code point + resolved foreground + bold.
+  std::vector<PngCell> cells((std::size_t)W * H);
+  for (int y = 0; y < H; ++y) {
+    for (int x = 0; x < W; ++x) {
+      const ftxui::Pixel& p = screen.PixelAt(x, y);
+      PngCell c;
+      c.cp = utf8_first_cp(p.character);
+      int r = 0, g = 0, b = 0;
+      cell_fg(p.foreground_color, r, g, b);
+      c.r = (std::uint8_t)r;
+      c.g = (std::uint8_t)g;
+      c.b = (std::uint8_t)b;
+      c.bold = p.bold;
+      cells[(std::size_t)y * W + x] = c;
+    }
+  }
+
+  // The pixel rasters (pixels mode only).
+  std::vector<PngImage> images;
+  if (pixels) {
+    for (const GraphImage& gi : dash->graph_images()) {
+      if (!gi.raster.valid()) continue;
+      images.push_back(PngImage{gi.x, gi.y, gi.raster.rgba.data(),
+                                gi.raster.w, gi.raster.h});
+    }
+  }
+
+  // Options: the accent and bg from the active theme, solid from the config.
+  PngOptions po;
+  const Theme& th = dash->theme();
+  po.solid = solid_bg;
+  po.bg_r = th.bg.r;
+  po.bg_g = th.bg.g;
+  po.bg_b = th.bg.b;
+  po.accent_r = th.accent.r;
+  po.accent_g = th.accent.g;
+  po.accent_b = th.accent.b;
+
+  std::string png;
+  if (!render_png(cells, W, H, images, po, png)) {
+    std::fprintf(stderr, "geth: --render-png: PNG encode failed\n");
+    return 1;
+  }
+  std::fwrite(png.data(), 1, png.size(), stdout);
+  std::fflush(stdout);
   return 0;
 }
 

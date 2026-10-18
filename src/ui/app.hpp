@@ -100,6 +100,9 @@ class Dashboard : public ftxui::ComponentBase {
   int page_index(const std::string& id) const;  // -1 when not on the page
   // Phase 5: the active theme's name (T cycles it, each cycle saves it).
   std::string theme_name() const;
+  // The active theme (the `T` cycle's current entry) — the PNG composer reads
+  // its accent/bg to composite the generated background.
+  const Theme& theme() const;
   // A startup warning shown as a toast (e.g. a broken custom-theme file).
   void note_warning(const std::string& msg);
 
@@ -117,6 +120,16 @@ class Dashboard : public ftxui::ComponentBase {
   // --render-frame has no probe: set the text layer's pixel flag directly
   // (the pixels text layer = graphs left as plain spaces).
   void set_pixels_layer(bool b) { _pixels_layer = b; }
+  // --render-png has no terminal probe: inject the cell pixel size directly so
+  // render_one rasterizes each graph rect at exactly the PNG's cell size.
+  void set_cell_px(int w, int h) {
+    _cell_w = w;
+    _cell_h = h;
+  }
+  // --render-png: the rasters recorded by the last render (pixels mode only).
+  const std::vector<GraphImage>& graph_images() const {
+    return _state.graph_images;
+  }
   const ProbeResult& probe_result() const { return _probe; }
   ImageProto renderer_proto() const { return _proto; }
   const std::string& renderer_intent() const { return _renderer_eff; }
@@ -172,9 +185,6 @@ class Dashboard : public ftxui::ComponentBase {
   void toast(const std::string& msg);
   int count_visible() const;
   std::string default_title(const std::string& id) const;
-
-  // The active theme (the `T` cycle's current entry).
-  const Theme& theme() const;
 
   // The manager overlay box at the current terminal size — the SAME math as
   // OverlayBox::make(W, H, 60, min(H-4, 30), 2) in frame.cpp, so a mouse
@@ -245,6 +255,9 @@ class Dashboard : public ftxui::ComponentBase {
   // What the TEXT layer draws: true = the resolved renderer is pixels, so
   // the graph rects are left plain spaces for the pixel backend.
   bool _pixels_layer = false;
+  // --render-png cell pixel size (0 = use the probe; the probe is 0 there, so
+  // no raster). OnRender prefers these over the probe when set.
+  int _cell_w = 0, _cell_h = 0;
   // The live placed images (one stable kitty id per visible panel, keyed by
   // panel id). round() emits one tick's byte stream; delete_all() feeds the
   // SIGHUP handler.
@@ -267,5 +280,11 @@ int run_ui(Collector& collector, const Hardware& hw, const UiOptions& opts);
 // full SGR escape codes with `ansi`.
 int run_render_frame(Collector& collector, const Hardware& hw, int W, int H,
                      unsigned long long warmup, const UiOptions& opts);
+
+// --render-png COLSxROWS: like run_render_frame, but composites the frame
+// (generated background + embedded text glyphs + the pixel rasters in pixels
+// mode) into an 8-bit RGB PNG written to stdout. Always truecolor.
+int run_render_png(Collector& collector, const Hardware& hw, int W, int H,
+                   unsigned long long warmup, const UiOptions& opts);
 
 }  // namespace geth::ui
