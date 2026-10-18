@@ -93,6 +93,7 @@ set(GETH_SOURCES
   src/ui/app.cpp
   src/ui/config.cpp
   src/ui/frame.cpp
+  src/ui/graph_data.cpp
   src/ui/layout.cpp
   src/ui/panel_spec.cpp
   src/ui/term_probe.cpp

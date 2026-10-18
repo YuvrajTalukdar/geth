@@ -1,4 +1,5 @@
 #include "ui/frame.hpp"
+#include "ui/graph_data.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -184,21 +185,6 @@ void put_px(ftxui::Screen& s, int x, int y, const std::string& utf8,
   // background_color is deliberately left Color::Default (transparency).
 }
 
-// Column count of a UTF-8 string (every glyph GETH emits is one cell wide).
-int utf8_cols(const std::string& s) {
-  int n = 0, i = 0;
-  while (i < (int)s.size()) {
-    const unsigned char c = s[i];
-    if (c < 0x80) i += 1;
-    else if ((c >> 5) == 6) i += 2;
-    else if ((c >> 4) == 14) i += 3;
-    else if ((c >> 3) == 30) i += 4;
-    else i += 1;  // invalid byte: treat as one cell
-    ++n;
-  }
-  return n;
-}
-
 // First `cols` code points of s.
 std::string utf8_cut(const std::string& s, int cols) {
   int n = 0, i = 0;
@@ -236,141 +222,6 @@ void put_str(ftxui::Screen& s, int x, int y, const std::string& utf8,
     put_px(s, x++, y, utf8.substr(i, len), fg, bold);
     i += len;
   }
-}
-
-// ---------------------------------------------------------------------------
-// series windows: fixed 60 s window, newest sample at the right edge
-// ---------------------------------------------------------------------------
-
-// In-window sample points (oldest -> newest) as a zero-copy view.
-struct RawWindow {
-  const int64_t* t = nullptr;
-  const float* v = nullptr;
-  std::size_t n = 0;
-  int64_t t_start = 0, t_end = 0;
-  double span_ns = 0;
-  bool valid() const { return t && v && n > 0 && t_start < t_end; }
-};
-
-// Fill `t`/`v` (and point `w` at them) with one series' in-window points
-// from the live store. The window is the newest `window_ns` of history
-// (the graph time window: 30 s .. 10 m, cycled with t); the ring holds a
-// full hour, so every window is a slice of it.
-void load_live(RawWindow& w, std::vector<int64_t>& t, std::vector<float>& v,
-               const SeriesStore& store, const SeriesId& id, int64_t window_ns) {
-  w = RawWindow{};
-  t.clear();
-  v.clear();
-  const RingBuffer<float>* vals = store.values(id);
-  const RingBuffer<int64_t>* times = store.times();
-  if (!vals || !times) return;
-  const std::size_t n = times->size();
-  if (n == 0 || vals->size() != n) return;
-  const int64_t t_end = times->at(n - 1);
-  const int64_t span = std::min<int64_t>(window_ns, t_end - times->at(0));
-  if (span <= 0) return;
-  const int64_t t_start = t_end - span;
-  t.reserve(n);
-  v.reserve(n);
-  for (std::size_t i = 0; i < n; ++i) {
-    const int64_t ti = times->at(i);
-    if (ti < t_start) continue;
-    t.push_back(ti);
-    v.push_back(vals->at(i));
-  }
-  w.t = t.data();
-  w.v = v.data();
-  w.n = t.size();
-  w.t_start = t_start;
-  w.t_end = t_end;
-  w.span_ns = static_cast<double>(span);
-}
-
-// One point per dot column (plus the ends): enough for line interpolation at
-// any width without iterating every sample of the 60 s window.
-struct Decimated {
-  std::vector<int64_t> t;
-  std::vector<float> v;
-};
-
-Decimated decimate(const RawWindow& w, int dot_cols) {
-  Decimated d;
-  if (!w.valid() || dot_cols < 1) return d;
-  auto col = [&](int64_t ti) -> int {
-    return static_cast<int>(static_cast<double>(ti - w.t_start) / w.span_ns *
-                            (dot_cols - 1));
-  };
-  d.t.reserve(w.n);
-  d.v.reserve(w.n);
-  int prev = -1;
-  for (std::size_t i = 0; i < w.n; ++i) {
-    const int c = col(w.t[i]);
-    if (i == w.n - 1 || c != prev) {
-      d.t.push_back(w.t[i]);
-      d.v.push_back(w.v[i]);
-      prev = c;
-    }
-  }
-  return d;
-}
-
-// The value of a series at time `t` (ns), or NaN when it falls in a gap.
-// Linear interpolation between the decimated samples keeps the line
-// continuous at any width.
-double value_at(const Decimated& d, double t) {
-  const std::size_t n = d.t.size();
-  if (n == 0) return std::nan("");
-  if (n == 1) return std::abs(t - (double)d.t[0]) < 1e3 ? d.v[0] : std::nan("");
-  std::size_t p = 0;
-  while (p + 1 < n && t >= (double)d.t[p + 1]) ++p;
-  if (p + 1 >= n)
-    return std::abs(t - (double)d.t[n - 1]) < 1e3 ? d.v[n - 1] : std::nan("");
-  const double t0 = d.t[p], t1 = d.t[p + 1];
-  if (!std::isfinite(d.v[p]) || !std::isfinite(d.v[p + 1])) return std::nan("");
-  if (t1 <= t0) return d.v[p + 1];
-  const double f = (t - t0) / (t1 - t0);
-  return d.v[p] + f * (d.v[p + 1] - d.v[p]);
-}
-
-// ---------------------------------------------------------------------------
-// scales (nice_watts / nice_bytes / update_auto_scale / panel_y_max are the
-// exported versions above the anonymous namespace)
-// ---------------------------------------------------------------------------
-
-double visible_max(const std::vector<RawWindow>& raws) {
-  double m = 0;
-  for (const RawWindow& w : raws)
-    for (std::size_t i = 0; i < w.n; ++i)
-      if (std::isfinite(w.v[i]) && w.v[i] > m) m = w.v[i];
-  return m;
-}
-
-// Compact tick labels: no trailing zeros, a space before the unit, °C for
-// temperature — "100 %", "75 %", "0 %", "100 °C", "32 GiB", "30 W", "5 MiB/s".
-// The legend keeps the full-precision formatters (format::bytes/watts/...).
-std::string tick_label(ScaleSpec::Kind k, double f, double vmax) {
-  switch (k) {
-    case ScaleSpec::Kind::kPercent: return format::compact_percent(f * vmax);
-    case ScaleSpec::Kind::kTemperature: return format::compact_celsius(f * vmax);
-    case ScaleSpec::Kind::kAbsolute: return format::compact_bytes(f * vmax);
-    case ScaleSpec::Kind::kWatts: return format::compact_watts(f * vmax);
-    case ScaleSpec::Kind::kBytesPerSec: return format::compact_rate(f * vmax);
-  }
-  return "0";
-}
-
-// Abbreviated tick labels for narrow panels (inner width < 60, any mode):
-// single-letter units, no spaces — "100%", "100°", "24G", "20W", "1.5M/s".
-// The layout engine budgets the axis with the SAME rule (uses_abbrev_labels).
-std::string abbrev_tick_label(ScaleSpec::Kind k, double f, double vmax) {
-  switch (k) {
-    case ScaleSpec::Kind::kPercent: return format::abbrev_percent(f * vmax);
-    case ScaleSpec::Kind::kTemperature: return format::abbrev_celsius(f * vmax);
-    case ScaleSpec::Kind::kAbsolute: return format::abbrev_bytes(f * vmax);
-    case ScaleSpec::Kind::kWatts: return format::abbrev_watts(f * vmax);
-    case ScaleSpec::Kind::kBytesPerSec: return format::abbrev_rate(f * vmax);
-  }
-  return "0";
 }
 
 // ---------------------------------------------------------------------------
@@ -709,7 +560,6 @@ void draw_panel(ftxui::Screen& s, int x0, int y0, int W, int H, const PanelSpec&
   // Full: the panel title. Compact/Tight: the title plus the key values (the
   // values live in the border, so no separate legend row by default).
   const bool full = (mode == PanelMode::kFull);
-  const bool tight = (mode == PanelMode::kTight);
   std::string title = full ? p.title : compact_title(p, legend_values, snap);
   const std::string suffix = sleeping ? " \xC2\xB7 sleeping" : "";
   title = truncate(title, std::max(0, W - 8 - utf8_cols(suffix)));
@@ -725,68 +575,26 @@ void draw_panel(ftxui::Screen& s, int x0, int y0, int W, int H, const PanelSpec&
   }
 
   // --- interior geometry --------------------------------------------------------
-  const int ix0 = x0 + 1, iy0 = y0 + 1, iw = W - 2, ih = H - 2;
+  // Shared with the pixel image placement (graph_data::compute_graph_geom):
+  // the legend/info rows, the graph rect (gx,gy,Wg,Hg), the ticks and the
+  // dot columns — one computation, used by both renderers.
+  const GraphGeom g = compute_graph_geom(x0, y0, W, H, mode, p,
+                                         title_truncated, vmax);
+  const int ix0 = g.ix0, iy0 = g.iy0, iw = g.iw, ih = g.ih;
   if (iw < 3 || ih < 1) return;
-
-  int n_legend = 0;
-  std::vector<int> legend_idx;  // series indices that appear in the legend
-  for (std::size_t i = 0; i < p.series.size(); ++i)
-    if (p.series[i].in_legend && !p.series[i].hidden) {
-      legend_idx.push_back((int)i);
-      ++n_legend;
-    }
-  const int ipr = legend_cols(iw);  // 3 at >=96, 2 at >=56, else 1
-  // Full: legend rows + info rows, the graph takes what is left. Compact: the
-  // graph takes the WHOLE interior (spare height goes to the graph); a
-  // one-line legend is drawn only when the border title truncated with "…"
-  // and a spare row exists, so the values are not lost. Tight: whole interior
-  // for the graph, no legend at all.
-  int legend_rows = full ? (n_legend + ipr - 1) / ipr : 0;
-  const int info_n = full ? static_cast<int>(p.info_rows.size()) : 0;
-  int Hg = ih - legend_rows - info_n;
-  if (!full && !tight && title_truncated && n_legend > 0 && Hg > 3) {
-    ++legend_rows;  // spend one spare row on the legend (graph min is 3)
-    --Hg;
-  }
-  // Minimum graph height per mode (the layout engine guarantees it):
-  // Full 4, Compact 3, Tight 2.
-  const int hg_min = full ? 4 : (tight ? 2 : 3);
-  if (Hg < hg_min) Hg = 0;  // not enough room: legend only, never overflow
-
-  // Tick fractions (top -> bottom): Tight shows only the top and bottom
-  // label; Full/Compact show 0/25/50/75/100, or 3 when short.
-  std::vector<double> fracs;
-  if (tight)
-    fracs = {1.0, 0.0};
-  else if (Hg >= 6)
-    fracs = {1.0, 0.75, 0.5, 0.25, 0.0};
-  else if (Hg >= 3)
-    fracs = {1.0, 0.5, 0.0};
-
-  // Narrow panels (inner width < 60) use the abbreviated axis form in EVERY
-  // mode — the same rule the layout engine sizes the axis with
-  // (layout.hpp: uses_abbrev_labels), so the two can never disagree.
-  const bool abbrev = uses_abbrev_labels(iw);
-  int L = 0;
-  std::vector<std::string> ticks;
-  for (double f : fracs) {
-    const std::string lab =
-        abbrev ? abbrev_tick_label(p.y_scale.kind, f, vmax)
-               : tick_label(p.y_scale.kind, f, vmax);
-    ticks.push_back(lab);
-    L = std::max(L, utf8_cols(lab));
-  }
-  const bool have_graph = Hg >= hg_min && iw - L - 2 >= 2 && vmax > 0;
-  const int Wg = iw - L - 2;  // label column + " ┤"
-  const int gx = ix0 + L + 2;
-  const int gy = iy0;
+  const int legend_rows = g.legend_rows, ipr = g.ipr;
+  const std::vector<int>& legend_idx = g.legend_idx;
+  const int Hg = g.Hg, Wg = g.Wg, gx = g.gx, gy = g.gy;
+  const std::vector<double>& fracs = g.fracs;
+  const std::vector<std::string>& ticks = g.ticks;
+  const bool have_graph = g.have_graph;
+  const int dot_cols = g.dot_cols;
 
   // --- graph + grid (braille or blocks) -------------------------------------------
   // Both styles share the 2-columns-per-character horizontal resolution, so
   // the decimation width is the same for both.
   std::vector<Cell> cells;
   if (have_graph) {
-    const int dot_cols = 2 * Wg;
     std::vector<Decimated> decs(p.series.size());
     std::vector<GraphSeries> gs(p.series.size());
     for (std::size_t i = 0; i < p.series.size(); ++i) {
@@ -807,7 +615,7 @@ void draw_panel(ftxui::Screen& s, int x0, int y0, int W, int H, const PanelSpec&
       }
     // Gridlines: dim dotted "┈" at each tick row, only in cells with no data.
     for (std::size_t i = 0; i < fracs.size(); ++i) {
-      const int ry = static_cast<int>(std::lround((1.0 - fracs[i]) * (Hg - 1)));
+      const int ry = g.tick_row(i);
       for (int cc = 0; cc < Wg; ++cc)
         if (!cells[static_cast<std::size_t>(ry) * Wg + cc].mask)
           put_px(s, gx + cc, gy + ry, "┈", c.grid);
@@ -818,12 +626,14 @@ void draw_panel(ftxui::Screen& s, int x0, int y0, int W, int H, const PanelSpec&
   //     column is grid-color "│", tick rows carry the right-aligned label and
   //     a border-color "┤" ("label ┤"), non-tick rows a blank label.
   if (have_graph) {
-    for (int ry = 0; ry < Hg; ++ry) put_px(s, ix0 + L + 1, iy0 + ry, "│", c.grid);
+    for (int ry = 0; ry < Hg; ++ry)
+      put_px(s, ix0 + g.label_w + 1, iy0 + ry, "│", c.grid);
     for (std::size_t i = 0; i < fracs.size(); ++i) {
-      const int ry = static_cast<int>(std::lround((1.0 - fracs[i]) * (Hg - 1)));
+      const int ry = g.tick_row(i);
       const std::string& lab = ticks[i];
-      put_str(s, ix0 + (L - utf8_cols(lab)), iy0 + ry, lab, c.axis_text);
-      put_px(s, ix0 + L + 1, iy0 + ry, "┤", c.border);
+      put_str(s, ix0 + (g.label_w - utf8_cols(lab)), iy0 + ry, lab,
+              c.axis_text);
+      put_px(s, ix0 + g.label_w + 1, iy0 + ry, "┤", c.border);
     }
   }
 
