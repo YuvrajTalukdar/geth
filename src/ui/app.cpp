@@ -309,10 +309,9 @@ ftxui::Element Dashboard::OnRender() {
   chrome.toast_until = _toast_until;
   chrome.title_override = _cfg.title;
   chrome.solid_bg = (_cfg.background == "solid");
-  // The blocks style was retired with graph_renderer (v1.1.0); braille is
-  // the text renderer's line style for now (the pixel renderer takes over
-  // the graph interior when _proto != kNone).
-  chrome.graph_style = GraphStyle::kBraille;
+  // v1.1.0: the text layer leaves the graph rects as plain spaces when the
+  // resolved renderer is pixels (the pixel backend paints them over).
+  chrome.pixels = _pixels_layer;
 
   ManagerOverlay mg;
   bool show_manager = false;
@@ -555,6 +554,8 @@ void Dashboard::cycle_graph_renderer() {
   save_now();
   std::string w;
   const ImageProto p = resolve_protocol(next, _probe, &w);
+  _proto = p;                       // the new choice IS the resolution now
+  _pixels_layer = (p != ImageProto::kNone);
   if (next == "pixels" && p == ImageProto::kNone)
     toast("no image protocol in this terminal — staying on text");
   else
@@ -1211,6 +1212,10 @@ int run_render_frame(Collector& collector, const Hardware& hw_in, int W, int H,
   if (!twarn.empty()) dash->note_warning("theme: " + twarn.front());
   collector.set_interval_ms(eff.interval_ms);
   dash->set_size(W, H);
+  // --render-frame never probes a terminal: with --renderer pixels the text
+  // layer still renders the pixels form (graphs left as plain spaces), so
+  // the text layer of both renderers is capturable.
+  dash->set_pixels_layer(opts.renderer == "pixels");
 
   // --script: replay synthetic events against the live Dashboard, then render
   // the result. The final state is what gets printed.

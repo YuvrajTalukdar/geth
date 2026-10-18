@@ -22,13 +22,8 @@ struct SeriesSpec {
   SeriesId id;          // must exist in the SeriesStore
   std::string label;    // legend label
   int color_index = 0;  // index into Theme::series[6]
-  // Filled area under the line. Rule (Phase 6, Part B): single-series panels
-  // fill their one series; a two-series panel fills only its PRIMARY (the
-  // first entry); panels with three or more series (Temperature, Power) fill
-  // nothing. Lines are always drawn over fills; the primary is drawn last.
-  bool fill = false;
-  // Phase 4: hidden by the user (config `hidden_series`). No line, no fill,
-  // no legend entry. Info rows are independent of series visibility.
+  // Phase 4: hidden by the user (config `hidden_series`). No line, no legend
+  // entry. Info rows are independent of series visibility.
   bool hidden = false;
   // False for the CPU / GPU-usage series: their value is already shown by a
   // color-barred info row (the KDE look the mock specifies), so a separate

@@ -182,6 +182,83 @@ TEST_CASE("round-trip: an empty title serializes to \"\" and a gpus auto is kept
   CHECK_FALSE(r.gpus.at("0000:07:00.0").integrated.has_value());  // back to auto
 }
 
+TEST_CASE("graph_renderer: auto/pixels/text round-trip; invalid values warn") {
+  for (const char* r : {"auto", "pixels", "text"}) {
+    ui::Config c;
+    c.graph_renderer = r;
+    const std::string path = tmp_path(std::string("renderer_") + r + ".toml");
+    write_file(path, c.serialize());
+    const ui::Config l = ui::Config::load(path, /*no_save=*/false);
+    CHECK(l.loaded);
+    CHECK(l.warnings.empty());
+    CHECK_EQ(l.graph_renderer, r);
+  }
+  // An invalid value keeps the current setting (the default "auto") + warns.
+  const std::string path2 = tmp_path("renderer_bad.toml");
+  write_file(path2,
+             "[general]\n"
+             "interval_ms = 500\n"
+             "graph_renderer = \"dots\"\n");
+  const ui::Config b = ui::Config::load(path2, false);
+  CHECK(b.loaded);
+  CHECK_EQ(b.interval_ms, 500);
+  CHECK_EQ(b.graph_renderer, "auto");
+  CHECK(warned(b.warnings, "general.graph_renderer"));
+  // A non-string value warns too.
+  const std::string path3 = tmp_path("renderer_nons.toml");
+  write_file(path3, "[general]\ngraph_renderer = 42\n");
+  const ui::Config n = ui::Config::load(path3, false);
+  CHECK(n.loaded);
+  CHECK_EQ(n.graph_renderer, "auto");
+  CHECK(warned(n.warnings, "general.graph_renderer"));
+}
+
+TEST_CASE("graph_style: the retired key loads clean, is ignored, dropped on save") {
+  // A v1.0.3 file with graph_style = "braille" loads WITHOUT warnings (the
+  // UI shows one toast instead, via had_graph_style) and keeps its other
+  // settings; graph_renderer stays at its own value (the default "auto").
+  const std::string path = tmp_path("migrate_braille.toml");
+  write_file(path,
+             "[general]\n"
+             "interval_ms = 500\n"
+             "window = \"2m\"\n"
+             "graph_style = \"braille\"\n");
+  ui::Config c = ui::Config::load(path, false);
+  CHECK(c.loaded);
+  CHECK(c.warnings.empty());
+  CHECK(c.had_graph_style);
+  CHECK_EQ(c.interval_ms, 500);
+  CHECK_EQ(c.window_ns, 120000000000LL);
+  CHECK_EQ(c.graph_renderer, "auto");
+  // The next save DROPS the key (graph_renderer is written instead).
+  c.sync_panels({}, {});
+  CHECK(c.save());
+  const std::string out = read_file(path);
+  CHECK(out.find("graph_style") == std::string::npos);
+  CHECK(out.find("graph_renderer") != std::string::npos);
+  // And the rewritten file loads back clean, without the flag.
+  const ui::Config r = ui::Config::load(path, false);
+  CHECK(r.loaded);
+  CHECK(r.warnings.empty());
+  CHECK_FALSE(r.had_graph_style);
+  CHECK_EQ(r.interval_ms, 500);
+
+  // "blocks" is the other recognized retired value...
+  const std::string p2 = tmp_path("migrate_blocks.toml");
+  write_file(p2, "[general]\ngraph_style = \"blocks\"\n");
+  const ui::Config cb = ui::Config::load(p2, false);
+  CHECK(cb.loaded);
+  CHECK(cb.had_graph_style);
+  CHECK(cb.warnings.empty());
+  // ...while an unrecognized value warns (a typo is not a known style).
+  const std::string p3 = tmp_path("migrate_bad.toml");
+  write_file(p3, "[general]\ngraph_style = \"dots\"\n");
+  const ui::Config cd = ui::Config::load(p3, false);
+  CHECK(cd.loaded);
+  CHECK_FALSE(cd.had_graph_style);
+  CHECK(warned(cd.warnings, "general.graph_style"));
+}
+
 TEST_CASE("unknown keys warn (never error) and are ignored") {
   const std::string path = tmp_path("unknown.toml");
   write_file(path,

@@ -32,40 +32,6 @@ std::string braille_char(std::uint8_t mask) {
                       static_cast<char>(0x80 | (mask & 0x3F))});
 }
 
-bool parse_graph_style(const std::string& s, GraphStyle& out) {
-  std::string t;
-  t.reserve(s.size());
-  for (char ch : s) t += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-  if (t == "braille") out = GraphStyle::kBraille;
-  else if (t == "blocks") out = GraphStyle::kBlocks;
-  else return false;
-  return true;
-}
-
-// The 2x2 sub-cell glyphs (Phase 6, Part B): quadrant blocks for the
-// singles/triples (Unicode names in the comments), the half/full blocks for
-// the pairs. Mask bits: TL=1, TR=2, BL=4, BR=8.
-std::string blocks_char(std::uint8_t mask) {
-  switch (mask) {
-    case 0: return " ";
-    case 1: return "\xE2\x96\x98";  // ▘ quadrant upper left
-    case 2: return "\xE2\x96\x9D";  // ▝ quadrant upper right
-    case 3: return "\xE2\x96\x80";  // ▀ upper half
-    case 4: return "\xE2\x96\x96";  // ▖ quadrant lower left
-    case 5: return "\xE2\x96\x8C";  // ▌ left half
-    case 6: return "\xE2\x96\x9E";  // ▞ quadrant upper right + lower left
-    case 7: return "\xE2\x96\x9B";  // ▛ UL+UR+LL
-    case 8: return "\xE2\x96\x97";  // ▗ quadrant lower right
-    case 9: return "\xE2\x96\x9A";  // ▚ quadrant upper left + lower right
-    case 10: return "\xE2\x96\x90";  // ▐ right half
-    case 11: return "\xE2\x96\x9C";  // ▜ UL+UR+LR (all but lower-left)
-    case 12: return "\xE2\x96\x84";  // ▄ lower half
-    case 13: return "\xE2\x96\x99";  // ▙ UL+LL+LR (all but upper-right)
-    case 14: return "\xE2\x96\x9F";  // ▟ UR+LL+LR (all but upper-left)
-    default: return "\xE2\x96\x88";  // █ full
-  }
-}
-
 // ---------------------------------------------------------------------------
 // y-axis scales (exported for the unit tests)
 // ---------------------------------------------------------------------------
@@ -228,19 +194,21 @@ void put_str(ftxui::Screen& s, int x, int y, const std::string& utf8,
 // braille graph (braille_bit / braille_char are the exported versions above)
 // ---------------------------------------------------------------------------
 
+// One character cell of the graph rect. `mask` is the OR of the braille dots
+// of every series that landed in it (several series may share a cell);
+// `color` belongs to the LAST writer (draw order: series 1..n-1, then the
+// primary). In the area chart, `glyph` holds the exact glyph to draw (▁..█);
+// in braille mode it stays empty. `order == -1` = no data in the cell.
 struct Cell {
   std::uint8_t mask = 0;
-  int order = -1;   // draw order of the last writer (-1 = empty)
-  int prio = -1;    // winning sub-cell's kind: 0 = fill, 1 = line (line wins)
-  int top_row = 99; // winning sub-cell's row within its character
+  std::string glyph;  // area chart: exact glyph ("" = braille mask)
+  int order = -1;     // draw order of the last writer (-1 = empty)
   ftxui::Color color;
 };
 
 struct GraphSeries {
   const Decimated* d;
   ftxui::Color line;
-  ftxui::Color fill;
-  bool filled;
 };
 
 // Bresenham in dot space: plots every dot from (x0,y0) to (x1,y1) EXCEPT the
@@ -267,55 +235,26 @@ void bresenham_dots(int x0, int y0, int x1, int y1, F plot) {
   }
 }
 
-// Fill `cells` (Wg x Hg) from all series. When two series share a cell the
-// one drawn LAST wins — series 1..n-1 are drawn in order and the PRIMARY
-// (series 0, the CPU / first entry) is drawn last, so it sits on top in a
-// shared cell. Within one series the LINE sub-cell (prio 1) beats its own
-// fill sub-cell (prio 0) when they land in the same character — the line is
-// always drawn in the full series color, the fill in the derived fill color.
-//
-// Two sub-cell grids share the code:
-//   braille: 2x4 dots per character, the line is TWO dots tall (the sample
-//            dot + the dot directly above it), so a slope is a solid 2-high
-//            band with no gaps in dot space.
-//   blocks:  2x2 sub-cells per character (half the vertical resolution),
-//            the line is ONE sub-cell thick — solid, no inter-glyph gap.
+// Fill `cells` (Wg x Hg) with ONE-dot-thick braille lines, Bresenham-
+// continuous in dot space (multi-series panels). When two series share a
+// cell the one drawn LAST wins — series 1..n-1 are drawn in order and the
+// PRIMARY (series 0, the first entry) is drawn last, so it sits on top in a
+// shared cell. Text mode draws no fill: single-series panels use the area
+// chart below, and the pixel renderer carries the fill otherwise.
 void draw_graph_cells(std::vector<Cell>& cells, int Wg, int Hg,
                       const std::vector<GraphSeries>& gs,
-                      const std::vector<RawWindow>& raws, double vmax,
-                      GraphStyle style) {
-  const int cell_rows = (style == GraphStyle::kBraille) ? 4 : 2;  // per char
-  const int thick = (style == GraphStyle::kBraille) ? 2 : 1;  // line height
+                      const std::vector<RawWindow>& raws, double vmax) {
   const int dot_cols = 2 * Wg;
-  const int dot_rows = cell_rows * Hg;
+  const int dot_rows = 4 * Hg;
   if (dot_cols < 2 || dot_rows < 2 || vmax <= 0) return;
 
-  // The mask bit of sub-cell (xc, yd): braille uses its 8-dot layout, blocks
-  // a plain 2x2 (TL=1, TR=2, BL=4, BR=8).
-  auto bit_of = [&](int xc, int yd) -> unsigned {
-    if (style == GraphStyle::kBraille) return 1u << braille_bit(xc % 2, yd % 4);
-    return (1u << (xc % 2)) * (1u << (2 * (yd % 2)));
-  };
-
-  auto set_dot = [&](int xc, int yd, int order, const ftxui::Color& c, int prio) {
-    Cell& cell = cells[static_cast<std::size_t>(yd / cell_rows) * Wg + (xc / 2)];
-    const bool later = cell.order < 0 || order > cell.order;
-    const bool higher = order == cell.order &&
-                        (prio > cell.prio ||
-                         (prio == cell.prio && yd % cell_rows < cell.top_row));
-    if (later || higher) {
+  auto set_dot = [&](int xc, int yd, int order, const ftxui::Color& c) {
+    Cell& cell = cells[static_cast<std::size_t>(yd / 4) * Wg + (xc / 2)];
+    if (order > cell.order) {
       cell.color = c;
-      cell.prio = prio;
-      cell.top_row = yd % cell_rows;
+      cell.order = order;
     }
-    cell.order = std::max(cell.order, order);
-    cell.mask = static_cast<std::uint8_t>(cell.mask | bit_of(xc, yd));
-  };
-
-  // The line, thickened upward: the sample sub-cell plus the one directly
-  // above it (braille) — nothing above for a 1-thick blocks line.
-  auto set_line = [&](int xc, int yd, int order, const ftxui::Color& c) {
-    for (int k = 0; k < thick && yd - k >= 0; ++k) set_dot(xc, yd - k, order, c, 1);
+    cell.mask = static_cast<std::uint8_t>(cell.mask | (1u << braille_bit(xc % 2, yd % 4)));
   };
 
   // Draw order: the primary (series 0) last so it wins shared cells.
@@ -343,18 +282,57 @@ void draw_graph_cells(std::vector<Cell>& cells, int Wg, int Hg,
         const double clamped = std::clamp(v, 0.0, vmax);
         int y = static_cast<int>(std::lround((1.0 - clamped / vmax) * (dot_rows - 1)));
         y = std::clamp(y, 0, dot_rows - 1);
-        if (g.filled)
-          for (int y2 = y; y2 < dot_rows; ++y2) set_dot(xc, y2, order, g.fill, 0);
         // Continuous connection to the previous column (its start dot was
         // already drawn, so Bresenham plots only the new dots).
         if (have_prev && prev_x == xc - 1)
           bresenham_dots(prev_x, prev_y, xc, y,
-                         [&](int bx, int by) { set_line(bx, by, order, g.line); });
-        set_line(xc, y, order, g.line);
+                         [&](int bx, int by) { set_dot(bx, by, order, g.line); });
+        set_dot(xc, y, order, g.line);
         have_prev = true;
         prev_x = xc;
         prev_y = y;
       }
+    }
+  }
+}
+
+// The area chart's top cell, per eighth of a cell: U+2581..U+2588 (▁..█);
+// index 0 = no ink in the column.
+static const char* const kEighths[9] = {
+    " ", "\xE2\x96\x81", "\xE2\x96\x82", "\xE2\x96\x83", "\xE2\x96\x84",
+    "\xE2\x96\x85", "\xE2\x96\x86", "\xE2\x96\x87", "\xE2\x96\x88"};
+
+// The single-series panel: a solid AREA chart (the KDE look in text form).
+// For every character column the series value (interpolated at the column's
+// time) sets a fill height in EIGHTHS of a cell: the bottom h8/8 cells are
+// full blocks, the next cell the matching eighth glyph. Each column carries
+// its own vertical gradient — the bottom row is the series color scaled to
+// 0.45, the column's top row the full color; fill_color keeps the shade in
+// the series' hue family in 256/16 modes. NaN breaks the column (never a
+// 0-floor).
+void draw_area_cells(std::vector<Cell>& cells, int Wg, int Hg,
+                     const Decimated& d, const RawWindow& w, double vmax,
+                     const Rgb& series, ColorMode mode) {
+  if (Wg < 1 || Hg < 1 || vmax <= 0) return;
+  for (int cc = 0; cc < Wg; ++cc) {
+    const double t =
+        w.t_start + w.span_ns * (Wg > 1 ? cc / (double)(Wg - 1) : 1.0);
+    const double v = value_at(d, t);
+    if (!std::isfinite(v)) continue;  // gap: the column stays empty
+    const double clamped = std::clamp(v, 0.0, vmax);
+    int h8 = static_cast<int>(std::lround(clamped / vmax * Hg * 8.0));
+    h8 = std::clamp(h8, 0, Hg * 8);
+    const int full = h8 / 8;           // full cells, counted from the bottom
+    const int eighth = h8 % 8;         // the partial cell above them
+    const int top_b = full + (eighth > 0 ? 1 : 0) - 1;  // top row, bottom-index
+    for (int b = 0; b <= top_b; ++b) {
+      const int cy = Hg - 1 - b;  // character row (0 = top)
+      Cell& cell = cells[static_cast<std::size_t>(cy) * Wg + cc];
+      const double f = (top_b > 0) ? 0.45 + 0.55 * b / (double)top_b : 1.0;
+      cell.glyph = (b == top_b && eighth > 0) ? kEighths[eighth] : "\xE2\x96\x88";
+      cell.color = fill_color(series, mode, f);
+      cell.order = 0;
+      cell.mask = 0;
     }
   }
 }
@@ -366,9 +344,12 @@ void draw_graph_cells(std::vector<Cell>& cells, int Wg, int Hg,
 struct Colors {
   ftxui::Color accent, title, text, label_dim, border, grid, axis_text, warn;
   ftxui::Color series[6];
-  ftxui::Color fill[6];
   // Phase 5: the theme's background, painted only in solid mode.
   ftxui::Color bg;
+  // The theme's raw series colors and the draw mode: the area chart's
+  // per-column gradient scales these (fill_color keeps the hue family).
+  Rgb series_raw[6];
+  ColorMode mode;
 };
 
 Colors build_colors(const Theme& th, ColorMode m) {
@@ -386,13 +367,12 @@ Colors build_colors(const Theme& th, ColorMode m) {
   // series share a slot); 256/truecolor use the plain nearest color.
   std::uint8_t slots16[6];
   if (m == ColorMode::Color16) series16_slots(th.series, slots16);
+  c.mode = m;
   for (int i = 0; i < 6; ++i) {
     c.series[i] = (m == ColorMode::Color16)
                       ? ftxui::Color(ftxui::Color::Palette16(slots16[i]))
                       : to_ftxui(th.series[i], m);
-    // fill_color keeps the fill in the series' hue family when the terminal
-    // only has 256/16 colors (see theme.cpp).
-    c.fill[i] = fill_color(th.series[i], m, th.fill_mix);
+    c.series_raw[i] = th.series[i];
   }
   return c;
 }
@@ -538,7 +518,7 @@ void draw_panel(ftxui::Screen& s, int x0, int y0, int W, int H, const PanelSpec&
                 PanelMode mode, bool sleeping, const std::vector<RawWindow>& raws,
                 const std::vector<std::string>& legend_values,
                 const Snapshot& snap, double vmax, const Colors& c,
-                GraphStyle style, bool focused = false) {
+                bool pixels, bool focused = false) {
   if (W < 4 || H < 2) return;
 
   // --- rounded border + title --------------------------------------------------
@@ -590,34 +570,52 @@ void draw_panel(ftxui::Screen& s, int x0, int y0, int W, int H, const PanelSpec&
   const bool have_graph = g.have_graph;
   const int dot_cols = g.dot_cols;
 
-  // --- graph + grid (braille or blocks) -------------------------------------------
-  // Both styles share the 2-columns-per-character horizontal resolution, so
-  // the decimation width is the same for both.
-  std::vector<Cell> cells;
-  if (have_graph) {
+  // --- graph + grid ----------------------------------------------------------------
+  // Text mode only: in pixel mode the backend draws the graph image at exactly
+  // this rect one round later, so the text layer leaves it plain spaces
+  // (the y axis, titles and legends stay text — the image sits beside them).
+  if (have_graph && !pixels) {
+    // Series that will actually draw (hidden series get no data): ONE -> the
+    // area chart, SEVERAL -> one-dot braille lines with no fill.
+    int visible = 0;
+    for (const auto& sr : p.series)
+      if (!sr.hidden) ++visible;
+
     std::vector<Decimated> decs(p.series.size());
-    std::vector<GraphSeries> gs(p.series.size());
-    for (std::size_t i = 0; i < p.series.size(); ++i) {
-      decs[i] = decimate(raws[i], dot_cols);
-      const int ci = p.series[i].color_index;
-      gs[i] = GraphSeries{&decs[i], c.series[ci], c.fill[ci], p.series[i].fill};
+    for (std::size_t i = 0; i < p.series.size(); ++i)
+      if (!p.series[i].hidden) decs[i] = decimate(raws[i], dot_cols);
+
+    std::vector<Cell> cells(static_cast<std::size_t>(Wg) * Hg);
+    if (visible == 1) {
+      for (std::size_t i = 0; i < p.series.size(); ++i) {
+        if (p.series[i].hidden || !raws[i].valid()) continue;
+        draw_area_cells(cells, Wg, Hg, decs[i], raws[i], vmax,
+                        c.series_raw[p.series[i].color_index], c.mode);
+        break;
+      }
+    } else {
+      std::vector<GraphSeries> gs(p.series.size());
+      for (std::size_t i = 0; i < p.series.size(); ++i) {
+        if (p.series[i].hidden) continue;
+        const int ci = p.series[i].color_index;
+        gs[i] = GraphSeries{&decs[i], c.series[ci]};
+      }
+      draw_graph_cells(cells, Wg, Hg, gs, raws, vmax);
     }
-    cells.resize(static_cast<std::size_t>(Wg) * Hg);
-    draw_graph_cells(cells, Wg, Hg, gs, raws, vmax, style);
-    const bool blocks = (style == GraphStyle::kBlocks);
+
     for (int cy = 0; cy < Hg; ++cy)
       for (int cc = 0; cc < Wg; ++cc) {
         const Cell& cell = cells[static_cast<std::size_t>(cy) * Wg + cc];
-        if (cell.mask)
-          put_px(s, gx + cc, gy + cy,
-                 blocks ? blocks_char(cell.mask) : braille_char(cell.mask),
-                 cell.color);
+        if (cell.order < 0) continue;
+        put_px(s, gx + cc, gy + cy,
+               cell.glyph.empty() ? braille_char(cell.mask) : cell.glyph,
+               cell.color);
       }
     // Gridlines: dim dotted "┈" at each tick row, only in cells with no data.
     for (std::size_t i = 0; i < fracs.size(); ++i) {
       const int ry = g.tick_row(i);
       for (int cc = 0; cc < Wg; ++cc)
-        if (!cells[static_cast<std::size_t>(ry) * Wg + cc].mask)
+        if (cells[static_cast<std::size_t>(ry) * Wg + cc].order < 0)
           put_px(s, gx + cc, gy + ry, "┈", c.grid);
     }
   }
@@ -927,7 +925,7 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
                        p.title + ": " + p.series[i].label + " = " + legend_values[i]);
 
     draw_panel(screen, px, py, pw, ph, p, pm, sleeping, raws, legend_values, snap,
-               vmax, c, chrome.graph_style, pi == focus_panel);
+               vmax, c, chrome.pixels, pi == focus_panel);
   };
 
   // --- panel grid: the visible rows of the layout -------------------------------

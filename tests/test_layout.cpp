@@ -70,13 +70,11 @@ std::vector<PanelSpec> make_page_6() {
   // value_fn is nullptr in every fixture series: the layout engine never
   // calls it, and a null std::function keeps the designated initializers
   // warning-free under -Wmissing-field-initializers.
-  auto s = [](const char* id, const char* label, int ci = 0, bool fill = false,
-              bool in_legend = true) {
+  auto s = [](const char* id, const char* label, int ci = 0, bool in_legend = true) {
     SeriesSpec ss;
     ss.id = id;
     ss.label = label;
     ss.color_index = ci;
-    ss.fill = fill;
     ss.in_legend = in_legend;
     return ss;
   };
@@ -84,7 +82,7 @@ std::vector<PanelSpec> make_page_6() {
   PanelSpec cpu;
   cpu.id = "cpu";
   cpu.title = "CPU";
-  cpu.series = {s("cpu.usage", "CPU", 0, true, false)};
+  cpu.series = {s("cpu.usage", "CPU", 0, /*in_legend=*/false)};
   cpu.info_rows = {{"Total Usage", nullptr, 0}, {"Average CPU Frequency", nullptr, -1}};
   cpu.y_scale.kind = ScaleSpec::Kind::kPercent;
   page.push_back(cpu);
@@ -93,7 +91,7 @@ std::vector<PanelSpec> make_page_6() {
   gpu.id = "gpu.0000:01:00.0.usage";
   gpu.title = "RTX 3050";
   gpu.gpu_bus = "0000:01:00.0";
-  gpu.series = {s("gpu.0000:01:00.0.usage", "RTX 3050", 1, true, false)};
+  gpu.series = {s("gpu.0000:01:00.0.usage", "RTX 3050", 1, /*in_legend=*/false)};
   gpu.info_rows = {{"RTX 3050 Usage", nullptr, 1}, {"Core Frequency", nullptr, -1}};
   gpu.y_scale.kind = ScaleSpec::Kind::kPercent;
   page.push_back(gpu);
@@ -101,7 +99,7 @@ std::vector<PanelSpec> make_page_6() {
   PanelSpec mem;
   mem.id = "mem";
   mem.title = "Memory";
-  mem.series = {s("mem.ram_used", "RAM", 0, true), s("mem.swap_used", "Swap", 2)};
+  mem.series = {s("mem.ram_used", "RAM", 0), s("mem.swap_used", "Swap", 2)};
   mem.y_scale.kind = ScaleSpec::Kind::kAbsolute;
   mem.y_scale.absolute_max = 16.0 * GiB;
   page.push_back(mem);

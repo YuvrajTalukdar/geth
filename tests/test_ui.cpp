@@ -124,7 +124,8 @@ struct RampSource : Source {
 // 138x10, its graph area is 129 braille columns x 7 rows (258 x 28 dots),
 // with gx = 8, gy = 2, and "100 %" as the widest tick label (L = 5:
 // Wg = (138-2) - 5 - 2 = 129).
-void render_ramp(bool gap, ftxui::Screen& screen, int color_index = 0) {
+void render_ramp(bool gap, ftxui::Screen& screen, int color_index = 0,
+                 bool pixels = false) {
   Collector c;
   auto rs = std::make_unique<RampSource>();
   rs->gap = gap;
@@ -147,20 +148,24 @@ void render_ramp(bool gap, ftxui::Screen& screen, int color_index = 0) {
   sr.id = "cpu.usage";
   sr.label = "CPU";
   sr.color_index = color_index;
-  sr.fill = true;
   p.series.push_back(sr);
   std::vector<ui::PanelSpec> page{p};
   ui::FrameState state;
   ui::LayoutCache cache = cache_for(page);
+  ui::FrameChrome chrome;
+  chrome.pixels = pixels;
   ui::render_frame(screen, hw, page, c.store(), c.latest(), nullptr, state,
                    ui::Theme::cyberpunk_blue(), ui::ColorMode::TrueColor,
-                   /*paused=*/false, 1000, cache, 0, kWinNs);
+                   /*paused=*/false, 1000, cache, 0, kWinNs, chrome);
 }
 
 // A source that holds CPU usage at 0 % and spikes to 100 % for ONE sample in
 // the second-to-last second of the 60 s window: ...0, 0, 0(t-2s), 100(t-1s),
 // 0(now). The two slopes span only ~5 dot columns each: 27 dot rows in ~5
-// columns, i.e. genuinely steep (several dot rows per column).
+// columns, i.e. genuinely steep (several dot rows per column). It also holds
+// RAM usage at a constant 0, so the spike line can share a two-series panel
+// with a flat baseline line (text mode draws multi-series panels as one-dot
+// braille — the flat line is what the continuity assertions anchor on).
 struct SpikeSource : Source {
   const char* name() const override { return "spike (test)"; }
   SourceStatus probe() override {
@@ -173,18 +178,23 @@ struct SpikeSource : Source {
     if (!started) {
       started = true;  // probe: throw-away, pins nothing (n stays 0)
       out.cpu.usage_pct = 0.0;
+      out.mem.ram_used_bytes = 0.0;
       return;
     }
     // Recorded samples run n = 0..59 (the probe does not increment n), so
     // n == 58 is the 59th of the 60 samples: 100 % one second before the end.
     out.cpu.usage_pct = (n == 58) ? 100.0 : 0.0;
+    out.mem.ram_used_bytes = 0.0;
     ++n;
   }
   int n = 0;
   bool started = false;
 };
 
-// Renders the spike above (fill OFF: the test is about the LINE dots).
+// Renders the two-series panel the spike test needs: a flat RAM line (0 on a
+// 128-unit absolute scale, dot row 27 = the bottom) and the CPU spike (the
+// 100 % sample maps to 100/128 of the scale -> dot row 6). Two series ->
+// one-dot braille, no fill; the flat line is the PRIMARY (series 0).
 void render_spike(ftxui::Screen& screen) {
   Collector c;
   c.add(std::make_unique<SpikeSource>());
@@ -203,14 +213,84 @@ void render_spike(ftxui::Screen& screen) {
   ui::Hardware hw;
   hw.cpu_name = "Test CPU";
   ui::PanelSpec p;
-  p.id = "cpu";
-  p.title = "CPU";
-  ui::SeriesSpec sr;
-  sr.id = "cpu.usage";
-  sr.label = "CPU";
-  sr.color_index = 0;
-  sr.fill = false;  // line dots only
-  p.series.push_back(sr);
+  p.id = "mem";
+  p.title = "Mem & CPU";
+  ui::SeriesSpec flat;
+  flat.id = "mem.ram_used";
+  flat.label = "RAM";
+  flat.color_index = 0;
+  p.series.push_back(flat);
+  ui::SeriesSpec spike;
+  spike.id = "cpu.usage";
+  spike.label = "CPU";
+  spike.color_index = 1;
+  p.series.push_back(spike);
+  // 128-unit absolute scale (nice_bytes_max(128) = 128): the flat line sits
+  // at the bottom dot row, the 100 spike sample at 100/128 of the scale.
+  // Tick labels "0".."128 B" -> L = 5, the same geometry as the 100 % panel.
+  p.y_scale.kind = ui::ScaleSpec::Kind::kAbsolute;
+  p.y_scale.absolute_max = 128.0;
+  std::vector<ui::PanelSpec> page{p};
+  ui::FrameState state;
+  ui::LayoutCache cache = cache_for(page);
+  ui::render_frame(screen, hw, page, c.store(), c.latest(), nullptr, state,
+                   ui::Theme::cyberpunk_blue(), ui::ColorMode::TrueColor,
+                   /*paused=*/false, 1000, cache, 0, kWinNs);
+}
+
+// A source that holds CPU usage at a constant 45 % of the 128-unit scale
+// (57.6) and RAM at a constant 50 % of it (64) — two flat horizontal lines
+// one dot row apart (14 and 15), which land in the SAME braille char row
+// (3) in every column: the "primary wins the shared cell" assertion needs
+// two series writing different dots into one cell.
+struct ConstSource : Source {
+  const char* name() const override { return "const (test)"; }
+  SourceStatus probe() override {
+    SourceStatus st;
+    st.available = true;
+    st.description = name();
+    return st;
+  }
+  void sample(Snapshot& out) override {
+    out.cpu.usage_pct = 57.6;
+    out.mem.ram_used_bytes = 64.0;
+  }
+};
+
+// Renders the two-constant-lines panel: series 0 = RAM at 64/128 = 50 % of
+// the scale (dot row 14, PRIMARY) and series 1 = CPU at 57.6/128 = 45 %
+// (dot row 15). Two series -> one-dot braille, no fill. 57.6/64 were picked
+// so the two rows are one apart: row 14 is braille row 2, row 15 row 3 of
+// char row 3, so EVERY cell of char row 3 holds both dots — the even dot
+// column's bits 2+6 and the odd column's bits 5+7 both live in the same
+// cell, whose full mask is (1<<2)|(1<<5)|(1<<6)|(1<<7) = 228.
+void render_two_const(ftxui::Screen& screen) {
+  Collector c;
+  c.add(std::make_unique<ConstSource>());
+  c.probe_all(/*warm_up=*/true);
+  TimePoint vnow = c.latest().time;
+  for (int i = 1; i <= 60; ++i) {
+    vnow += std::chrono::seconds(1);
+    c.set_sample_time(vnow);
+    c.sample();
+  }
+  ui::Hardware hw;
+  hw.cpu_name = "Test CPU";
+  ui::PanelSpec p;
+  p.id = "mem";
+  p.title = "Mem & CPU";
+  ui::SeriesSpec ram;
+  ram.id = "mem.ram_used";
+  ram.label = "RAM";
+  ram.color_index = 0;  // primary
+  p.series.push_back(ram);
+  ui::SeriesSpec cpu;
+  cpu.id = "cpu.usage";
+  cpu.label = "CPU";
+  cpu.color_index = 1;
+  p.series.push_back(cpu);
+  p.y_scale.kind = ui::ScaleSpec::Kind::kAbsolute;
+  p.y_scale.absolute_max = 128.0;
   std::vector<ui::PanelSpec> page{p};
   ui::FrameState state;
   ui::LayoutCache cache = cache_for(page);
@@ -252,18 +332,36 @@ int bottom_dot(const ftxui::Screen& s, int gx, int gy, int cc, int Hg) {
   return -1;
 }
 
-// Is every dot row between top and bottom (inclusive) set in dot column cc?
-bool column_contiguous(const ftxui::Screen& s, int gx, int gy, int cc, int Hg) {
+// The area chart's block glyphs: U+2581..U+2588 (▁..█); index 0 = no ink,
+// 1..7 = ▁..▇, 8 = a full cell. Mirrors the renderer's kEighths table.
+const char* kAreaGlyph(int eighth) {
+  static const char* const k[9] = {
+      " ", "\xE2\x96\x81", "\xE2\x96\x82", "\xE2\x96\x83", "\xE2\x96\x84",
+      "\xE2\x96\x85", "\xE2\x96\x86", "\xE2\x96\x87", "\xE2\x96\x88"};
+  return k[eighth];
+}
+
+// True for any of the area chart's glyphs (▁..█) — the block range U+2581-88.
+bool is_area_glyph(const std::string& ch) {
+  return ch.size() == 3 && static_cast<unsigned char>(ch[0]) == 0xE2 &&
+         static_cast<unsigned char>(ch[1]) == 0x96 &&
+         static_cast<unsigned char>(ch[2]) >= 0x81 &&
+         static_cast<unsigned char>(ch[2]) <= 0x88;
+}
+
+// Bottom of the TOPMOST contiguous run of dots in dot column cc, or -1 when
+// the column is empty (scans down from top_dot while the next row is set).
+// With a second, lower line in the column, this tracks the TOP line's run
+// without being broken by the lower line's dots.
+int top_run_bottom(const ftxui::Screen& s, int gx, int gy, int cc, int Hg) {
   const int t = top_dot(s, gx, gy, cc, Hg);
-  const int b = bottom_dot(s, gx, gy, cc, Hg);
-  if (t < 0) return true;
-  for (int y = t; y <= b; ++y) {
-    // y is a DOT row (0..4*Hg-1); mask_at wants the character row (y/4) and
-    // the braille row within it (y%4).
-    if (!(mask_at(s, gx, gy, cc, y / 4) & (1u << ui::braille_bit(cc % 2, y % 4))))
-      return false;
-  }
-  return true;
+  if (t < 0) return -1;
+  int b = t;
+  while (b + 1 < 4 * Hg &&
+         (mask_at(s, gx, gy, cc, (b + 1) / 4) &
+          (1u << ui::braille_bit(cc % 2, (b + 1) % 4))))
+    ++b;
+  return b;
 }
 
 // The palette-256 index of `c`, by rendering it into a 1x1 screen and
@@ -344,22 +442,22 @@ void diag_color_mode(const std::string& out, const ui::Theme& th) {
 
 TEST_SUITE("ui") {
 
-TEST_CASE("no background color is ever emitted (160x48, all modes, both styles)") {
+TEST_CASE("no background color is ever emitted (160x48, all modes, both layers)") {
   const UiFixture fx;
   const ui::Theme theme = ui::Theme::cyberpunk_blue();
   const ui::ColorMode modes[] = {ui::ColorMode::TrueColor, ui::ColorMode::Color256,
                                  ui::ColorMode::Color16};
-  // Part B: the transparency guarantee holds in BOTH graph styles (braille and
-  // blocks) — the blocks glyphs are foreground-only too.
-  const ui::GraphStyle styles[] = {ui::GraphStyle::kBraille, ui::GraphStyle::kBlocks};
+  // The transparency guarantee holds in the TEXT layer (area chart + braille,
+  // both foreground-only) and in the PIXELS text layer (graphs left blank —
+  // the pixel backend paints them).
   for (auto mode : modes)
-    for (auto style : styles) {
+    for (bool pixels : {false, true}) {
       ui::FrameState state;
       ui::LayoutCache cache = cache_for(fx.page);
       ftxui::Screen screen(160, 48);
       screen.Clear();
       ui::FrameChrome chrome;
-      chrome.graph_style = style;
+      chrome.pixels = pixels;
       ui::render_frame(screen, fx.hw, fx.page, fx.c.store(), fx.c.latest(), nullptr,
                        state, theme, mode, /*paused=*/false, 1000, cache, 0, kWinNs,
                        chrome);
@@ -367,7 +465,7 @@ TEST_CASE("no background color is ever emitted (160x48, all modes, both styles)"
       // Sanity: a frame was actually drawn (borders, title, footer).
       CHECK(!out.empty());
       CHECK(out.find('\xe2') != std::string::npos);  // some UTF-8 (box/block) glyph
-      CHECK(!has_forbidden_style(out));  // no background SGR in either style
+      CHECK(!has_forbidden_style(out));  // no background SGR in either layer
     }
 }
 
@@ -492,66 +590,141 @@ TEST_CASE("braille: all eight dots is U+28FF, each single dot is distinct") {
       CHECK(ui::braille_char(expect[i]) != ui::braille_char(expect[j]));
 }
 
-TEST_CASE("graph history: 0->100% ramp over 60 s at 60 columns is monotonic") {
-  ftxui::Screen screen(138, 12);
-  render_ramp(/*gap=*/false, screen);
-  const int gx = 8, gy = 2, Wg = 129, Hg = 7;
-  const int dot_cols = 2 * Wg, dot_rows = 4 * Hg;
-  // The braille line is two dots tall, so at 0 % its TOP dot sits one row
-  // above the bottom; at 100 % it is a single top dot.
-  CHECK_EQ(top_dot(screen, gx, gy, 0, Hg), dot_rows - 2);  // 0 % -> bottom-1
-  CHECK_EQ(top_dot(screen, gx, gy, dot_cols - 1, Hg), 0);  // 100 % -> top
-  // Heights never decrease left -> right.
-  for (int xc = 1; xc < dot_cols; ++xc)
-    CHECK(top_dot(screen, gx, gy, xc, Hg) <= top_dot(screen, gx, gy, xc - 1, Hg));
+TEST_CASE("area chart: a 0->100% ramp fills exact eighth heights, monotonic, gradient") {
+  // Single-series panel -> the area chart. The stored samples run el = 1..60 s
+  // (the probe sample is NOT recorded) with v(el) = min(100, 100el/59); the
+  // window spans the whole history (t0+1s .. t0+60s, span 59 s), so character
+  // column cc sits at el = 1 + 59cc/(Wg-1) and v(cc) = min(100,
+  // 100(128+59cc)/7552). The decimated line is EXACTLY that ramp (linear
+  // interpolation on a straight line), so the per-column heights are known.
+  const ui::Theme theme = ui::Theme::cyberpunk_blue();
+  for (int i = 0; i < 6; ++i) {
+    ftxui::Screen screen(138, 12);
+    render_ramp(/*gap=*/false, screen, i);
+    const int gx = 8, gy = 2, Wg = 129, Hg = 7;
+    int prev_top_b = -1;
+    for (int cc = 0; cc < Wg; ++cc) {
+      const double v = std::min(100.0, 100.0 * (128 + 59 * cc) / 7552.0);
+      int h8 = std::lround(v / 100.0 * Hg * 8.0);
+      h8 = std::clamp(h8, 0, Hg * 8);
+      const int eighth = h8 % 8;
+      const int top_b = h8 / 8 + (eighth > 0 ? 1 : 0) - 1;  // top row, bottom-index
+      CHECK(top_b >= prev_top_b);  // the ramp never descends left -> right
+      prev_top_b = top_b;
+      REQUIRE(top_b >= 0);  // the ramp starts at ~1.7 %, never exactly 0
+      // Top cell: the eighth glyph (a full block when the top row is whole).
+      CHECK_EQ(screen.at(gx + cc, gy + Hg - 1 - top_b), kAreaGlyph(eighth > 0 ? eighth : 8));
+      // Every row below the top: full blocks.
+      for (int b = 0; b < top_b; ++b)
+        CHECK_EQ(screen.at(gx + cc, gy + Hg - 1 - b), kAreaGlyph(8));
+      // The per-column gradient, exact in truecolor: the bottom row is the
+      // series color scaled to 0.45, the top row the full color, linear in
+      // between (fill_color is the exact scale in TrueColor mode).
+      for (int b = 0; b <= top_b; ++b) {
+        const double f = (top_b > 0) ? 0.45 + 0.55 * b / (double)top_b : 1.0;
+        const ui::Rgb want = ui::scale(theme.series[i], f);
+        const ftxui::Color want_c = ftxui::Color::RGB(want.r, want.g, want.b);
+        CHECK_EQ(screen.PixelAt(gx + cc, gy + Hg - 1 - b).foreground_color,
+                 want_c);
+      }
+      // Above the area: no block glyph (at most the dim gridline).
+      for (int cy = 0; cy < Hg - 1 - top_b; ++cy)
+        CHECK_FALSE(is_area_glyph(screen.at(gx + cc, gy + cy)));
+    }
+  }
 }
 
-TEST_CASE("graph history: a NaN gap renders as empty columns, never 0") {
+TEST_CASE("area chart: a NaN gap renders as empty columns, never 0") {
   ftxui::Screen screen(138, 12);
   render_ramp(/*gap=*/true, screen);
   const int gx = 8, gy = 2, Hg = 7;
-  // Gap el 25..35 s of the 59 s span -> dot columns ~109..153 (of 258).
-  for (int xc = 115; xc <= 148; ++xc) CHECK_EQ(top_dot(screen, gx, gy, xc, Hg), -1);
-  CHECK(top_dot(screen, gx, gy, 90, Hg) >= 0);  // data before the gap
-  CHECK(top_dot(screen, gx, gy, 175, Hg) >= 0);  // data after the gap
+  // Gap el 25..35 s of the 59 s span; column cc sits at el = 1 + 59cc/128, so
+  // every column whose interpolation touches a NaN sample (cc 52..75) is
+  // empty. The interior 55..72 is asserted; data stands on both sides.
+  for (int cc = 55; cc <= 72; ++cc)
+    for (int cy = 0; cy < Hg; ++cy)
+      CHECK_FALSE(is_area_glyph(screen.at(gx + cc, gy + cy)));
+  for (int cc : {40, 90}) {
+    bool any = false;
+    for (int cy = 0; cy < Hg; ++cy)
+      any = any || is_area_glyph(screen.at(gx + cc, gy + cy));
+    CHECK(any);
+  }
 }
 
-TEST_CASE("filled graph: line in series color, fill below in the derived color") {
+TEST_CASE("multi-series: one dot per position, no fill, primary wins shared cells") {
   ftxui::Screen screen(138, 12);
-  render_ramp(/*gap=*/false, screen);
+  render_two_const(screen);
   const int gx = 8, gy = 2, Wg = 129, Hg = 7;
-  const int dot_cols = 2 * Wg;
-  const ui::Theme theme = ui::Theme::cyberpunk_blue();
-  const ftxui::Color line_c = ui::to_ftxui(theme.series[0], ui::ColorMode::TrueColor);
-  const ftxui::Color fill_c = ui::to_ftxui(theme.fill(0), ui::ColorMode::TrueColor);
-  CHECK(line_c != fill_c);  // the theme actually derives a distinct fill
-
-  // Each dot column's line row = its topmost dot (a filled series fills from
-  // the line down to the bottom, so the topmost dot IS the line).
-  std::vector<int> line_row(dot_cols, -1);
-  for (int cc = 0; cc < dot_cols; ++cc)
-    line_row[cc] = top_dot(screen, gx, gy, cc, Hg);
-  for (int cc = 0; cc < dot_cols; ++cc) REQUIRE(line_row[cc] >= 0);
-
-  // A braille cell holds TWO dot columns, so its one color is the topmost
-  // dot's color across both: the line color iff either sub-column's line
-  // falls inside it, otherwise the derived fill color (the line, prio 1,
-  // beats fill, prio 0, within a cell). Empty cells (grid only) are skipped.
-  for (int ccol = 0; ccol < Wg; ++ccol)
-    for (int cy = 0; cy < Hg; ++cy) {
-      if (mask_at(screen, gx, gy, 2 * ccol, cy) == 0) continue;  // grid/empty
-      const int lo = 4 * cy, hi = 4 * cy + 3;
-      // The braille line is TWO dots tall (the top dot and the one directly
-      // below it), so a cell shows the line color if EITHER of those dots
-      // falls in it — the top dot alone would leave the cell holding the
-      // lower line dot misclassified as fill.
-      auto in_cell = [&](int d) { return d >= lo && d <= hi; };
-      const bool has_line =
-          in_cell(line_row[2 * ccol]) || in_cell(line_row[2 * ccol] + 1) ||
-          in_cell(line_row[2 * ccol + 1]) || in_cell(line_row[2 * ccol + 1] + 1);
-      CHECK_EQ(screen.PixelAt(gx + ccol, gy + cy).foreground_color,
-               has_line ? line_c : fill_c);
+  // Both lines are flat: RAM 64/128 -> dot row 14, CPU 57.6/128 -> row 15.
+  // Every dot column has EXACTLY those two dots and no others: one dot thick
+  // (no 2-dot braille), no fill, and every other dot row of the graph empty
+  // (a dotted fill would light the rows between and below the lines).
+  for (int xc = 0; xc < 2 * Wg; ++xc)
+    for (int dr = 0; dr < 4 * Hg; ++dr) {
+      const bool set =
+          mask_at(screen, gx, gy, xc, dr / 4) &
+          (1u << ui::braille_bit(xc % 2, dr % 4));
+      const bool want = (dr == 14) || (dr == 15);
+      CHECK_EQ(static_cast<bool>(set), want);
     }
+  // Both dots share char row 3 in every column (bits 2+6 for even dot
+  // columns, 5+7 for odd) — and the cell's color is the PRIMARY series',
+  // which draws last and overwrites the other series' color on the shared
+  // cell. REQUIRE the colors differ so the check means something.
+  const auto c0 = ui::to_ftxui(ui::Theme::cyberpunk_blue().series[0],
+                               ui::ColorMode::TrueColor);
+  const auto c1 = ui::to_ftxui(ui::Theme::cyberpunk_blue().series[1],
+                               ui::ColorMode::TrueColor);
+  REQUIRE(c0 != c1);
+  for (int xc = 0; xc < 2 * Wg; ++xc) {
+    // Each braille cell holds BOTH dot columns, so every char-row-3 cell
+    // carries both lines: even column bits 2+6, odd column bits 5+7 ->
+    // (1<<2)|(1<<5)|(1<<6)|(1<<7) = 228 in every cell.
+    const std::uint8_t got_mask = mask_at(screen, gx, gy, xc, 3);
+    CHECK_EQ(got_mask, 228);
+    CHECK_EQ(screen.PixelAt(gx + xc / 2, gy + 3).foreground_color, c0);
+  }
+}
+
+TEST_CASE("pixels layer: the text frame leaves the graph rect blank for the image") {
+  // The pixel backend draws each graph image over exactly the text layer's
+  // graph rect, so in pixels mode the text layer must leave that rectangle
+  // untouched: no glyphs, no gridlines, no SGR — byte-for-byte the screen's
+  // initial contents. Everything outside it (borders, titles, the y axis)
+  // is still drawn as text.
+  ftxui::Screen blank(138, 12);
+  blank.Clear();
+  ftxui::Screen screen(138, 12);
+  screen.Clear();
+  render_ramp(/*gap=*/false, screen, /*color_index=*/0, /*pixels=*/true);
+  const int gx = 8, gy = 2, Wg = 129, Hg = 7;
+  for (int x = gx; x < gx + Wg; ++x)
+    for (int y = gy; y < gy + Hg; ++y) {
+      // Character AND style untouched: space, default fg/bg (no SGR emitted).
+      CHECK_EQ(screen.at(x, y), blank.at(x, y));
+      CHECK_EQ(screen.PixelAt(x, y).foreground_color,
+               blank.PixelAt(x, y).foreground_color);
+      CHECK_EQ(screen.PixelAt(x, y).background_color,
+               blank.PixelAt(x, y).background_color);
+    }
+  // The y-axis separator sits in the graph rect's left neighbour and keeps
+  // "│" on every graph row (it is drawn in BOTH modes).
+  for (int y = gy; y < gy + Hg; ++y) {
+    const std::string& ch = screen.at(gx - 1, y);
+    const bool is_axis = ch == "\xE2\x94\x82" || ch == "\xE2\x94\xA4";  // │ or ┤
+    CHECK(is_axis);
+  }
+  // Contrast: the SAME frame in text mode is NOT blank — the area chart
+  // stands in the rect.
+  ftxui::Screen text(138, 12);
+  text.Clear();
+  render_ramp(/*gap=*/false, text, /*color_index=*/0, /*pixels=*/false);
+  bool any = false;
+  for (int x = gx; x < gx + Wg; ++x)
+    for (int y = gy; y < gy + Hg; ++y)
+      any = any || is_area_glyph(text.at(x, y));
+  CHECK(any);
 }
 
 TEST_CASE("bytes/sec auto-scale: 15 MiB/s -> 16 MiB/s, not 1 GiB/s") {
@@ -628,37 +801,6 @@ TEST_CASE("layout cache: zero heap allocations when the size is unchanged") {
   geth::set_alloc_counting(false);
 }
 
-TEST_CASE("fill cells are the derived fill of their OWN series color (all palette indices)") {
-  // Phase 4 A1: every fill is derive_fill(series[color_index]) — a single
-  // shared fill color was only right for the cyan series.
-  const ui::Theme theme = ui::Theme::cyberpunk_blue();
-  for (int i = 0; i < 6; ++i) {
-    ftxui::Screen screen(138, 12);
-    render_ramp(/*gap=*/false, screen, i);
-    const int gx = 8, gy = 2, Wg = 129, Hg = 7;
-    const ftxui::Color line_c =
-        ui::to_ftxui(theme.series[i], ui::ColorMode::TrueColor);
-    const ftxui::Color fill_c =
-        ui::to_ftxui(ui::derive_fill(theme.series[i], theme.fill_mix),
-                     ui::ColorMode::TrueColor);
-    CHECK(line_c != fill_c);  // the theme actually derives a distinct fill
-    bool saw_line = false, saw_fill = false;
-    for (int ccol = 0; ccol < Wg; ++ccol)
-      for (int cy = 0; cy < Hg; ++cy) {
-        if (mask_at(screen, gx, gy, 2 * ccol, cy) == 0) continue;  // grid/empty
-        const auto fg = screen.PixelAt(gx + ccol, gy + cy).foreground_color;
-        // Every drawn graph cell is either the line or the derived fill of
-        // THIS series' own color — nothing else.
-        const bool ok = (fg == line_c) || (fg == fill_c);
-        CHECK(ok);
-        saw_line = saw_line || fg == line_c;
-        saw_fill = saw_fill || fg == fill_c;
-      }
-    CHECK(saw_line);
-    CHECK(saw_fill);
-  }
-}
-
 TEST_CASE("256-color fills stay dark shades of their own series hue") {
   // Phase 4 A1 regression: on a 256-color terminal the green fill quantized
   // onto the border's teal (0,95,95) and the pink fill onto a grey ramp
@@ -721,10 +863,8 @@ TEST_CASE("same-device second series takes the next free slot") {
     REQUIRE_EQ(vram->series.size(), static_cast<std::size_t>(2));
     CHECK(vram->series[0].id == SeriesId("gpu.0000:07:00.0.gtt"));
     CHECK_EQ(vram->series[0].color_index, 2);
-    CHECK(vram->series[0].fill);  // 2-series rule: only the primary is filled
     CHECK(vram->series[1].id == SeriesId("gpu.0000:07:00.0.vram"));
     CHECK_EQ(vram->series[1].color_index, 0);  // next free slot (slot 1)
-    CHECK(!vram->series[1].fill);
     // No two series of the panel share a color.
     CHECK(vram->series[0].color_index != vram->series[1].color_index);
   }
@@ -741,10 +881,10 @@ TEST_CASE("same-device second series takes the next free slot") {
   p.id = "vram";
   p.title = "T \xC2\xB7 Memory";
   p.series.push_back({.id = SeriesId("gpu.0000:07:00.0.gtt"), .label = "GTT",
-                      .color_index = 2, .fill = true,
+                      .color_index = 2,
                       .value_fn = [](const Snapshot&) { return std::string("128 MiB"); }});
   p.series.push_back({.id = SeriesId("gpu.0000:07:00.0.vram"), .label = "VRAM",
-                      .color_index = 0, .fill = false,
+                      .color_index = 0,
                       .value_fn = [](const Snapshot&) { return std::string("1 GiB"); }});
   std::vector<ui::PanelSpec> page{p};
   ui::FrameState state;
@@ -765,43 +905,47 @@ TEST_CASE("same-device second series takes the next free slot") {
   CHECK_EQ(screen.PixelAt(bars[1], 9).foreground_color, vram_c);
 }
 
-TEST_CASE("0->max->0 spike over 3 samples: unbroken line on both slopes") {
-  // Phase 4 A3: consecutive samples are connected in dot space (Bresenham),
-  // so a steep rise/fall fills an unbroken vertical run of dots instead of
-  // leaving isolated dots with gaps.
+TEST_CASE("0->max->0 spike: unbroken one-dot line on both slopes (two series)") {
+  // Multi-series panel -> one-dot braille (no fill). The TOP line (the CPU
+  // spike, series 1) must stay continuous: consecutive samples are connected
+  // in dot space (Bresenham), so a steep rise/fall is an unbroken vertical
+  // run of dots, never isolated dots with gaps. The flat RAM line (series 0,
+  // the primary) pins the bottom dot row across the whole window, so the
+  // TOPMOST run is always the spike line and bottom_dot is always the bottom.
   ftxui::Screen screen(138, 12);
   render_spike(screen);
   const int gx = 8, gy = 2, Wg = 129, Hg = 7;
   const int dot_cols = 2 * Wg, dot_rows = 4 * Hg;
-  const int bottom = dot_rows - 1;
+  const int bottom = dot_rows - 1;  // 27
 
-  // Before the spike (~column 248) the line sits at 0: the two-dot-tall
-  // braille line at the bottom (dots bottom-1 and bottom).
+  // Before the spike (~column 248) both lines sit at 0: a single dot at the
+  // bottom row (the two series coincide there).
   for (int xc = 0; xc <= 246; ++xc) {
-    CHECK_EQ(top_dot(screen, gx, gy, xc, Hg), bottom - 1);
+    CHECK_EQ(top_dot(screen, gx, gy, xc, Hg), bottom);
     CHECK_EQ(bottom_dot(screen, gx, gy, xc, Hg), bottom);
   }
-  // The spike region: every column's dots form one contiguous run, and
-  // adjacent columns' runs touch (no vertical gap between them) — both
-  // slopes.
+  // The spike region: the topmost (spike) run is contiguous, and adjacent
+  // columns' runs touch (no vertical gap) — both slopes.
   int deep_cols = 0;
   for (int xc = 247; xc < dot_cols; ++xc) {
     const int t = top_dot(screen, gx, gy, xc, Hg);
-    const int b = bottom_dot(screen, gx, gy, xc, Hg);
+    const int b = top_run_bottom(screen, gx, gy, xc, Hg);
     REQUIRE(t >= 0);  // data all the way to the window end
-    CHECK(column_contiguous(screen, gx, gy, xc, Hg));
+    CHECK(t <= b);
+    // The flat line keeps the bottom dot set in every column.
+    CHECK_EQ(bottom_dot(screen, gx, gy, xc, Hg), bottom);
     if (b - t >= 2) ++deep_cols;  // a real vertical run (not a single dot)
     if (xc > 247) {
       const int pt = top_dot(screen, gx, gy, xc - 1, Hg);
-      const int pb = bottom_dot(screen, gx, gy, xc - 1, Hg);
+      const int pb = top_run_bottom(screen, gx, gy, xc - 1, Hg);
       CHECK(t <= pb + 1);  // the runs overlap or are vertically adjacent
       CHECK(pt <= b + 1);
     }
   }
   // Both slopes are steep enough to contain multi-dot vertical runs.
   CHECK(deep_cols >= 4);
-  // The peak is in the middle of the spike (the 100 % sample maps to
-  // ~column 252), and the line ends back at 0.
+  // The peak is in the middle of the spike (the 100 sample maps to ~column
+  // 252); on the 128-unit scale 100 lands at dot row 6, near the top.
   int best = -1, best_xc = -1;
   for (int xc = 248; xc < dot_cols; ++xc)
     if (best < 0 || top_dot(screen, gx, gy, xc, Hg) < best) {
@@ -809,11 +953,11 @@ TEST_CASE("0->max->0 spike over 3 samples: unbroken line on both slopes") {
       best_xc = xc;
     }
   CHECK(best >= 0);
-  CHECK(best <= 2);  // the 100 % sample nearly reaches the top
+  CHECK(best <= 8);  // the spike nearly reaches the top
   CHECK(best_xc >= 250);
   CHECK(best_xc <= 256);
-  // The last column's run ends at 0 (its bottom dot is the 0 % sample); the
-  // run's TOP is higher because the falling slope's vertical run enters it.
+  // The window ends back at 0 (the last column's topmost dot is the flat line
+  // / spike baseline at the bottom).
   CHECK_EQ(bottom_dot(screen, gx, gy, dot_cols - 1, Hg), bottom);
 }
 
@@ -1186,102 +1330,4 @@ TEST_SUITE("apu_power_render") {
     set_watts(fx, 35.0);
     CHECK(render_frame_text(fx).find("35.0 W") != std::string::npos);
   }
-}
-
-// ---------------------------------------------------------------------------
-// Phase 6, Part B — the blocks graph style and the count-based fill rule.
-// ---------------------------------------------------------------------------
-
-TEST_CASE("blocks_char: the 16 2x2 quadrant glyphs (verified vs Unicode names)") {
-  // Mask bits: TL=1, TR=2, BL=4, BR=8. Each glyph below was cross-checked
-  // against the authoritative Unicode quadrant-block names (U+2598 = UPPER
-  // LEFT, U+2596 = LOWER LEFT, ...). Masks 11 and 14 — the two "all but one
-  // corner" triples — are the easiest to swap, so they are pinned.
-  const std::uint8_t masks[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
-  const char* expect[] = {
-      " ",                 // 0  empty
-      "\xE2\x96\x98",      // 1  TL
-      "\xE2\x96\x9D",      // 2  TR
-      "\xE2\x96\x80",      // 3  TL+TR  (upper half)
-      "\xE2\x96\x96",      // 4  BL
-      "\xE2\x96\x8C",      // 5  TL+BL  (left half)
-      "\xE2\x96\x9E",      // 6  TR+BL
-      "\xE2\x96\x9B",      // 7  TL+TR+BL  (all but BR)
-      "\xE2\x96\x97",      // 8  BR
-      "\xE2\x96\x9A",      // 9  TL+BR
-      "\xE2\x96\x90",      // 10 TR+BR  (right half)
-      "\xE2\x96\x9C",      // 11 TL+TR+BR  (all but BL)
-      "\xE2\x96\x84",      // 12 BL+BR  (lower half)
-      "\xE2\x96\x99",      // 13 TL+BL+BR  (all but TR)
-      "\xE2\x96\x9F",      // 14 TR+BL+BR  (all but TL)
-      "\xE2\x96\x88"};     // 15 full block
-  for (int i = 0; i < 16; ++i) CHECK(ui::blocks_char(masks[i]) == expect[i]);
-  // All 16 masks map to distinct glyphs (no two share a glyph).
-  for (int i = 0; i < 16; ++i)
-    for (int j = i + 1; j < 16; ++j)
-      CHECK(ui::blocks_char(masks[i]) != ui::blocks_char(masks[j]));
-}
-
-TEST_CASE("parse_graph_style: braille/blocks accepted case-insensitively, else false") {
-  ui::GraphStyle g{};
-  CHECK(ui::parse_graph_style("braille", g));
-  CHECK(g == ui::GraphStyle::kBraille);
-  CHECK(ui::parse_graph_style("blocks", g));
-  CHECK(g == ui::GraphStyle::kBlocks);
-  CHECK(ui::parse_graph_style("BLOCKS", g));
-  CHECK(g == ui::GraphStyle::kBlocks);
-  CHECK(ui::parse_graph_style("Braille", g));
-  CHECK(g == ui::GraphStyle::kBraille);
-  CHECK_FALSE(ui::parse_graph_style("dots", g));
-  CHECK_FALSE(ui::parse_graph_style("", g));
-  CHECK_FALSE(ui::parse_graph_style("braille blocks", g));
-}
-
-TEST_CASE("blocks style renders block glyphs (not braille) in the graphs") {
-  const UiFixture fx;
-  const ui::Theme theme = ui::Theme::cyberpunk_blue();
-  ui::FrameState state;
-  ui::LayoutCache cache = cache_for(fx.page);
-  ftxui::Screen screen(160, 48);
-  screen.Clear();
-  ui::FrameChrome chrome;
-  chrome.graph_style = ui::GraphStyle::kBlocks;
-  ui::render_frame(screen, fx.hw, fx.page, fx.c.store(), fx.c.latest(), nullptr, state,
-                   theme, ui::ColorMode::TrueColor, /*paused=*/false, 1000, cache, 0,
-                   kWinNs, chrome);
-  const std::string out = screen.ToString();
-  // Block elements (E2 96 xx) are present ...
-  CHECK(out.find("\xE2\x96") != std::string::npos);
-  // ... and braille (E2 A0..A3 xx) is absent. Box-drawing is E2 94/95 xx, so
-  // any E2 A0-A3 byte would be a braille dot cell.
-  for (const char* p : {"\xE2\xA0", "\xE2\xA1", "\xE2\xA2", "\xE2\xA3"})
-    CHECK(out.find(p) == std::string::npos);
-}
-
-TEST_CASE("fill rule: 1 series filled, 2 primary-only, 3+ none") {
-  const UiFixture fx;  // demo: 1 dGPU + 1 iGPU
-  const auto find = [&](const char* id) -> const ui::PanelSpec* {
-    for (const auto& p : fx.page)
-      if (p.id == id) return &p;
-    return nullptr;
-  };
-  // CPU: a single series -> filled.
-  auto* cpu = find("cpu");
-  REQUIRE(cpu != nullptr);
-  CHECK_EQ(cpu->series.size(), static_cast<std::size_t>(1));
-  CHECK(cpu->series[0].fill);
-  // Two-series panels (Memory/Network/Disk): only the primary (first) is
-  // filled, the secondary is line-only.
-  for (const char* id : {"mem", "net", "disk"}) {
-    auto* p = find(id);
-    REQUIRE(p != nullptr);
-    CHECK_EQ(p->series.size(), static_cast<std::size_t>(2));
-    CHECK(p->series[0].fill);    // primary
-    CHECK(!p->series[1].fill);   // secondary
-  }
-  // Temperature: CPU + 2 GPUs = 3 series -> nothing is filled.
-  auto* temps = find("temps");
-  REQUIRE(temps != nullptr);
-  CHECK(temps->series.size() >= 3);
-  for (const auto& s : temps->series) CHECK(!s.fill);
 }

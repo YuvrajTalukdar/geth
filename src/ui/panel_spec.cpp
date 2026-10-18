@@ -63,16 +63,6 @@ int next_free_slot(const std::vector<int>& used) {
   return used.empty() ? 0 : used.back();
 }
 
-// The Phase 6 Part B fill rule, applied to a whole panel by series count:
-//   1 series  -> its one series is filled
-//   2 series  -> only the PRIMARY (first) is filled
-//   3+ series -> nothing is filled (Temperature, Power)
-void apply_fill_rule(PanelSpec& p) {
-  const int n = static_cast<int>(p.series.size());
-  for (int i = 0; i < n; ++i)
-    p.series[i].fill = (n == 1) ? true : (n == 2 ? i == 0 : false);
-}
-
 }  // namespace
 
 // Exported (panel_spec.hpp): the single choke point for every GPU-derived
@@ -121,7 +111,7 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
     // The value line is the "Total Usage" info row below (with color bar),
     // so the series itself gets no separate legend line.
     p.series = {{.id = SeriesId("cpu.usage"), .label = "CPU", .color_index = 0,
-                 .fill = true, .in_legend = false,
+                 .in_legend = false,
                  .value_fn = [](const Snapshot& s) { return v_pct(s.cpu.usage_pct); }}};
     p.info_rows = {
         {"Total Usage",
@@ -131,7 +121,6 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
         {"Maximum CPU Frequency",
          [](const Snapshot& s) { return v_freq(s.cpu.freq_max_mhz); }, -1},
     };
-    apply_fill_rule(p);
     page.push_back(std::move(p));
   }
 
@@ -146,7 +135,7 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
     p.title = title;
     p.gpu_bus = bus;
     p.series = {{.id = SeriesId("gpu." + bus + ".usage"), .label = title, .color_index = ci,
-                 .fill = true, .in_legend = false,
+                 .in_legend = false,
                  .value_fn = [bus](const Snapshot& s) {
                    for (const auto& x : s.gpus)
                      if (x.pci_bus_id == bus) return v_pct(x.usage_pct);
@@ -168,7 +157,6 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
          },
          -1},
     };
-    apply_fill_rule(p);
     page.push_back(std::move(p));
   }
 
@@ -179,14 +167,12 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
     p.title = "Memory";
     p.series = {
         {.id = SeriesId("mem.ram_used"), .label = "RAM", .color_index = 0,
-         .fill = true,
          .value_fn = [](const Snapshot& s) { return v_bytes(s.mem.ram_used_bytes); }},
         {.id = SeriesId("mem.swap_used"), .label = "Swap", .color_index = 2,
          .value_fn = [](const Snapshot& s) { return v_bytes(s.mem.swap_used_bytes); }},
     };
     p.y_scale.kind = ScaleSpec::Kind::kAbsolute;
     p.y_scale.absolute_max = hw.ram_total_bytes;
-    apply_fill_rule(p);
     page.push_back(std::move(p));
   }
 
@@ -230,8 +216,7 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
     } else {
       p.series = {{.id = SeriesId("gpu." + bus + ".vram"), .label = title,
                    .color_index = ci,
-                   .fill = true,
-                   .value_fn = [bus](const Snapshot& s) {
+                             .value_fn = [bus](const Snapshot& s) {
                      for (const auto& x : s.gpus)
                        if (x.pci_bus_id == bus) return v_bytes(x.vram_used_bytes);
                      return std::string("—");
@@ -248,7 +233,6 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
          },
          -1},
     };
-    apply_fill_rule(p);
     page.push_back(std::move(p));
   }
 
@@ -272,7 +256,6 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
                           }});
     }
     p.y_scale.kind = ScaleSpec::Kind::kTemperature;
-    apply_fill_rule(p);
     page.push_back(std::move(p));
   }
 
@@ -301,7 +284,6 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
     }
     p.y_scale.kind = ScaleSpec::Kind::kWatts;
     p.y_scale.floor_ = 20.0;  // minimum ceiling: 20 W (nice_watts' floor)
-    apply_fill_rule(p);
     page.push_back(std::move(p));
   }
 
@@ -318,7 +300,6 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
     };
     p.y_scale.kind = ScaleSpec::Kind::kBytesPerSec;
     p.y_scale.floor_ = 64.0 * 1024.0;  // minimum ceiling: 64 KiB/s
-    apply_fill_rule(p);
     page.push_back(std::move(p));
   }
 
@@ -335,7 +316,6 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
     };
     p.y_scale.kind = ScaleSpec::Kind::kBytesPerSec;
     p.y_scale.floor_ = 1024.0 * 1024.0;  // minimum ceiling: 1 MiB/s
-    apply_fill_rule(p);
     page.push_back(std::move(p));
   }
 

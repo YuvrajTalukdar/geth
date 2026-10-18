@@ -111,7 +111,11 @@ class Dashboard : public ftxui::ComponentBase {
     _probe = probe;
     _proto = proto;
     _renderer_eff = effective_intent;
+    _pixels_layer = (proto != ImageProto::kNone);
   }
+  // --render-frame has no probe: set the text layer's pixel flag directly
+  // (the pixels text layer = graphs left as plain spaces).
+  void set_pixels_layer(bool b) { _pixels_layer = b; }
   const ProbeResult& probe_result() const { return _probe; }
   ImageProto renderer_proto() const { return _proto; }
   const std::string& renderer_intent() const { return _renderer_eff; }
@@ -225,6 +229,9 @@ class Dashboard : public ftxui::ComponentBase {
   // override when given, else the config's graph_renderer. `g` moves it to
   // the other available renderer and saves that.
   std::string _renderer_eff = "auto";
+  // What the TEXT layer draws: true = the resolved renderer is pixels, so
+  // the graph rects are left plain spaces for the pixel backend.
+  bool _pixels_layer = false;
 };
 
 // Parse one --script token into a synthetic FTXUI Event:
