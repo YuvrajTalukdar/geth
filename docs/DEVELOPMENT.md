@@ -176,9 +176,11 @@ python3 tools/measure_pixel_perf.py build-rel/geth 70x250 30
 Screenshots: `tools/frame2png.py` renders a `--render-frame --ansi` capture
 to a PNG on an exact cell grid (DejaVu Sans Mono, truecolor, procedural dark
 gradient background) — useful for CI and layout debugging. The README
-gallery is live captures instead: `geth --demo` running in a Konsole window,
-shot with Spectacle on a 1920×1080 screen (205×58 for the theme/manager/
-help shots, 236×71 wide, 111×31 narrow, 85×25 compact).
+gallery is live captures instead: geth in a maximized Konsole window with
+real hardware data, shot with Spectacle on a 1920×1080 screen — theme and
+layout shots in the pixel renderer, panel manager and help in the text
+renderer (205×56 for the theme/manager/help shots, 230×68 wide, 108×30
+narrow, 83×23 compact).
 
 ## Collecting a support report
 

@@ -77,8 +77,10 @@ probe (canned replies: Kitty, Sixel-only, no reply, tmux).
 
 ### Screenshots
 
-The README gallery was recaptured with the new renderers (pixel captures
-in Konsole, one image text). `style-blocks.png` is removed.
+The README gallery was recaptured live in Konsole with real hardware
+data: theme and layout shots in the pixel renderer (Kitty graphics
+protocol), panel manager and help in the text renderer (the overlays
+replace the charts with text lists). `style-blocks.png` is removed.
 
 ## 1.0.3 — CPU power fix, line visibility, theme palettes (2026-10-18)
 

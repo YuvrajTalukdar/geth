@@ -91,10 +91,14 @@ dependencies are fetched by CMake and pinned to exact versions (see
 
 ## Screenshots
 
-Live captures from a Konsole window running `geth --demo` on a 1920×1080
-screen. Cell sizes: 205×58 (themes, manager, help), 236×71 (wide),
-111×31 (narrow), 85×25 (compact). For CI-style static frames, see
-`--render-frame`, `--render-png` and `tools/frame2png.py` in
+Live captures from a maximized Konsole window (1920×1080) showing real
+hardware data from the dev machine (Ryzen 5 5600H, Cezanne iGPU, RTX 3050
+Laptop). The theme and layout shots use the pixel renderer — smooth
+anti-aliased charts sent over Konsole's Kitty graphics protocol; the panel
+manager and help shots use the text renderer, because the overlays replace
+the charts with text lists. Grid sizes: 205×56 (themes, manager, help),
+230×68 (wide), 108×30 (narrow), 83×23 (compact). For CI-style static
+frames, see `--render-frame`, `--render-png` and `tools/frame2png.py` in
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 | Cyberpunk Blue (default) | Matrix Green |
@@ -109,7 +113,7 @@ screen. Cell sizes: 205×58 (themes, manager, help), 236×71 (wide),
 |---|---|
 | ![panel manager](docs/screenshots/panel-manager.png) | ![help](docs/screenshots/help.png) |
 
-| Wide (236×71) | Narrow (111×31) | Compact (85×25) |
+| Wide (230×68) | Narrow (108×30) | Compact (83×23) |
 |---|---|---|
 | ![wide](docs/screenshots/wide-layout.png) | ![narrow](docs/screenshots/narrow-layout.png) | ![compact](docs/screenshots/compact.png) |
 
