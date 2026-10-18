@@ -16,6 +16,7 @@
 #include "ui/config.hpp"
 #include "ui/frame.hpp"
 #include "ui/panel_spec.hpp"
+#include "ui/term_probe.hpp"
 #include "ui/theme.hpp"
 
 namespace geth::ui {
@@ -35,6 +36,9 @@ struct UiOptions {
   std::string script;       // --render-frame --script: comma-separated events
   // Phase 5:
   std::string theme;  // --theme NAME ("" = the config's [general] theme)
+  // --renderer pixels|text ("" = the config's graph_renderer); a session
+  // override, never saved.
+  std::string renderer;
 };
 
 // Validate `opts.color_mode` and resolve the effective color mode.
@@ -98,6 +102,20 @@ class Dashboard : public ftxui::ComponentBase {
   // A startup warning shown as a toast (e.g. a broken custom-theme file).
   void note_warning(const std::string& msg);
 
+  // The terminal capabilities, set by run_ui before the loop starts: the
+  // probe result, the protocol the effective intent resolves to, and the
+  // effective intent itself (the --renderer override when given, else the
+  // config's graph_renderer).
+  void set_probe(const ProbeResult& probe, ImageProto proto,
+                 const std::string& effective_intent) {
+    _probe = probe;
+    _proto = proto;
+    _renderer_eff = effective_intent;
+  }
+  const ProbeResult& probe_result() const { return _probe; }
+  ImageProto renderer_proto() const { return _proto; }
+  const std::string& renderer_intent() const { return _renderer_eff; }
+
   bool OnEvent(ftxui::Event event) override;
   ftxui::Element OnRender() override;
 
@@ -125,7 +143,7 @@ class Dashboard : public ftxui::ComponentBase {
   void cycle_window();
   void cycle_columns();
   void cycle_theme();
-  void cycle_graph_style();
+  void cycle_graph_renderer();
 
   // Rebuilds the page from _hw (the GPU overrides are already applied in it)
   // and _cfg, keeping the manager's order; run after a global GPU rename or
@@ -199,6 +217,14 @@ class Dashboard : public ftxui::ComponentBase {
   bool _mg_confirm_reset = false;
 
   bool _help_open = false;
+
+  // The pixel renderer (v1.1.0): the startup probe and what it resolved to.
+  ProbeResult _probe;
+  ImageProto _proto = ImageProto::kNone;
+  // The effective renderer intent at startup ("" = auto): the --renderer
+  // override when given, else the config's graph_renderer. `g` moves it to
+  // the other available renderer and saves that.
+  std::string _renderer_eff = "auto";
 };
 
 // Parse one --script token into a synthetic FTXUI Event:

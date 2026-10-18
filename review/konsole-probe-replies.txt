@@ -1,0 +1,66 @@
+Konsole 26.08.2 (Plasma 6) — kitty graphics protocol: replies and rendering
+Captured: 2026-10-18, Konsole on Wayland, cell 7x18 px (TIOCGWINSZ)
+Method: python3 raw-mode tty scripts + Konsole source audit
+(KDE/konsole src/Vt102Emulation.cpp, processGraphicsToken) + captures in
+this directory.
+
+RAW REPLIES
+-----------
+1. Protocol query  (ESC_G i=31,s=1,v=1,a=q,t=d,f=24;AAAA ESC\)
+   Reply: ESC_G i=31;OK ESC\
+   Raw hex: 1b5f47693d33313b4f4b1b5c   (12 bytes, first byte at ~13 ms)
+
+2. Transfer matrix (14x10 px red at CUP positions, 350 ms read windows):
+   f=32, 1x1  (a=r)                    Reply: (none)
+   f=32, 14x10 (a=r)                   Reply: (none)
+   f=32, 14x10 (o=z zlib)              Reply: (none)
+   f=24, 14x10 (o=0, t=f)              Reply: ESC_G i=102;ENOTSUPPORTED: ESC\
+                                       raw hex: 1b5f47693d3130323b454e4f54535550504f525445443a1b5c
+   f=32, 14x10 (q=2 chunked)           Reply: (none)
+   konsole-kitty-enotsupported.png: no image rendered by any of these forms.
+
+SOURCE AUDIT (why the matrix was misleading)
+--------------------------------------------
+processGraphicsToken() handles a=t/T/q; a=r is not in that set and is
+ignored entirely (no reply, no render). The ENOTSUPPORTED branch fires on
+`q < 2 && t != 'd'` — i.e. it is t=f that gets rejected, not f=24. The
+rendering path (addPlacement, source=Kitty) is reached for:
+  - a=T with m=0  -> decoded, stored, DRAWN
+  - a=p           -> paste of a stored image, drawn
+a=t stores only (never drawn).
+
+Rendering semantics (Screen::addPlacement + TerminalPainter):
+  - anchored at the cursor cell when the APC arrives (row=_cuY, col=_cuX);
+    drawn at native pixel size at (col*fontWidth + X, row*fontHeight + Y)
+    -> pixel-exact when the image size is a multiple of the cell size
+  - kitty placements (z>=0) are painted ABOVE the text (overlay; the text
+    under the image is kept)
+  - C=1 -> the cursor is not moved; C=0 (default) -> moved past the image
+  - same id+pid is replaced in place (send p=0 explicitly: pid=-1, the
+    default, is only garbage-collected when fully covered)
+  - delete: a=d with d=i (by image id) / d=a (all) / d=z / d=x / d=y
+  - A= alpha, X/Y pixel offsets, z z-index, q=0 -> i=N;OK reply
+
+LIVE VERIFICATION (konsole-kitty-render.png / probe-terminal.png)
+-----------------------------------------------------------------
+a=T transfer, i=100,p=0,f=32,s=35,v=36,a=T,t=d,q=1,C=1, after CUP 8;5:
+  - a solid red 35x36 px block rendered exactly at row 8 col 5
+    (measured bbox 35x36 px, pixel-exact at the CUP cell)
+  - the probe's own a=T 1x1 test transfer was answered i=99;OK
+So Konsole DOES support the kitty graphics protocol; the diagnostic form is
+a=T t=d (a=r is invisible to it, t=f is rejected).
+
+PROBE CONSEQUENCE (implemented in src/ui/term_probe.cpp)
+--------------------------------------------------------
+Test transfer: i=99,p=0,f=24,s=1,v=1,a=T,t=d,q=0,C=1;AAAA
+  - Konsole / compliant terminal: renders the pixel, replies i=99;OK
+  - handler that cannot render a=T: replies an error -> kitty off
+The reply window is 400 ms (a 150 ms window once raced a slow reply),
+plus a matching drain so late replies cannot leak into the UI input.
+
+RESULT ON THIS MACHINE
+----------------------
+geth --probe-terminal => kitty protocol: yes, sixel: yes,
+cell pixel size 7x18 px, renderer: pixels (kitty).
+(konsole-sixel-*.png: Konsole also renders sixel, libsixel dialect only —
+kept as evidence; the sixel backend stays implemented as fallback.)

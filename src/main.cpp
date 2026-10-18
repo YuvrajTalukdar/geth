@@ -30,11 +30,13 @@
 #include "ui/app.hpp"
 #include "ui/layout.hpp"
 #include "ui/panel_spec.hpp"
+#include "ui/term_probe.hpp"
 #include "ui/theme.hpp"
 #include "util/alloc_count.hpp"
 #include "util/format.hpp"
 #include "util/parse.hpp"
 #include "util/stop.hpp"
+#include "util/terminal.hpp"
 #include "util/trace.hpp"
 
 using namespace geth;
@@ -71,6 +73,8 @@ struct Options {
   bool perf = false;          // --perf: relayout + layout-cache benchmarks
   std::string theme;          // --theme NAME ("" = the config's [general] theme)
   bool list_themes = false;   // --list-themes
+  bool probe_terminal = false;  // --probe-terminal: terminal capabilities, exit
+  std::string renderer;      // --renderer pixels|text ("" = the config's value)
   std::string trace_series;   // --trace SERIES_ID: per-tick stage trace (off if empty)
 };
 
@@ -105,6 +109,12 @@ void print_help() {
       "                      default: the config's [general] theme)\n"
       "  --list-themes       List the selectable themes (built-in + custom) and\n"
       "                      mark the active one; does not touch the hardware\n"
+      "  --probe-terminal    Report this terminal's image-protocol support\n"
+      "                      (kitty/sixel), the cell pixel size, and the graph\n"
+      "                      renderer that will be chosen; does not touch the\n"
+      "                      hardware\n"
+      "  --renderer <name>   pixels | text — session override for the graph\n"
+      "                      renderer (default: the config's graph_renderer)\n"
       "  --no-save           Never write the config file (read-only)\n"
       "  --script <events>   --render-frame only: replay a comma-separated list\n"
       "                      of synthetic events (keys, enter, space, tab,\n"
@@ -189,6 +199,16 @@ int parse_args(int argc, char** argv, Options& o) {
       o.theme = v;
     } else if (a == "--list-themes") {
       o.list_themes = true;
+    } else if (a == "--probe-terminal") {
+      o.probe_terminal = true;
+    } else if (a == "--renderer") {
+      const char* v = need_value("--renderer");
+      if (!v) return -1;
+      if (std::string(v) != "pixels" && std::string(v) != "text") {
+        std::fprintf(stderr, "geth: --renderer must be pixels or text\n");
+        return -1;
+      }
+      o.renderer = v;
     } else if (a == "--no-save") {
       o.no_save = true;
     } else if (a == "--script") {
@@ -744,6 +764,11 @@ int run_perf(const ui::Hardware& hw_in, const Options& opts) {
 
 int main(int argc, char** argv) {
   ui::frame_mark_process_start();  // the startup-time clock starts here
+  // Before any tty work (probe, FTXUI's raw-mode setup): a backgrounded geth
+  // (`geth &`) sits in a non-foreground process group of its controlling
+  // terminal — the kernel would stop it on the tcsetattr (SIGTTOU), freezing
+  // the UI on a blank alternate screen. See ignore_tty_stop_signals().
+  util::ignore_tty_stop_signals();
   Options opts;
   if (parse_args(argc, argv, opts) != 0) return 2;
 
@@ -774,6 +799,24 @@ int main(int argc, char** argv) {
       (void)th;
       std::printf("  %s%s\n", name.c_str(), name == active ? "  <-- active" : "");
     }
+    return 0;
+  }
+
+  if (opts.probe_terminal) {
+    // Read-only: the config (for the graph_renderer intent) and the terminal
+    // itself. No collector, no hardware.
+    const ui::Config cfg = ui::Config::load(
+        opts.config_path.empty() ? ui::Config::default_path() : opts.config_path,
+        /*no_save=*/true);
+    const std::string intent =
+        opts.renderer.empty() ? cfg.graph_renderer : opts.renderer;
+    std::string warn;
+    const ui::ProbeResult probe = ui::probe_terminal();
+    ui::resolve_protocol(intent, probe, &warn);  // only for the warning
+    std::printf("%s", ui::probe_report_text(
+                          probe, intent, !opts.renderer.empty()).c_str());
+    if (!warn.empty())
+      std::printf("  warning:            %s\n", warn.c_str());
     return 0;
   }
 
@@ -849,6 +892,7 @@ int main(int argc, char** argv) {
     u.no_save = opts.no_save;
     u.script = opts.script;
     u.theme = opts.theme;
+    u.renderer = opts.renderer;
     return ui::run_render_frame(collector, hw, W, H, opts.warmup, u);
   }
 
@@ -863,6 +907,7 @@ int main(int argc, char** argv) {
     u.config_path = opts.config_path;
     u.no_save = opts.no_save;
     u.theme = opts.theme;
+    u.renderer = opts.renderer;
     return ui::run_ui(collector, hw, u);
   }
 

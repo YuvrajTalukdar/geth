@@ -252,7 +252,7 @@ bool Dashboard::OnEvent(ftxui::Event event) {
   if (event == ftxui::Event::Character('t')) return (cycle_window(), true);
   if (event == ftxui::Event::Character('c')) return (cycle_columns(), true);
   if (event == ftxui::Event::Character('T')) return (cycle_theme(), true);
-  if (event == ftxui::Event::Character('g')) return (cycle_graph_style(), true);
+  if (event == ftxui::Event::Character('g')) return (cycle_graph_renderer(), true);
 
   // Scrolling (no-ops unless the page overflows).
   auto line_scroll = [&](int dir) {
@@ -309,8 +309,10 @@ ftxui::Element Dashboard::OnRender() {
   chrome.toast_until = _toast_until;
   chrome.title_override = _cfg.title;
   chrome.solid_bg = (_cfg.background == "solid");
-  chrome.graph_style =
-      (_cfg.graph_style == "blocks") ? GraphStyle::kBlocks : GraphStyle::kBraille;
+  // The blocks style was retired with graph_renderer (v1.1.0); braille is
+  // the text renderer's line style for now (the pixel renderer takes over
+  // the graph interior when _proto != kNone).
+  chrome.graph_style = GraphStyle::kBraille;
 
   ManagerOverlay mg;
   bool show_manager = false;
@@ -360,7 +362,7 @@ ftxui::Element Dashboard::OnRender() {
         {"t", "cycle the graph window (30 s \xE2\x80\xA6 10 m)"},
         {"c", "cycle the columns (auto, 1 \xE2\x80\xA6 8)"},
         {"T", "cycle the theme (saves)"},
-        {"g", "toggle the graph style (braille / blocks, saves)"},
+        {"g", "toggle the graph renderer (text / pixels, saves)"},
         {"\xE2\x86\x91 / \xE2\x86\x93 \xC2\xB7 j / k", "scroll one row"},
         {"PgUp / PgDn", "scroll one page"},
         {"Home / End", "top / bottom"},
@@ -534,11 +536,29 @@ void Dashboard::cycle_theme() {
   save_now();
 }
 
-void Dashboard::cycle_graph_style() {
-  // g flips braille <-> blocks and saves the choice.
-  _cfg.graph_style = (_cfg.graph_style == "blocks") ? "braille" : "blocks";
+void Dashboard::cycle_graph_renderer() {
+  // g flips between the AVAILABLE renderers (text, and pixels when the
+  // startup probe found an image protocol) and saves the new choice.
+  // "auto" counts as its current resolution (pixels when available).
+  const bool pixels_now = (_renderer_eff == "pixels" ||
+                           (_renderer_eff == "auto" && _proto != ImageProto::kNone));
+  std::string next;
+  if (pixels_now)
+    next = "text";
+  else if (_proto != ImageProto::kNone)
+    next = "pixels";
+  else
+    next = "text";  // no protocol: text is the only renderer
+  _cfg.graph_renderer = next;
+  _renderer_eff = next;  // a UI change supersedes any --renderer override
   _dirty = true;
   save_now();
+  std::string w;
+  const ImageProto p = resolve_protocol(next, _probe, &w);
+  if (next == "pixels" && p == ImageProto::kNone)
+    toast("no image protocol in this terminal — staying on text");
+  else
+    toast("renderer: " + renderer_name(p));
 }
 
 // -- The panel manager ---------------------------------------------------------
@@ -1066,6 +1086,13 @@ int run_ui(Collector& collector, const Hardware& hw_in, const UiOptions& opts) {
   for (const auto& w : twarn)
     std::fprintf(stderr, "geth: theme: %s\n", w.c_str());
 
+  // The effective renderer intent (the --renderer override beats the config)
+  // and whether the retired graph_style key was in the file — both read
+  // before cfg moves into the Dashboard.
+  const std::string renderer_intent =
+      opts.renderer.empty() ? cfg.graph_renderer : opts.renderer;
+  const bool had_graph_style = cfg.had_graph_style;
+
   FrameStats stats;
   auto component = ftxui::Make<Dashboard>(
       collector, hw_in, std::move(cfg), std::move(themes), theme_idx, mode,
@@ -1075,6 +1102,19 @@ int run_ui(Collector& collector, const Hardware& hw_in, const UiOptions& opts) {
 
   // A signal during the probe/setup phase: skip the UI and exit cleanly.
   if (util::g_stop.load()) return 0;
+
+  // The terminal capabilities probe: it opens /dev/tty in raw mode, so it
+  // must run BEFORE FTXUI takes over the terminal (Fullscreen() below).
+  const ProbeResult probe = probe_terminal();
+  std::string pwarn;
+  const ImageProto proto = resolve_protocol(renderer_intent, probe, &pwarn);
+  component->set_probe(probe, proto, renderer_intent);
+  if (had_graph_style)
+    component->note_warning(
+        "the retired graph_style key was ignored "
+        "(graph_renderer replaces it)");
+  if (renderer_intent == "pixels" && proto == ImageProto::kNone && !pwarn.empty())
+    component->note_warning(pwarn);
 
   ftxui::ScreenInteractive screen = ftxui::ScreenInteractive::Fullscreen();
   // SIGHUP is the one signal FTXUI does not handle; from here on (the termios

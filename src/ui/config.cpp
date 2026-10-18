@@ -200,17 +200,35 @@ Config Config::load(const std::string& path, bool no_save) {
             } else
               c.warnings.push_back(warn(
                   c, line, "general.background must be a string — ignored"));
-          } else if (name == "graph_style") {
+          } else if (name == "graph_renderer") {
             if (v.is_string()) {
               const std::string s = v.as<std::string>()->get();
-              if (s == "braille" || s == "blocks") c.graph_style = s;
+              if (s == "auto" || s == "pixels" || s == "text")
+                c.graph_renderer = s;
               else
                 c.warnings.push_back(warn(
-                    c, line, "general.graph_style must be \"braille\" or "
-                             "\"blocks\" — ignored"));
+                    c, line, "general.graph_renderer must be \"auto\", "
+                             "\"pixels\" or \"text\" — ignored"));
             } else
               c.warnings.push_back(warn(
-                  c, line, "general.graph_style must be a string — ignored"));
+                  c, line, "general.graph_renderer must be a string — "
+                           "ignored"));
+          } else if (name == "graph_style") {
+            // Retired in v1.1.0 (replaced by graph_renderer): accepted so an
+            // old config keeps loading, dropped on the next save; the UI
+            // shows one toast about it (had_graph_style).
+            if (v.is_string()) {
+              const std::string s = v.as<std::string>()->get();
+              if (s == "braille" || s == "blocks") c.had_graph_style = true;
+              else
+                c.warnings.push_back(warn(
+                    c, line, "general.graph_style is no longer used "
+                             "(graph_renderer replaces it) and this value "
+                             "is invalid — ignored"));
+            } else
+              c.warnings.push_back(warn(
+                  c, line, "general.graph_style is no longer used "
+                           "(graph_renderer replaces it) — ignored"));
           } else {
             c.warnings.push_back(warn(c, line,
                                       "unknown key 'general." + name +
@@ -358,7 +376,7 @@ std::string Config::serialize() const {
   s += "title = \"" + escape_toml(title) + "\"\n";
   s += "theme = \"" + escape_toml(theme) + "\"\n";
   s += "background = \"" + escape_toml(background) + "\"\n";
-  s += "graph_style = \"" + escape_toml(graph_style) + "\"\n\n";
+  s += "graph_renderer = \"" + escape_toml(graph_renderer) + "\"\n\n";
   for (const auto& e : panels) {
     s += "[[panels]]\n";
     s += "id = \"" + escape_toml(e.id) + "\"\n";

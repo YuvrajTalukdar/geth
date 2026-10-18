@@ -95,6 +95,7 @@ set(GETH_SOURCES
   src/ui/frame.cpp
   src/ui/layout.cpp
   src/ui/panel_spec.cpp
+  src/ui/term_probe.cpp
   src/ui/theme.cpp
   src/util/alloc_count.cpp
   src/util/pci_ids.cpp
@@ -120,7 +121,9 @@ target_link_options(geth PRIVATE $<$<CONFIG:Debug>:-fsanitize=address,undefined>
 # Threads is linked for the UI's timer thread (it only posts an event; all
 # sampling/rendering runs on the UI thread).
 find_package(Threads REQUIRED)
-target_link_libraries(geth PRIVATE ftxui::component tomlplusplus Threads::Threads ${CMAKE_DL_LIBS})
+# zlib compresses the pixel-renderer image payloads (kitty o=z, PNG IDAT).
+find_package(ZLIB REQUIRED)
+target_link_libraries(geth PRIVATE ftxui::component tomlplusplus Threads::Threads ZLIB::ZLIB ${CMAKE_DL_LIBS})
 
 # ---------------------------------------------------------------------------
 # RAPL access helpers (opt-in; never run by a plain build).
@@ -253,7 +256,7 @@ if(GETH_BUILD_TESTS)
   target_compile_definitions(geth_tests PRIVATE
     GETH_TEST_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
     GETH_VERSION="${PROJECT_VERSION}")
-  target_link_libraries(geth_tests PRIVATE doctest ftxui::component tomlplusplus Threads::Threads ${CMAKE_DL_LIBS})
+  target_link_libraries(geth_tests PRIVATE doctest ftxui::component tomlplusplus Threads::Threads ZLIB::ZLIB ${CMAKE_DL_LIBS})
   target_compile_options(geth_tests PRIVATE
     -Wall -Wextra -Wpedantic -Werror
     $<$<CONFIG:Debug>:-fsanitize=address,undefined -g -O1>

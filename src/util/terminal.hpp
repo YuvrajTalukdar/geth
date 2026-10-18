@@ -21,6 +21,19 @@
 
 namespace geth::util {
 
+// ignore_tty_stop_signals() — call before anything touches the terminal
+// (the probe, FTXUI's raw-mode setup). When geth sits in a non-foreground
+// process group of its controlling terminal (e.g. `geth &`, or a wrapper
+// that puts the child in its own group), the kernel's job control stops the
+// process on certain tty operations: a tcsetattr() by a background group
+// sends SIGTTOU to the group, reading input sends SIGTTIN. Both default to
+// stopping the process — which froze a backgrounded geth mid raw-mode setup
+// (blank alternate screen, no output) until someone sent SIGCONT. Ignoring
+// them lets geth keep running while backgrounded: it simply gets no input
+// (and the tcsetattr succeeds as-is). Foregrounding the job restores input
+// normally.
+void ignore_tty_stop_signals();
+
 void install_sighup_restore();
 void uninstall_sighup_restore();
 

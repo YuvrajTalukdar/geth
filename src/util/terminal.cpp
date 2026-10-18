@@ -65,4 +65,9 @@ void uninstall_sighup_restore() {
   g_have_termios = false;
 }
 
+void ignore_tty_stop_signals() {
+  std::signal(SIGTTIN, SIG_IGN);
+  std::signal(SIGTTOU, SIG_IGN);
+}
+
 }  // namespace geth::util
