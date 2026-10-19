@@ -9,10 +9,19 @@
 // flicker); q=2 asks for no reply (verified silent on Konsole); C=1 keeps
 // the cursor where the CUP put it.
 //
-// Sixel (the fallback): the libsixel dialect Konsole speaks — P2=1
-// transparent background, a small palette, R-run rows, height padded to a
-// multiple of 6, re-emitted after every frame. Semi-transparent pixels are
-// composited over the theme's bg estimate (sixel has no per-pixel alpha).
+// Sixel (the fallback): the CLASSIC DEC form — `ESC P 9;1q` (no space
+// before the 'q' final byte: 0x20 is an intermediate byte and tmux/Konsole
+// drop the whole DCS when any intermediate is present), the "1;1;W;H6"
+// size, `#c;2;r;g;b` register declarations (0-100), 6-bit column masks with
+// `!n` repeats, `-` row advances, `ESC \`. That is the dialect
+// tmux 3.8 parses (image-sixel.c) and re-encodes to the attached terminal
+// when it advertised sixel in DA1, and the dialect Konsole's own
+// processSixel accepts (it anchors the image at the cursor cell and defines
+// index 0 as the background — opaque, since Konsole's sixel is indexed-8
+// with no alpha). Semi-transparent pixels are composited over the theme's
+// bg estimate (register 0); each 1x6 column is painted with one color
+// (series > grid > fill priority). Height is padded to a multiple of 6,
+// re-emitted after every frame.
 //
 // ImageSet drives the live loop: one stable kitty id per panel (keyed by
 // panel id), round() emits the full byte stream for a tick — deletes of the
@@ -64,13 +73,16 @@ std::string kitty_delete_all();
 
 // -- Sixel ------------------------------------------------------------------
 
-// Encodes one image (height padded to a multiple of 6 with transparent
-// rows). `bg` is the compositing color for semi-transparent pixels (the
-// theme's bg — the terminal's real background is unknown). Palette: index 0
-// = bg, index 1 = transparent (P2=1), then the important colors from
-// `palette` (the rasterizer's list: grid, series in draw order, fill), then
-// 24 gradient steps of the fill color; everything else quantizes to the
-// nearest palette entry.
+// Encodes one image in the classic DEC sixel form (see the file header),
+// height padded to a multiple of 6. `bg` is the compositing color for
+// semi-transparent pixels AND register 0 (the image's opaque background —
+// the terminal's real background is unknown; the theme's bg is the best
+// estimate). Registers: 0 = bg, then the important colors from `palette`
+// (the rasterizer's list: grid, series in draw order, fill), then 24
+// gradient steps of the fill color; everything else quantizes to the
+// nearest register. A 1x6 column takes the highest-priority register it
+// contains (series > grid > fill steps); fill-step columns merge their
+// steps so the fill stays solid.
 std::string sixel_encode(int w, int h, const std::uint8_t* rgba, const Rgb& bg,
                          const std::vector<Rgb>& palette);
 

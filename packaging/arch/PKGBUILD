@@ -17,7 +17,7 @@
 
 pkgname=geth
 pkgver=1.1.0
-pkgrel=1
+pkgrel=2
 pkgdesc="A fast, lightweight terminal system monitor for Linux (C++20, in-process, no subprocesses)"
 url="https://github.com/YuvrajTalukdar/geth"
 arch=(x86_64)

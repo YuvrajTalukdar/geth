@@ -2,6 +2,35 @@
 
 All notable changes to GETH. The format follows the five-phase build plan.
 
+## Unreleased — pixels (sixel) inside tmux
+
+The v1.1.0 pixel renderer never reached users behind tmux. Two
+geth-side problems, both now fixed (verified end-to-end: real geth in a
+tmux 3.8 pane against a sixel-advertising outer terminal):
+
+- **The probe now runs inside the multiplexer.** tmux ≥ 3.8 (built with
+  sixel) advertises Sixel in its DA1 reply and re-encodes every stored
+  sixel image to the attached terminal — so probing inside the pane is
+  correct and useful. `--probe-terminal` in a tmux pane reports
+  `inside multiplexer: yes (tmux/screen)` and `renderer: pixels (sixel)`
+  when the outer terminal supports Sixel. (screen still does not
+  advertise Sixel, so it stays text there.)
+- **The Sixel encoder now emits the classic DEC dialect** that tmux's
+  parser (image-sixel.c) and Konsole's own sixel handler both accept:
+  `ESC P 9;1q` (no space — a space is an intermediate byte and both
+  parsers drop the entire DCS), the mandatory `"1;1;W;H` size,
+  `#c;2;r;g;b` register declarations, and data bytes `0x3f + mask`
+  (arithmetic: both parsers decode with `byte - 0x3f`). The previous
+  named-param form was rejected silently by tmux's parser, which drops
+  the whole image on any non-classic byte. Sixel pixels are opaque
+  (Konsole's indexed-8 has no alpha): semi-transparent pixels composite
+  over the theme's bg, which is also register 0 — the seam is invisible
+  when the theme bg matches the terminal background.
+
+End-to-end: 149/149 panel images crossed the tmux boundary as
+re-encoded `9;1q` sixel; with a non-sixel outer terminal the same 149
+fall back to tmux's text rendering, as expected.
+
 ## 1.1.0 — Real charts: pixel renderer + better text fallback (2026-10-18)
 
 ### New: pixel renderer (Kitty graphics protocol / Sixel)

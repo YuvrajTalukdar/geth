@@ -18,11 +18,16 @@
 //   3. DA1 (ESC [ c): the device-attributes reply; the '4' parameter marks
 //      Sixel support.
 //
-// Inside tmux/screen the protocols are not forwarded, so the answer is
-// always the text renderer there. No reply within the timeout is also
-// "text". The cell's pixel size (needed to size the images) comes from
-// TIOCGWINSZ (ws_xpixel/ws_ypixel) with the CSI 16 t query as a fallback;
-// when it cannot be determined the text renderer is used too.
+// The probe runs inside a multiplexer too: the pane's /dev/tty is owned by
+// the multiplexer, and its replies are the honest answer. tmux (3.8+, built
+// with sixel) answers DA1 with the '4' attribute and never answers the
+// kitty query — which resolves to pixels (sixel), and tmux forwards those
+// images when the attached terminal itself supports them. screen answers
+// DA1 without '4' — text. No reply within the timeout is also "text". The
+// cell's pixel size (needed to size the images) comes from TIOCGWINSZ
+// (ws_xpixel/ws_ypixel — tmux fills these in for the pane) with the
+// CSI 16 t query as a fallback; when it cannot be determined the text
+// renderer is used too.
 #pragma once
 
 #include <cstddef>
@@ -62,13 +67,14 @@ std::string kitty_test_transfer();
 // (q=0) — neither is a rejection; any other status is. Pure.
 bool kitty_reply_rejects(const std::uint8_t* b, std::size_t n);
 
-// True when the terminal is a multiplexer that will not forward the image
-// protocols: $TMUX is set, or TERM starts with "screen".
+// True when running inside a multiplexer: $TMUX is set, or TERM starts
+// with "screen". Informational — the probe still runs; the multiplexer's
+// own replies decide the outcome (see the file header).
 bool inside_multiplexer();
 
 struct ProbeResult {
   bool tty = false;        // a tty was available to probe
-  bool multiplexer = false;  // inside tmux/screen (protocols not forwarded)
+  bool multiplexer = false;  // inside tmux/screen (the probe still runs)
   bool kitty = false;       // the raw detections (kitty: query OK AND the
                             // test transfer was not rejected)
   bool kitty_rejected = false;  // the query said OK, the transfer errored

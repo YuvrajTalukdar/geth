@@ -161,8 +161,7 @@ bool query_cell_pixels(int fd, int timeout_ms, int& w, int& h) {
 ProbeResult probe_terminal(int timeout_ms) {
   ProbeResult r;
   r.multiplexer = inside_multiplexer();
-  if (r.multiplexer)
-    r.note = "inside tmux/screen — image protocols are not forwarded there";
+  if (r.multiplexer) r.note = "inside tmux/screen";
 
   const int fd = open("/dev/tty", O_RDWR | O_NOCTTY);
   if (fd < 0) {
@@ -179,9 +178,18 @@ ProbeResult probe_terminal(int timeout_ms) {
     if (tcsetattr(fd, TCSANOW, &raw) != 0) have_termios = false;
   }
 
-  if (!r.multiplexer && have_termios) {
-    // Drop anything already queued (a stray paste would confuse the parser)
-    // and ask the two questions in one burst.
+  if (have_termios) {
+    // The query runs inside a multiplexer too: the pane's /dev/tty is
+    // owned by the multiplexer, and its replies are the honest answer.
+    // tmux (3.8+, built with sixel) answers DA1 with the '4' attribute
+    // and never answers the kitty query — which resolves to pixels
+    // (sixel), and tmux forwards those images to the attached terminal
+    // when that terminal itself supports them. screen answers DA1
+    // without '4' — text. (The kitty test transfer below is only sent
+    // when the query got a kitty reply, so a multiplexer that drops it
+    // costs nothing.)
+    // Drop anything already queued (a stray paste would confuse the
+    // parser) and ask the two questions in one burst.
     (void)tcflush(fd, TCIFLUSH);
     const std::string q = probe_query();
     (void)!write(fd, q.data(), q.size());
@@ -238,7 +246,7 @@ ProbeResult probe_terminal(int timeout_ms) {
     r.cell_w = ws.ws_xpixel / ws.ws_col;
     r.cell_h = ws.ws_ypixel / ws.ws_row;
   }
-  if ((r.cell_w <= 0 || r.cell_h <= 0) && have_termios && !r.multiplexer) {
+  if ((r.cell_w <= 0 || r.cell_h <= 0) && have_termios) {
     struct termios raw = saved;
     cfmakeraw(&raw);
     if (tcsetattr(fd, TCSANOW, &raw) == 0) {
@@ -246,7 +254,7 @@ ProbeResult probe_terminal(int timeout_ms) {
       (void)tcsetattr(fd, TCSANOW, &saved);
     }
   }
-  if ((r.cell_w <= 0 || r.cell_h <= 0) && !r.multiplexer) {
+  if (r.cell_w <= 0 || r.cell_h <= 0) {
     r.note = r.note.empty()
                  ? "cell pixel size unknown (TIOCGWINSZ and CSI 16 t gave nothing)"
                  : r.note + "; " +
@@ -268,8 +276,8 @@ ImageProto resolve_protocol(const std::string& intent, const ProbeResult& p,
   if (avail != ImageProto::kNone) return avail;
   if (warning && intent == "pixels") {
     if (p.multiplexer)
-      *warning = "pixels requested, but tmux/screen does not forward image "
-                 "protocols — using text";
+      *warning = "pixels requested, but no image protocol was detected "
+                 "inside the multiplexer — using text";
     else if (!sized)
       *warning = "pixels requested, but the cell pixel size is unknown — "
                  "using text";
@@ -299,10 +307,10 @@ std::string probe_report_text(const ProbeResult& r, const std::string& intent,
   s += r.multiplexer ? "yes (tmux/screen)" : "no";
   s += "\n";
   s += "  kitty protocol:     ";
-  s += (r.tty && !r.multiplexer) ? (r.kitty ? "yes" : "no") : "not probed";
+  s += r.tty ? (r.kitty ? "yes" : "no") : "not probed";
   s += "\n";
   s += "  sixel:              ";
-  s += (r.tty && !r.multiplexer) ? (r.sixel ? "yes" : "no") : "not probed";
+  s += r.tty ? (r.sixel ? "yes" : "no") : "not probed";
   s += "\n";
   s += "  cell pixel size:    ";
   s += (r.cell_w > 0 && r.cell_h > 0)

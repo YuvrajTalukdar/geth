@@ -1,7 +1,10 @@
 // Probe-parsing tests (v1.1.0 Part A): parse_probe_reply recognizes the kitty
 // APC answer and the DA1 '4' (sixel) attribute from canned reply bytes,
 // kitty_reply_rejects flags a non-OK transfer status, and inside_multiplexer
-// turns the image protocols off under tmux/screen.
+// detects tmux/screen. The multiplexer flag is informational only — the
+// probe still runs in a pane and the multiplexer's own replies decide the
+// outcome (tmux 3.8 answers DA1 with the sixel attribute and forwards
+// re-encoded sixel to a sixel-capable attached terminal).
 #include <doctest.h>
 
 #include <cstdint>
@@ -127,4 +130,44 @@ TEST_CASE("detect: inside_multiplexer via TMUX and TERM") {
   // A plain terminal -> not a multiplexer.
   setenv("TERM", "linux", 1);
   CHECK(!inside_multiplexer());
+}
+
+// Regression: the multiplexer flag must NOT block a detected protocol.
+// Inside tmux the pane's tty is owned by tmux; tmux (3.8+, built with sixel)
+// answers DA1 with the '4' attribute and forwards re-encoded sixel to a
+// sixel-capable attached terminal, so the probe's sixel=yes resolves to
+// pixels (sixel) even with multiplexer=true.
+TEST_CASE("resolve: sixel inside a multiplexer still resolves to pixels") {
+  ProbeResult p;
+  p.tty = true;
+  p.multiplexer = true;  // $TMUX is set
+  p.sixel = true;         // tmux's DA1 carried the '4'
+  p.cell_w = 7;           // the pane's TIOCGWINSZ pixel size
+  p.cell_h = 18;
+  CHECK(resolve_protocol("auto", p) == ImageProto::kSixel);
+  CHECK(resolve_protocol("pixels", p) == ImageProto::kSixel);
+  CHECK(resolve_protocol("text", p) == ImageProto::kNone);
+
+  // kitty wins over sixel when both are detected (they are not in tmux,
+  // but the precedence must hold regardless of the multiplexer flag).
+  p.kitty = true;
+  CHECK(resolve_protocol("auto", p) == ImageProto::kKitty);
+}
+
+// Regression: the multiplexer warning is only reached when NO protocol is
+// detected (e.g. plain screen answers DA1 without '4').
+TEST_CASE("resolve: no protocol in a multiplexer warns about the multiplexer") {
+  ProbeResult p;
+  p.tty = true;
+  p.multiplexer = true;
+  p.cell_w = 7;
+  p.cell_h = 18;
+  std::string w;
+  CHECK(resolve_protocol("pixels", p, &w) == ImageProto::kNone);
+  CHECK(w.find("inside the multiplexer") != std::string::npos);
+  // Outside a multiplexer the warning names the terminal instead.
+  p.multiplexer = false;
+  w.clear();
+  CHECK(resolve_protocol("pixels", p, &w) == ImageProto::kNone);
+  CHECK(w.find("inside the multiplexer") == std::string::npos);
 }

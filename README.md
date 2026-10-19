@@ -334,10 +334,14 @@ wakes a sleeping dGPU. Details:
   font with full Unicode coverage in your terminal's settings.
 - **No pixel charts (text renderer only).** The pixel renderer needs the
   terminal to speak the Kitty graphics protocol or Sixel — `geth
-  --probe-terminal` shows exactly what it detected (and under tmux/screen
-  it always falls back to text, since multiplexers strip those escapes).
-  Konsole (≥ 25.08), kitty, and Ghostty all support Kitty; wezterm and
-  mlterm support Sixel. `g` or `--renderer text` forces the text renderer.
+  --probe-terminal` shows exactly what it detected. Inside tmux, geth
+  probes the multiplexer itself: tmux ≥ 3.8 (built with sixel) advertises
+  Sixel and re-encodes/forwards it to the attached terminal, so pixels
+  (sixel) work inside tmux whenever the outer terminal (Konsole, wezterm,
+  mlterm, …) supports Sixel. screen does not advertise Sixel, so it stays
+  text there. Konsole (≥ 25.08), kitty, and Ghostty all support Kitty;
+  wezterm and mlterm support Sixel. `g` or `--renderer text` forces the
+  text renderer.
 - **Colors look wrong / no color.** Force a mode with
   `--color truecolor|256|16`, and make sure the terminal advertises it
   (`COLORTERM=truecolor` for 24-bit).
