@@ -8,6 +8,7 @@
 #include <cerrno>
 #include <filesystem>
 #include <fstream>
+#include <set>
 
 namespace geth {
 
@@ -105,11 +106,26 @@ SourceStatus CpuPowerSource::probe() {
   const std::string powercap = _root + "/class/powercap";
   std::error_code ec;
   if (std::filesystem::is_directory(powercap, ec)) {
+    // The class directory is FLAT: the zone and every domain are symlinked
+    // at the top level, and each domain's device directory additionally
+    // contains a `device` symlink pointing at its PARENT device. One
+    // physical package counter is therefore reachable through several
+    // paths — on a single-socket AMD Zen box, three: its own class link,
+    // the zone's child dir, and the core domain's `device` link back up to
+    // the package dir (whose name is "package-0", so it passes the filter).
+    // Counting the counter once per path would N-fold the power (measured
+    // 3x: 84.5 W read while the package drew ~28 W). Dedupe on the
+    // canonical, symlink-resolved device directory: distinct sockets
+    // resolve to distinct directories and stay separate.
+    std::set<std::string> seen;
     auto zones = std::filesystem::directory_iterator(powercap, ec);
     for (auto it = zones; it != std::filesystem::directory_iterator(); it.increment(ec)) {
       if (!it->is_directory(ec)) continue;
       auto consider = [&](const std::filesystem::path& dev) {
         if (read_first_line(dev / "name").rfind("package", 0) != 0) return;
+        std::error_code cec;
+        const std::filesystem::path canon = std::filesystem::canonical(dev, cec);
+        if (cec || !seen.insert(canon.native()).second) return;  // same counter again
         Domain d;
         int err = 0;
         const std::string epath = (dev / "energy_uj").string();

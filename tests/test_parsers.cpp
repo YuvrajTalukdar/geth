@@ -1302,6 +1302,70 @@ TEST_SUITE("cpu_power_sources") {
     CHECK(second.cpu.package_power_source == CpuPackagePowerSource::kRapl);
   }
 
+  // Regression, from a real AMD Zen (Ryzen 7 260) box: the powercap class
+  // directory is FLAT (zone + every domain symlinked at the top level) and
+  // each domain's device directory contains a `device` symlink pointing at
+  // its PARENT. The single package counter was therefore reachable through
+  // three paths —
+  //   class/powercap/intel-rapl:0/energy_uj          (the domain's own link)
+  //   class/powercap/intel-rapl/intel-rapl:0/...     (the zone's child dir)
+  //   class/powercap/intel-rapl:0:0/device/energy_uj (core's `device` -> pkg)
+  // — and sample() summed all three deltas, tripling the reported power
+  // (84.5 W read while the package drew ~28 W; the probe's RAPL-vs-PPT
+  // cross-check showed 41.7 W vs 10.9 W). The tree below reproduces that
+  // topology exactly; the counter must be counted ONCE.
+  TEST_CASE("regression: the flat class dir + `device` links count a counter once") {
+    const auto root = std::filesystem::temp_directory_path() /
+        ("geth_rapl_dup_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(root);
+    const auto real = root / "devices/platform/intel-rapl";
+    const auto pkg = real / "intel-rapl:0";
+    const auto core = pkg / "intel-rapl:0:0";
+    const auto pc = root / "class/powercap";
+    std::filesystem::create_directories(core);
+    std::filesystem::create_directories(pc);
+    auto wf = [](const std::filesystem::path& f, const std::string& v) {
+      std::ofstream o(f);
+      o << v;
+    };
+    // The real device tree (the zone has no package name of its own).
+    wf(pkg / "name", "package-0");
+    wf(pkg / "energy_uj", "10000000");
+    wf(pkg / "max_energy_range_uj", "100000000");
+    wf(core / "name", "core");
+    wf(core / "energy_uj", "42");
+    wf(core / "max_energy_range_uj", "100000000");
+    // Kernel `device` symlinks: each points at the PARENT device dir.
+    std::error_code ec;
+    std::filesystem::create_symlink("../../intel-rapl", pkg / "device", ec);
+    std::filesystem::create_symlink("../../intel-rapl:0", core / "device", ec);
+    // The flat class dir: zone, package domain and core domain, all linked
+    // at the top level.
+    std::filesystem::create_symlink(real, pc / "intel-rapl", ec);
+    std::filesystem::create_symlink(pkg, pc / "intel-rapl:0", ec);
+    std::filesystem::create_symlink(core, pc / "intel-rapl:0:0", ec);
+
+    CpuPowerSource src(root.string());
+    const auto st = src.probe();
+    DOCTEST_REQUIRE(st.available);
+    CHECK(st.detail.find("RAPL package domains: 1") != std::string::npos);  // was 3
+    REQUIRE(st.paths.size() == 1);
+
+    // The counted delta must be the package counter's, not three copies of
+    // it: +1 mJ over ~100 ms => ~10 W (pre-fix: ~30 W).
+    Snapshot base;
+    src.sample(base);  // baseline
+    CHECK(base.cpu.package_power_w.has_value() == false);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::ofstream(pkg / "energy_uj") << "11000000\n";
+    Snapshot next;
+    src.sample(next);
+    DOCTEST_REQUIRE(next.cpu.package_power_w.has_value());
+    CHECK(next.cpu.package_power_w.value() > 1.0);
+    CHECK(next.cpu.package_power_w.value() < 20.0);  // 3x (~30 W) fails this
+    std::filesystem::remove_all(root);
+  }
+
   TEST_CASE("RAPL: EACCES reports unavailable with CapEff and the udev fix") {
     // The fixture's energy_uj ships world-readable (git cannot store a 0000
     // mode), so force it unreadable here to simulate a non-root process facing
