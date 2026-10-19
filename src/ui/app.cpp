@@ -548,12 +548,19 @@ void Dashboard::cycle_graph_renderer() {
   // g flips between the AVAILABLE renderers (text, and pixels when the
   // startup probe found an image protocol) and saves the new choice.
   // "auto" counts as its current resolution (pixels when available).
+  std::string w;
   const bool pixels_now = (_renderer_eff == "pixels" ||
                            (_renderer_eff == "auto" && _proto != ImageProto::kNone));
+  // Whether pixels CAN be selected comes from the PROBE, not from _proto:
+  // _proto is the CURRENT choice's resolution, so it reads kNone while
+  // text is active even when the terminal supports a protocol — which made
+  // the flip back to pixels unreachable after the first g.
+  const bool pixels_avail =
+      (resolve_protocol("pixels", _probe, &w) != ImageProto::kNone);
   std::string next;
   if (pixels_now)
     next = "text";
-  else if (_proto != ImageProto::kNone)
+  else if (pixels_avail)
     next = "pixels";
   else
     next = "text";  // no protocol: text is the only renderer
@@ -561,7 +568,6 @@ void Dashboard::cycle_graph_renderer() {
   _renderer_eff = next;  // a UI change supersedes any --renderer override
   _dirty = true;
   save_now();
-  std::string w;
   const ImageProto p = resolve_protocol(next, _probe, &w);
   _proto = p;                       // the new choice IS the resolution now
   _pixels_layer = (p != ImageProto::kNone);

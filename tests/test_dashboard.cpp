@@ -338,6 +338,51 @@ TEST_CASE("settings: c cycles the columns (auto -> 1..8 -> auto)") {
   CHECK_EQ(d->columns_setting(), -1);
 }
 
+TEST_CASE("settings: g cycles the renderer text <-> pixels (probe found kitty)") {
+  DashFixture fx;
+  auto d = fx.make(no_save_cfg());
+  ui::ProbeResult pr;
+  pr.tty = true;
+  pr.kitty = true;
+  pr.cell_w = 13;
+  pr.cell_h = 28;
+  d->set_probe(pr, ui::ImageProto::kKitty, "auto");
+  REQUIRE_EQ(d->renderer_intent(), "auto");
+  REQUIRE_EQ(d->renderer_proto(), ui::ImageProto::kKitty);  // auto resolves to pixels
+
+  d->OnEvent(ftxui::Event::Character('g'));  // auto+kitty -> text
+  CHECK_EQ(d->renderer_intent(), "text");
+  CHECK_EQ(d->renderer_proto(), ui::ImageProto::kNone);
+  CHECK_EQ(d->config().graph_renderer, "text");
+
+  // The regression: availability must come from the PROBE, not from _proto
+  // (kNone while text is active) — the second g must get back to pixels.
+  d->OnEvent(ftxui::Event::Character('g'));  // text -> pixels
+  CHECK_EQ(d->renderer_intent(), "pixels");
+  CHECK_EQ(d->renderer_proto(), ui::ImageProto::kKitty);
+  CHECK_EQ(d->config().graph_renderer, "pixels");
+
+  d->OnEvent(ftxui::Event::Character('g'));  // pixels -> text (full cycle)
+  CHECK_EQ(d->renderer_intent(), "text");
+  CHECK_EQ(d->renderer_proto(), ui::ImageProto::kNone);
+  CHECK_EQ(d->config().graph_renderer, "text");
+}
+
+TEST_CASE("settings: g with no image protocol stays on text") {
+  DashFixture fx;
+  auto d = fx.make(no_save_cfg());
+  ui::ProbeResult pr;
+  pr.tty = true;  // no kitty, no sixel, no cell size
+  d->set_probe(pr, ui::ImageProto::kNone, "auto");
+  REQUIRE_EQ(d->renderer_proto(), ui::ImageProto::kNone);
+  d->OnEvent(ftxui::Event::Character('g'));
+  CHECK_EQ(d->renderer_intent(), "text");
+  CHECK_EQ(d->config().graph_renderer, "text");
+  d->OnEvent(ftxui::Event::Character('g'));  // text is the only renderer
+  CHECK_EQ(d->renderer_intent(), "text");
+  CHECK_EQ(d->renderer_proto(), ui::ImageProto::kNone);
+}
+
 TEST_CASE("rename: one global GPU rename changes every occurrence (Part A.1)") {
   DashFixture fx;
   auto d = fx.make(no_save_cfg());
