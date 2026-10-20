@@ -91,10 +91,12 @@ or
 Default: auto-detect from
 .Ev COLORTERM .
 .It Sy "-renderer Ar mode"
-Force the chart renderer for this run only (not saved):
-.Sy pixels
+Force the graph mode for this run only (not saved):
+.Sy pixels ,
+.Sy text
 or
-.Sy text .
+.Sy bars
+(nvtop-style per-unit meters, always text-rendered).
 Default: the
 .Sq Ar graph_renderer
 value from the
@@ -163,7 +165,8 @@ Cycle the column count (auto, 1 to 8).
 .It Sy T
 Cycle the theme (saves the config).
 .It Sy g
-Cycle the graph renderer (pixels / text; saves the config).
+Cycle the graph mode (text, pixels, bars; saves the config). Bars are
+nvtop-style per-unit meters, always text-rendered.
 .It Sy "Up / Down or j / k"
 Scroll one row (when the page overflows).
 .It Sy "PgUp / PgDn"

@@ -469,6 +469,111 @@ TEST_CASE("no background color is ever emitted (160x48, all modes, both layers)"
     }
 }
 
+// v1.1.1 bars mode: the data provider returns one bar per unit from the
+// Snapshot's CURRENT values (a snapshot, unlike the line charts' history).
+TEST_CASE("bars: bars_for_panel returns one bar per unit from the Snapshot") {
+  Snapshot s;
+  s.cpu.per_core_pct = {50.0, 100.0, 0.0, 75.0};
+  s.cpu.temp_c = 60.0;
+  s.cpu.package_power_w = 45.0;
+  s.mem.ram_total_bytes = 32.0 * 1024 * 1024 * 1024;
+  s.mem.ram_used_bytes = 8.0 * 1024 * 1024 * 1024;
+  GpuSample g;
+  g.pci_bus_id = "0000:01:00.0";
+  g.usage_pct = 50.0;
+  g.vram_total_bytes = 8.0 * 1024 * 1024 * 1024;
+  g.vram_used_bytes = 4.0 * 1024 * 1024 * 1024;
+  g.temp_c = 55.0;
+  g.power_w = 20.0;
+  s.gpus.push_back(g);
+  NetIfSample ni;
+  ni.rx_bytes_per_s = 10.0 * 1024 * 1024;
+  ni.tx_bytes_per_s = 2.0 * 1024 * 1024;
+  s.net.interfaces.push_back(ni);
+  DiskDeviceSample dd;
+  dd.read_bytes_per_s = 100.0 * 1024 * 1024;
+  dd.write_bytes_per_s = 0.0;
+  s.disk.devices.push_back(dd);
+
+  ui::PanelSpec cpu; cpu.id = "cpu";
+  const auto cpu_bars = ui::bars_for_panel(cpu, s);
+  CHECK_EQ(cpu_bars.size(), 4u);  // one per core
+  CHECK_EQ(cpu_bars[0].value, 50.0);
+  CHECK_EQ(cpu_bars[1].value, 100.0);
+  CHECK_EQ(cpu_bars[3].value, 75.0);
+  CHECK_EQ(cpu_bars[0].max, 100.0);
+  CHECK_FALSE(cpu_bars[0].missing);
+  CHECK_EQ(ui::bars_axis_max(cpu, s), 100.0);
+
+  ui::PanelSpec gpu; gpu.id = "gpu.0000:01:00.0.usage";
+  gpu.gpu_bus = "0000:01:00.0";
+  const auto gpu_bars = ui::bars_for_panel(gpu, s);
+  CHECK_EQ(gpu_bars.size(), 1u);
+  CHECK_EQ(gpu_bars[0].value, 50.0);
+  CHECK_EQ(gpu_bars[0].max, 100.0);
+
+  ui::PanelSpec vram; vram.id = "gpu.0000:01:00.0.vram";
+  vram.gpu_bus = "0000:01:00.0";
+  const auto vram_bars = ui::bars_for_panel(vram, s);
+  CHECK_EQ(vram_bars.size(), 1u);
+  CHECK_EQ(vram_bars[0].value, 4.0 * 1024 * 1024 * 1024);
+  CHECK_EQ(vram_bars[0].max, 8.0 * 1024 * 1024 * 1024);
+
+  ui::PanelSpec mem; mem.id = "mem";
+  const auto mem_bars = ui::bars_for_panel(mem, s);
+  CHECK_EQ(mem_bars.size(), 1u);
+  CHECK_EQ(mem_bars[0].value, 8.0 * 1024 * 1024 * 1024);
+  CHECK_EQ(mem_bars[0].max, 32.0 * 1024 * 1024 * 1024);
+
+  ui::PanelSpec temps; temps.id = "temps";
+  CHECK_EQ(ui::bars_for_panel(temps, s).size(), 2u);  // CPU + GPU
+  CHECK_EQ(ui::bars_axis_max(temps, s), 110.0);
+
+  ui::PanelSpec power; power.id = "power";
+  CHECK_EQ(ui::bars_for_panel(power, s).size(), 2u);  // APU + dGPU
+  CHECK_EQ(ui::bars_axis_max(power, s), 128.0);
+
+  ui::PanelSpec net; net.id = "net";
+  const auto net_bars = ui::bars_for_panel(net, s);
+  CHECK_EQ(net_bars.size(), 1u);
+  CHECK_EQ(net_bars[0].value, 12.0 * 1024 * 1024);  // rx + tx
+  CHECK_EQ(net_bars[0].max, 100.0 * 1024 * 1024);
+
+  ui::PanelSpec disk; disk.id = "disk";
+  const auto disk_bars = ui::bars_for_panel(disk, s);
+  CHECK_EQ(disk_bars.size(), 1u);
+  CHECK_EQ(disk_bars[0].value, 100.0 * 1024 * 1024);  // read + write
+  CHECK_EQ(disk_bars[0].max, 1024.0 * 1024 * 1024);
+}
+
+// v1.1.1 bars mode: chrome.bars draws block meters (text-rendered), keeps the
+// geometry valid, and never emits a background SGR (in every color mode).
+TEST_CASE("bars: chrome.bars draws block meters, keeps geometry, no background SGR") {
+  const UiFixture fx;
+  const ui::Theme theme = ui::Theme::cyberpunk_blue();
+  for (auto mode : {ui::ColorMode::TrueColor, ui::ColorMode::Color256,
+                    ui::ColorMode::Color16}) {
+    ui::FrameState state;
+    ui::LayoutCache cache = cache_for(fx.page);
+    ftxui::Screen screen(160, 48);
+    screen.Clear();
+    ui::FrameChrome chrome;
+    chrome.bars = true;  // pixels stays false: bars are text-rendered
+    ui::render_frame(screen, fx.hw, fx.page, fx.c.store(), fx.c.latest(), nullptr,
+                     state, theme, mode, /*paused=*/false, 1000, cache, 0, kWinNs,
+                     chrome);
+    const std::string out = screen.ToString();
+    CHECK(out.find('\xe2') != std::string::npos);  // glyphs drawn
+    CHECK(!has_forbidden_style(out));  // no background SGR
+    // Block meters are drawn: a full block '█' (U+2588) appears in the rects.
+    CHECK(out.find("\xe2\x96\x88") != std::string::npos);
+    // The geometry self-check: every line is exactly 160 display cols wide.
+    const ui::GeometryReport rep = ui::check_geometry(ui::screen_to_text(screen), 160);
+    CHECK_EQ(rep.lines, 48);
+    CHECK(rep.bad_lines.empty());
+  }
+}
+
 // v1.0.1 Part A.3: every BUILT-IN theme renders in all three color modes
 // (paired with the 16-slot distinctness test in test_theme.cpp).
 TEST_CASE("every built-in theme renders in truecolor, 256 and 16 colors") {

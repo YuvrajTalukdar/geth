@@ -116,10 +116,14 @@ class Dashboard : public ftxui::ComponentBase {
     _proto = proto;
     _renderer_eff = effective_intent;
     _pixels_layer = (proto != ImageProto::kNone);
+    _bars = (effective_intent == "bars");
   }
   // --render-frame has no probe: set the text layer's pixel flag directly
   // (the pixels text layer = graphs left as plain spaces).
   void set_pixels_layer(bool b) { _pixels_layer = b; }
+  // --render-frame/--render-png with --renderer bars: set the bars flag
+  // directly (the text layer then draws nvtop-style block bars).
+  void set_bars_layer(bool b) { _bars = b; }
   // --render-png has no terminal probe: inject the cell pixel size directly so
   // render_one rasterizes each graph rect at exactly the PNG's cell size.
   void set_cell_px(int w, int h) {
@@ -255,6 +259,11 @@ class Dashboard : public ftxui::ComponentBase {
   // What the TEXT layer draws: true = the resolved renderer is pixels, so
   // the graph rects are left plain spaces for the pixel backend.
   bool _pixels_layer = false;
+  // The graph TYPE is bars (nvtop-style per-unit meters) instead of a line
+  // chart. Bars are always text-rendered (block columns); graph_renderer="bars"
+  // forces the text renderer for the graph, so in bars mode the text layer
+  // draws them and chrome.pixels is false.
+  bool _bars = false;
   // --render-png cell pixel size (0 = use the probe; the probe is 0 there, so
   // no raster). OnRender prefers these over the probe when set.
   int _cell_w = 0, _cell_h = 0;

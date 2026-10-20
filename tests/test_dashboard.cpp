@@ -338,7 +338,7 @@ TEST_CASE("settings: c cycles the columns (auto -> 1..8 -> auto)") {
   CHECK_EQ(d->columns_setting(), -1);
 }
 
-TEST_CASE("settings: g cycles the renderer text <-> pixels (probe found kitty)") {
+TEST_CASE("settings: g cycles text -> pixels -> bars -> text (probe found kitty)") {
   DashFixture fx;
   auto d = fx.make(no_save_cfg());
   ui::ProbeResult pr;
@@ -350,37 +350,47 @@ TEST_CASE("settings: g cycles the renderer text <-> pixels (probe found kitty)")
   REQUIRE_EQ(d->renderer_intent(), "auto");
   REQUIRE_EQ(d->renderer_proto(), ui::ImageProto::kKitty);  // auto resolves to pixels
 
-  d->OnEvent(ftxui::Event::Character('g'));  // auto+kitty -> text
+  // auto+kitty: the active intent is "pixels", so g -> bars.
+  d->OnEvent(ftxui::Event::Character('g'));
+  CHECK_EQ(d->renderer_intent(), "bars");
+  CHECK_EQ(d->config().graph_renderer, "bars");
+  CHECK_EQ(d->renderer_proto(), ui::ImageProto::kNone);  // bars: no images
+
+  // bars -> text.
+  d->OnEvent(ftxui::Event::Character('g'));
   CHECK_EQ(d->renderer_intent(), "text");
   CHECK_EQ(d->renderer_proto(), ui::ImageProto::kNone);
   CHECK_EQ(d->config().graph_renderer, "text");
 
   // The regression: availability must come from the PROBE, not from _proto
-  // (kNone while text is active) — the second g must get back to pixels.
+  // (kNone while text is active) — the next g must get back to pixels.
   d->OnEvent(ftxui::Event::Character('g'));  // text -> pixels
   CHECK_EQ(d->renderer_intent(), "pixels");
   CHECK_EQ(d->renderer_proto(), ui::ImageProto::kKitty);
   CHECK_EQ(d->config().graph_renderer, "pixels");
 
-  d->OnEvent(ftxui::Event::Character('g'));  // pixels -> text (full cycle)
-  CHECK_EQ(d->renderer_intent(), "text");
-  CHECK_EQ(d->renderer_proto(), ui::ImageProto::kNone);
-  CHECK_EQ(d->config().graph_renderer, "text");
+  // pixels -> bars (full 3-way cycle).
+  d->OnEvent(ftxui::Event::Character('g'));
+  CHECK_EQ(d->renderer_intent(), "bars");
+  CHECK_EQ(d->config().graph_renderer, "bars");
 }
 
-TEST_CASE("settings: g with no image protocol stays on text") {
+TEST_CASE("settings: g with no image protocol cycles text <-> bars") {
   DashFixture fx;
   auto d = fx.make(no_save_cfg());
   ui::ProbeResult pr;
   pr.tty = true;  // no kitty, no sixel, no cell size
   d->set_probe(pr, ui::ImageProto::kNone, "auto");
   REQUIRE_EQ(d->renderer_proto(), ui::ImageProto::kNone);
-  d->OnEvent(ftxui::Event::Character('g'));
+  d->OnEvent(ftxui::Event::Character('g'));  // text -> bars (the other text mode)
+  CHECK_EQ(d->renderer_intent(), "bars");
+  CHECK_EQ(d->config().graph_renderer, "bars");
+  d->OnEvent(ftxui::Event::Character('g'));  // bars -> text
   CHECK_EQ(d->renderer_intent(), "text");
   CHECK_EQ(d->config().graph_renderer, "text");
-  d->OnEvent(ftxui::Event::Character('g'));  // text is the only renderer
-  CHECK_EQ(d->renderer_intent(), "text");
-  CHECK_EQ(d->renderer_proto(), ui::ImageProto::kNone);
+  d->OnEvent(ftxui::Event::Character('g'));  // text -> bars (only two text modes)
+  CHECK_EQ(d->renderer_intent(), "bars");
+  CHECK_EQ(d->config().graph_renderer, "bars");
 }
 
 TEST_CASE("rename: one global GPU rename changes every occurrence (Part A.1)") {

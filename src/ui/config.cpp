@@ -203,12 +203,12 @@ Config Config::load(const std::string& path, bool no_save) {
           } else if (name == "graph_renderer") {
             if (v.is_string()) {
               const std::string s = v.as<std::string>()->get();
-              if (s == "auto" || s == "pixels" || s == "text")
+              if (s == "auto" || s == "pixels" || s == "text" || s == "bars")
                 c.graph_renderer = s;
               else
                 c.warnings.push_back(warn(
                     c, line, "general.graph_renderer must be \"auto\", "
-                             "\"pixels\" or \"text\" — ignored"));
+                             "\"pixels\", \"text\" or \"bars\" — ignored"));
             } else
               c.warnings.push_back(warn(
                   c, line, "general.graph_renderer must be a string — "

@@ -2,6 +2,20 @@
 
 All notable changes to GETH. The format follows the five-phase build plan.
 
+## 1.2.0 — bars mode: nvtop-style per-unit meters (2026-10-20)
+
+A third graph mode, cycled by `g` and selectable via
+`graph_renderer = "bars"` / `--renderer bars`. Instead of a scrolling history
+line chart, each panel draws one vertical bar per unit — a bar per CPU core,
+per GPU, per sensor, per network interface, and per disk device — filled to
+the current value and ramped green → yellow → red as it rises. Bars are always
+text-rendered (block columns), so they work in any terminal and in tmux, and
+they show the CURRENT value (a snapshot), not history. The y axis matches each
+bar's scale (100 % for usage, the total for memory, 110 °C for temps,
+128 W for power, 100 MiB/s for net, 1 GiB/s for disk). `g` now cycles
+text → pixels → bars → text (saved to the config); with no image protocol it
+cycles text ↔ bars.
+
 ## 1.1.1 — Sixel is experimental; iGPU and RAPL fixes (2026-10-20)
 
 Follow-up to 1.1.0: the pixel renderer now works inside tmux (via Sixel),

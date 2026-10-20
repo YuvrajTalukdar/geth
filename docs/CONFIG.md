@@ -25,7 +25,7 @@ columns = "auto"        # "auto" | 1..8
 title = ""              # header title override ("" = auto: CPU & GPU names)
 theme = "cyberpunk-blue"# built-in or custom theme name (see --list-themes)
 background = "transparent"  # "transparent" | "solid" (paints the theme bg)
-graph_renderer = "auto"     # "auto" | "pixels" | "text" (auto = kitty when available)
+graph_renderer = "auto"     # "auto" | "pixels" | "text" | "bars" (auto = kitty when available)
 
 # One [[panels]] table per panel, in display order.
 [[panels]]
@@ -53,6 +53,15 @@ text. The **Sixel** path — the only image option inside tmux — is
 panel every frame (higher GPU load, no re-send policy). It is not the `auto`
 default; select it with `graph_renderer = "pixels"` (or `--renderer pixels`),
 and geth flags it as experimental when it is active.
+
+`bars` is a third, nvtop-style graph mode: instead of a scrolling history
+line chart, each panel draws one vertical bar per unit — a bar per CPU core,
+per GPU, per sensor, per network interface, and per disk device — filled to
+the current value and ramped green → yellow → red as it rises. The y axis
+matches each bar's scale (100 % for usage, the total for memory, …). Bars
+are always text-rendered (block columns), so they work in any terminal and
+in tmux; they show the CURRENT value (a snapshot), not history. The `g` key
+cycles text → pixels → bars → text.
 
 ### Panel and series ids
 

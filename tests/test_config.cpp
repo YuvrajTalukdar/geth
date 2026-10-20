@@ -182,8 +182,8 @@ TEST_CASE("round-trip: an empty title serializes to \"\" and a gpus auto is kept
   CHECK_FALSE(r.gpus.at("0000:07:00.0").integrated.has_value());  // back to auto
 }
 
-TEST_CASE("graph_renderer: auto/pixels/text round-trip; invalid values warn") {
-  for (const char* r : {"auto", "pixels", "text"}) {
+TEST_CASE("graph_renderer: auto/pixels/text/bars round-trip; invalid values warn") {
+  for (const char* r : {"auto", "pixels", "text", "bars"}) {
     ui::Config c;
     c.graph_renderer = r;
     const std::string path = tmp_path(std::string("renderer_") + r + ".toml");

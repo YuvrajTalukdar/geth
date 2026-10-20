@@ -267,6 +267,10 @@ ProbeResult probe_terminal(int timeout_ms) {
 ImageProto resolve_protocol(const std::string& intent, const ProbeResult& p,
                             std::string* warning) {
   if (intent == "text") return ImageProto::kNone;
+  // "pixels" and "bars" both want an IMAGE renderer (kitty > sixel); "bars"
+  // just draws the bar meters instead of a line chart, but the renderer that
+  // draws them is the same. `explicit_image` gates the sixel opt-in.
+  const bool explicit_image = (intent == "pixels" || intent == "bars");
   const bool sized = p.cell_w > 0 && p.cell_h > 0;
   // Kitty is the OPTIMIZED, fully-supported renderer: the placed image
   // persists in the terminal, so the re-send policy (the iGPU optimization)
@@ -276,10 +280,10 @@ ImageProto resolve_protocol(const std::string& intent, const ProbeResult& p,
   // not persist (tmux attaches it to the cells it covers and FTXUI's rewrite
   // detaches it), so it re-emits EVERY frame — no re-send policy, higher iGPU.
   // It is therefore NOT selected under `auto`; it is used only when pixels are
-  // EXPLICITLY requested (graph_renderer="pixels" / --renderer pixels) and
+  // EXPLICITLY requested (graph_renderer="pixels"/"bars" / --renderer) and
   // kitty is unavailable — exactly the tmux+Konsole case.
   if (sized && p.sixel) {
-    if (intent == "pixels") return ImageProto::kSixel;
+    if (explicit_image) return ImageProto::kSixel;
     // `auto` in a sixel-only multiplexer: stay on the optimized text
     // renderer, and point at the experimental option.
     if (warning)
@@ -288,16 +292,16 @@ ImageProto resolve_protocol(const std::string& intent, const ProbeResult& p,
                  "frame, higher GPU load; kitty/text is the optimized path)";
     return ImageProto::kNone;
   }
-  if (warning && intent == "pixels") {
+  if (warning && explicit_image) {
     if (p.multiplexer)
-      *warning = "pixels requested, but no image protocol was detected "
-                 "inside the multiplexer — using text";
+      *warning = "an image renderer was requested, but no image protocol was "
+                 "detected inside the multiplexer — using text";
     else if (!sized)
-      *warning = "pixels requested, but the cell pixel size is unknown — "
-                 "using text";
+      *warning = "an image renderer was requested, but the cell pixel size is "
+                 "unknown — using text";
     else
-      *warning = "pixels requested, but this terminal has no image protocol "
-                 "(kitty/sixel) — using text";
+      *warning = "an image renderer was requested, but this terminal has no "
+                 "image protocol (kitty/sixel) — using text";
   }
   return ImageProto::kNone;
 }

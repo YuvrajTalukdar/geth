@@ -317,7 +317,10 @@ ftxui::Element Dashboard::OnRender() {
   // v1.1.0: the text layer leaves the graph rects as plain spaces when the
   // resolved renderer is pixels (the pixel backend paints them over). The cell
   // size (from the probe) is what rasterizes each graph rect to pixels.
-  chrome.pixels = _pixels_layer;
+  // Bars mode forces the text layer for the graph (nvtop-style block bars are
+  // text-rendered); the pixel backend is off, so chrome.pixels is false there.
+  chrome.pixels = _pixels_layer && !_bars;
+  chrome.bars = _bars;
   // --render-png injects the cell size (no probe there); otherwise the probe.
   chrome.cell_w = _cell_w > 0 ? _cell_w : _probe.cell_w;
   chrome.cell_h = _cell_h > 0 ? _cell_h : _probe.cell_h;
@@ -545,44 +548,64 @@ void Dashboard::cycle_theme() {
 }
 
 void Dashboard::cycle_graph_renderer() {
-  // g flips between the AVAILABLE renderers (text, and pixels when the
-  // startup probe found an image protocol) and saves the new choice.
-  // "auto" counts as its current resolution (pixels when available).
+  // g cycles the graph MODE: text (line, text renderer) -> pixels (line, pixel
+  // renderer, when a protocol is available) -> bars (nvtop-style per-unit
+  // meters, ALWAYS text-rendered) -> text. The choice is saved. "auto" counts
+  // as its line resolution (pixels when available) for the cycle position;
+  // availability comes from the PROBE (not _proto, which reads kNone while
+  // text/bars is active).
   std::string w;
-  const bool pixels_now = (_renderer_eff == "pixels" ||
-                           (_renderer_eff == "auto" && _proto != ImageProto::kNone));
-  // Whether pixels CAN be selected comes from the PROBE, not from _proto:
-  // _proto is the CURRENT choice's resolution, so it reads kNone while
-  // text is active even when the terminal supports a protocol — which made
-  // the flip back to pixels unreachable after the first g.
   const bool pixels_avail =
       (resolve_protocol("pixels", _probe, &w) != ImageProto::kNone);
+  std::string cur = _renderer_eff;
+  if (cur == "auto") cur = pixels_avail ? "pixels" : "text";
   std::string next;
-  if (pixels_now)
+  if (cur == "text")
+    next = pixels_avail ? "pixels" : "bars";
+  else if (cur == "pixels")
+    next = "bars";
+  else  // "bars"
     next = "text";
-  else if (pixels_avail)
-    next = "pixels";
-  else
-    next = "text";  // no protocol: text is the only renderer
   _cfg.graph_renderer = next;
   _renderer_eff = next;  // a UI change supersedes any --renderer override
   _dirty = true;
   save_now();
-  const ImageProto p = resolve_protocol(next, _probe, &w);
-  _proto = p;                       // the new choice IS the resolution now
-  _pixels_layer = (p != ImageProto::kNone);
-  if (next == "pixels" && p == ImageProto::kNone)
-    toast("no image protocol in this terminal — staying on text");
-  else if (p == ImageProto::kSixel)
-    note_warning("renderer: pixels (sixel) — EXPERIMENTAL (re-emits every "
-                 "frame, higher GPU load; kitty/text is the optimized path)");
-  else
-    toast("renderer: " + renderer_name(p));
+  if (next == "bars") {
+    // Bars are text-rendered: no pixel images. render_images() early-returns
+    // for _bars and deletes any stale images from a prior pixels session.
+    _proto = ImageProto::kNone;
+    _pixels_layer = false;
+    _bars = true;
+    toast("graph: bars (nvtop-style meters)");
+  } else {
+    const ImageProto p = (next == "text")
+                             ? ImageProto::kNone
+                             : resolve_protocol("pixels", _probe, &w);
+    _proto = p;                       // the new choice's resolution now
+    _pixels_layer = (p != ImageProto::kNone);
+    _bars = false;
+    if (next == "pixels" && p == ImageProto::kNone)
+      toast("no image protocol in this terminal — staying on text");
+    else if (p == ImageProto::kSixel)
+      note_warning("renderer: pixels (sixel) — EXPERIMENTAL (re-emits every "
+                   "frame, higher GPU load; kitty/text is the optimized path)");
+    else
+      toast("renderer: " + renderer_name(p));
+  }
 }
 
 // -- v1.1.0 pixel backend -------------------------------------------------------
 
 std::string Dashboard::render_images(const ftxui::Screen::Cursor& park) {
+  // Bars mode (v1.1.1): the graph is text-rendered (nvtop-style block bars),
+  // so no pixel images. This ALSO deletes any stale images left over from a
+  // pixels session (e.g. right after `g` flipped to bars).
+  if (_bars) {
+    const std::string s = _images.delete_all();
+    _images.reset();
+    util::set_image_cleanup_seq("");
+    return s;
+  }
   // No protocol (the text renderer): nothing to place. This is ALSO the path
   // that deletes any stale images left over from a pixels session (e.g. right
   // after `g` flipped to text).
@@ -1333,6 +1356,7 @@ int run_render_frame(Collector& collector, const Hardware& hw_in, int W, int H,
   // layer still renders the pixels form (graphs left as plain spaces), so
   // the text layer of both renderers is capturable.
   dash->set_pixels_layer(opts.renderer == "pixels");
+  dash->set_bars_layer(opts.renderer == "bars");
 
   // --script: replay synthetic events against the live Dashboard, then render
   // the result. The final state is what gets printed.
@@ -1517,6 +1541,7 @@ int run_render_png(Collector& collector, const Hardware& hw_in, int W, int H,
   dash->set_size(W, H);
   const bool pixels = (opts.renderer == "pixels");
   dash->set_pixels_layer(pixels);
+  dash->set_bars_layer(opts.renderer == "bars");
   // Rasterize each graph at exactly the PNG's cell size (the embedded glyph
   // metrics), so the rasters fill their cell rects.
   dash->set_cell_px(kGlyphCw, kGlyphCh);

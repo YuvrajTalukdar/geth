@@ -76,7 +76,7 @@ struct Options {
   std::string theme;          // --theme NAME ("" = the config's [general] theme)
   bool list_themes = false;   // --list-themes
   bool probe_terminal = false;  // --probe-terminal: terminal capabilities, exit
-  std::string renderer;      // --renderer pixels|text ("" = the config's value)
+  std::string renderer;      // --renderer pixels|text|bars ("" = config's value)
   std::string trace_series;   // --trace SERIES_ID: per-tick stage trace (off if empty)
 };
 
@@ -118,8 +118,9 @@ void print_help() {
       "                      (kitty/sixel), the cell pixel size, and the graph\n"
       "                      renderer that will be chosen; does not touch the\n"
       "                      hardware\n"
-      "  --renderer <name>   pixels | text — session override for the graph\n"
-      "                      renderer (default: the config's graph_renderer)\n"
+      "  --renderer <name>   pixels | text | bars — session override for the\n"
+      "                      graph renderer (default: the config's\n"
+      "                      graph_renderer; bars = nvtop-style per-unit meters)\n"
       "  --no-save           Never write the config file (read-only)\n"
       "  --script <events>   --render-frame only: replay a comma-separated list\n"
       "                      of synthetic events (keys, enter, space, tab,\n"
@@ -214,8 +215,10 @@ int parse_args(int argc, char** argv, Options& o) {
     } else if (a == "--renderer") {
       const char* v = need_value("--renderer");
       if (!v) return -1;
-      if (std::string(v) != "pixels" && std::string(v) != "text") {
-        std::fprintf(stderr, "geth: --renderer must be pixels or text\n");
+      if (std::string(v) != "pixels" && std::string(v) != "text" &&
+          std::string(v) != "bars") {
+        std::fprintf(stderr,
+                     "geth: --renderer must be pixels, text or bars\n");
         return -1;
       }
       o.renderer = v;

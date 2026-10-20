@@ -193,11 +193,30 @@ struct FrameChrome {
   // gridlines, no SGR) — the pixel backend draws the graph image on top of
   // exactly that rectangle, one round later.
   bool pixels = false;
+  // v1.1.1: the graph TYPE is bars (nvtop-style per-unit meters) instead of a
+  // line chart. Bars are always text-rendered (block columns, the nvtop look):
+  // graph_renderer="bars" forces the text renderer for the graph, so this is
+  // set together with a text `pixels` (chrome.pixels is false in bars mode).
+  bool bars = false;
   // v1.1.0: the terminal's cell size in pixels (cell_w x cell_h), from the
   // startup probe. Rasterizing a panel needs it (w = Wg*cell_w, etc.); 0 means
   // unknown, in which case no image is produced for that frame.
   int cell_w = 0, cell_h = 0;
 };
+
+// v1.1.1 bars mode (nvtop-style per-unit meters): one vertical bar. Bars show
+// the CURRENT value per unit (a snapshot), unlike the line charts (history).
+struct BarData {
+  double value = 0;    // current value
+  double max = 0;      // scale max (100 for %, the total for absolute); <=0 = missing
+  bool missing = false;  // no data: draw a dim stub
+};
+// The bars for a panel in bars mode, from the Snapshot's CURRENT values. One
+// bar per unit: per-core for CPU, per-GPU for the GPU panels, per-sensor /
+// interface / device for temps/net/disk, a single bar for memory.
+std::vector<BarData> bars_for_panel(const PanelSpec& p, const Snapshot& s);
+// The y-axis max for bars mode (so the top tick matches the bar's scale).
+double bars_axis_max(const PanelSpec& p, const Snapshot& s);
 
 // The panel-manager overlay (drawn over the live dashboard, which keeps
 // relaying out behind it — the live preview).

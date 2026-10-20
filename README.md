@@ -56,12 +56,16 @@ dependencies are fetched by CMake and pinned to exact versions (see
 ## Features
 
 - **Charts & metrics** — a live chart per panel, with a `g` key that
-  switches the renderer (saved to the config). When the terminal speaks the
-  Kitty graphics protocol (or Sixel), each graph is a pixel image: smooth
-  anti-aliased lines, a soft translucent fill, faint gridlines on a
-  transparent background. Otherwise the text fallback: a solid area chart
-  for single-series panels and one-dot braille lines for multi-series ones.
-  The metrics: CPU usage (with per-core), frequency, temperature, package
+  cycles the graph mode (saved to the config). Two line-chart renderers and
+  a bars mode: when the terminal speaks the Kitty graphics protocol (or
+  Sixel), each graph is a pixel image — smooth anti-aliased lines, a soft
+  translucent fill, faint gridlines on a transparent background; otherwise
+  the text fallback is a solid area chart for single-series panels and
+  one-dot braille lines for multi-series ones. **Bars** (nvtop-style) draw
+  per-unit meters — a vertical bar per CPU core, per GPU, per sensor, per
+  interface and per device — filled to the current value and ramped
+  green→yellow→red; they are always text-rendered, so they work in any
+  terminal. The metrics: CPU usage (with per-core), frequency, temperature, package
   power, RAM/swap, GPU usage and memory (GTT vs VRAM on integrated AMD
   GPUs), disk and network rates. Series that share a panel always get
   distinct colors. Gaps (suspend, clock jumps) blank the rate series for
@@ -142,7 +146,7 @@ and the RAPL/powercap details: [docs/HARDWARE.md](docs/HARDWARE.md).
 Build the package first (next section), then:
 
 ```sh
-sudo pacman -U dist/geth-1.1.1-1-x86_64.pkg.tar.zst   # install
+sudo pacman -U dist/geth-1.2.0-1-x86_64.pkg.tar.zst   # install
 sudo pacman -R geth                                   # uninstall
 rm -r ~/.config/geth                                  # remove your config (optional)
 ```
@@ -205,7 +209,7 @@ cached), and runs `makepkg -f --cleanbuild` — with **no network access in
 `build()`**. Output:
 
 ```
-dist/geth-1.1.1-1-x86_64.pkg.tar.zst
+dist/geth-1.2.0-1-x86_64.pkg.tar.zst
 dist/SHA256SUMS
 ```
 
@@ -220,7 +224,8 @@ geth --json --count 5       # JSON, one object per sample
 geth --render-frame 160x48  # render one frame at that size and exit
 geth --render-png 200x56    # composite one frame to an 8-bit RGB PNG (stdout)
 geth --probe-terminal       # which image protocol (kitty/sixel), cell size
-geth --renderer pixels      # force the renderer for this run (not saved)
+geth --renderer pixels      # force the graph mode for this run (not saved)
+geth --renderer bars        # nvtop-style per-unit meters (also not saved)
 geth --stats                # print render-time + alloc stats on exit
 geth --color 256            # force a color mode: truecolor | 256 | 16
 geth --theme matrix-green   # select a theme (see --list-themes)
@@ -248,7 +253,7 @@ Keys (press `?` in the UI for the full list):
 | `t` | Cycle the graph window (30s → 1m → 2m → 5m → 10m) |
 | `c` | Cycle the column count |
 | `T` | Cycle the **theme** (saved to the config) |
-| `g` | Cycle the **graph renderer** (pixels / text, saved) |
+| `g` | Cycle the **graph mode** (text → pixels → bars → text, saved) |
 
 In the **panel manager** (`e`): `↑` `↓` / `j` `k` select, `space` show/hide a
 panel, `K` `J` (or the mouse) reorder, `r` rename a GPU (applied globally to
@@ -260,8 +265,8 @@ short "saved" toast.
 
 Config: TOML at `$XDG_CONFIG_HOME/geth/config.toml` (or
 `~/.config/geth/config.toml`), covering sampling interval, graph window,
-column count, title, theme, background mode, graph renderer
-(`graph_renderer = "auto" | "pixels" | "text"`, default `auto`), per-panel
+column count, title, theme, background mode, graph mode
+(`graph_renderer = "auto" | "pixels" | "text" | "bars"`, default `auto`), per-panel
 order/visibility/series, and per-GPU renames. Written only when a setting changes; unknown keys are
 warned, never an error. Full schema and merge rules:
 [docs/CONFIG.md](docs/CONFIG.md).

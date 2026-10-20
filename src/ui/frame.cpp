@@ -515,12 +515,136 @@ void draw_compact_legend(ftxui::Screen& s, int x, int y, int iw,
   }
 }
 
+// -- v1.1.1 bars mode (nvtop-style per-unit meters) ---------------------------
+//
+// Bars show the CURRENT value per unit (a snapshot), unlike the line charts
+// (history). The data comes straight off the Snapshot (no history needed).
+// Bars are always text-rendered (block columns, the nvtop look);
+// graph_renderer="bars" forces the text renderer for the graph so it works in
+// any terminal and stays crisp.
+
+// The nvtop green -> yellow -> red ramp, by the value fraction f in [0,1].
+Rgb bar_color(double f) {
+  if (f < 0) f = 0;
+  if (f > 1) f = 1;
+  const Rgb a = f <= 0.5 ? rgb(90, 200, 110) : rgb(235, 205, 70);
+  const Rgb b = f <= 0.5 ? rgb(235, 205, 70) : rgb(230, 80, 80);
+  const double t = f <= 0.5 ? f * 2.0 : (f - 0.5) * 2.0;
+  return rgb(static_cast<std::uint8_t>(a.r + (b.r - a.r) * t),
+             static_cast<std::uint8_t>(a.g + (b.g - a.g) * t),
+             static_cast<std::uint8_t>(a.b + (b.b - a.b) * t));
+}
+}  // namespace
+
+// The bar data provider (in geth::ui, so the unit tests can drive it): one bar
+// per unit, from the Snapshot's CURRENT values (bars show a snapshot, unlike
+// the line charts' history).
+std::vector<BarData> bars_for_panel(const PanelSpec& p, const Snapshot& s) {
+  std::vector<BarData> bars;
+  auto push = [&](double v, double mx, bool missing) {
+    bars.push_back(BarData{v, mx, missing});
+  };
+  const std::string& id = p.id;
+  const bool is_vram = id.size() >= 5 && id.compare(id.size() - 5, 5, ".vram") == 0;
+  if (id == "cpu") {
+    for (const auto& c : s.cpu.per_core_pct)
+      push(c ? *c : 0.0, 100.0, !c.has_value());
+    if (bars.empty()) push(0, 100, true);
+  } else if (id.rfind("gpu.", 0) == 0) {
+    const GpuSample* g = nullptr;
+    for (const auto& x : s.gpus)
+      if (x.pci_bus_id == p.gpu_bus) { g = &x; break; }
+    if (is_vram) {
+      if (g && g->vram_total_bytes && *g->vram_total_bytes > 0)
+        push(g->vram_used_bytes ? *g->vram_used_bytes : 0.0,
+             *g->vram_total_bytes, !g->vram_used_bytes.has_value());
+      else
+        push(0, 1, true);
+    } else {  // gpu.<bus>.usage
+      if (g)
+        push(g->usage_pct ? *g->usage_pct : 0.0, 100.0,
+             !g->usage_pct.has_value());
+      else
+        push(0, 100, true);
+    }
+  } else if (id == "mem") {
+    if (s.mem.ram_total_bytes && *s.mem.ram_total_bytes > 0)
+      push(s.mem.ram_used_bytes ? *s.mem.ram_used_bytes : 0.0,
+           *s.mem.ram_total_bytes, !s.mem.ram_used_bytes.has_value());
+    else
+      push(0, 1, true);
+  } else if (id == "temps") {
+    if (s.cpu.temp_c) push(*s.cpu.temp_c, 110.0, false);
+    for (const auto& g : s.gpus)
+      if (g.temp_c) push(*g.temp_c, 110.0, false);
+    if (bars.empty()) push(0, 110, true);
+  } else if (id == "power") {
+    if (s.cpu.package_power_w) push(*s.cpu.package_power_w, 128.0, false);
+    for (const auto& g : s.gpus)
+      if (g.power_w) push(*g.power_w, 128.0, false);
+    if (bars.empty()) push(0, 128, true);
+  } else if (id == "net") {
+    const double mx = 100.0 * 1024 * 1024;  // 100 MiB/s
+    for (const auto& i : s.net.interfaces)
+      push((i.rx_bytes_per_s ? *i.rx_bytes_per_s : 0.0) +
+               (i.tx_bytes_per_s ? *i.tx_bytes_per_s : 0.0),
+           mx, false);
+    if (bars.empty()) push(0, mx, true);
+  } else if (id == "disk") {
+    const double mx = 1024.0 * 1024 * 1024;  // 1 GiB/s
+    for (const auto& d : s.disk.devices)
+      push((d.read_bytes_per_s ? *d.read_bytes_per_s : 0.0) +
+               (d.write_bytes_per_s ? *d.write_bytes_per_s : 0.0),
+           mx, false);
+    if (bars.empty()) push(0, mx, true);
+  } else {
+    push(0, 1, true);
+  }
+  return bars;
+}
+
+double bars_axis_max(const PanelSpec& p, const Snapshot& s) {
+  double mx = 0;
+  for (const auto& b : bars_for_panel(p, s))
+    if (b.max > mx) mx = b.max;
+  return mx > 0 ? mx : 100.0;
+}
+
+namespace {
+// Draws the bars as vertical block columns in the graph rect
+// (gx..gx+Wg, gy..gy+Hg): bottom-up fill, the nvtop green->red ramp by value,
+// a dim stub for a missing unit.
+void draw_bars(ftxui::Screen& s, int gx, int gy, int Wg, int Hg,
+               const std::vector<BarData>& bars, const Colors& c) {
+  const int n = static_cast<int>(bars.size());
+  if (n <= 0 || Wg < 1 || Hg < 1) return;
+  const int bar_w = std::max(1, Wg / n);
+  const int total = bar_w * n;
+  const int gap = total < Wg ? (Wg - total) / (n + 1) : 0;
+  for (int i = 0; i < n; ++i) {
+    const int x = gx + gap * (i + 1) + bar_w * i;
+    if (x + bar_w > gx + Wg) break;  // more units than width: clip
+    const BarData& b = bars[i];
+    const double frac = b.max > 0 ? std::clamp(b.value / b.max, 0.0, 1.0) : 0.0;
+    int filled = static_cast<int>(std::lround(frac * Hg));
+    ftxui::Color col;
+    if (b.missing) {
+      filled = 1;
+      col = c.label_dim;
+    } else {
+      col = to_ftxui(bar_color(frac), c.mode);
+    }
+    for (int yy = 0; yy < Hg; ++yy)
+      if (yy >= Hg - filled) put_px(s, x, gy + yy, "█", col);
+  }
+}
+
 GraphGeom draw_panel(ftxui::Screen& s, int x0, int y0, int W, int H,
                      const PanelSpec& p, PanelMode mode, bool sleeping,
                      const std::vector<RawWindow>& raws,
                      const std::vector<std::string>& legend_values,
                      const Snapshot& snap, double vmax, const Colors& c,
-                     bool pixels, bool focused = false) {
+                     bool pixels, bool focused = false, bool bars = false) {
   if (W < 4 || H < 2) return GraphGeom{};
 
   // --- rounded border + title --------------------------------------------------
@@ -577,48 +701,55 @@ GraphGeom draw_panel(ftxui::Screen& s, int x0, int y0, int W, int H,
   // this rect one round later, so the text layer leaves it plain spaces
   // (the y axis, titles and legends stay text — the image sits beside them).
   if (have_graph && !pixels) {
-    // Series that will actually draw (hidden series get no data): ONE -> the
-    // area chart, SEVERAL -> one-dot braille lines with no fill.
-    int visible = 0;
-    for (const auto& sr : p.series)
-      if (!sr.hidden) ++visible;
-
-    std::vector<Decimated> decs(p.series.size());
-    for (std::size_t i = 0; i < p.series.size(); ++i)
-      if (!p.series[i].hidden) decs[i] = decimate(raws[i], dot_cols);
-
-    std::vector<Cell> cells(static_cast<std::size_t>(Wg) * Hg);
-    if (visible == 1) {
-      for (std::size_t i = 0; i < p.series.size(); ++i) {
-        if (p.series[i].hidden || !raws[i].valid()) continue;
-        draw_area_cells(cells, Wg, Hg, decs[i], raws[i], vmax,
-                        c.series_raw[p.series[i].color_index], c.mode);
-        break;
-      }
+    if (bars) {
+      // v1.1.1 bars mode: nvtop-style per-unit meters (current values, not
+      // history). The y axis and ticks still render (below); the bars sit in
+      // the graph rect at the same scale (vmax = bars_axis_max).
+      draw_bars(s, gx, gy, Wg, Hg, bars_for_panel(p, snap), c);
     } else {
-      std::vector<GraphSeries> gs(p.series.size());
-      for (std::size_t i = 0; i < p.series.size(); ++i) {
-        if (p.series[i].hidden) continue;
-        const int ci = p.series[i].color_index;
-        gs[i] = GraphSeries{&decs[i], c.series[ci]};
-      }
-      draw_graph_cells(cells, Wg, Hg, gs, raws, vmax);
-    }
+      // Series that will actually draw (hidden series get no data): ONE -> the
+      // area chart, SEVERAL -> one-dot braille lines with no fill.
+      int visible = 0;
+      for (const auto& sr : p.series)
+        if (!sr.hidden) ++visible;
 
-    for (int cy = 0; cy < Hg; ++cy)
-      for (int cc = 0; cc < Wg; ++cc) {
-        const Cell& cell = cells[static_cast<std::size_t>(cy) * Wg + cc];
-        if (cell.order < 0) continue;
-        put_px(s, gx + cc, gy + cy,
-               cell.glyph.empty() ? braille_char(cell.mask) : cell.glyph,
-               cell.color);
+      std::vector<Decimated> decs(p.series.size());
+      for (std::size_t i = 0; i < p.series.size(); ++i)
+        if (!p.series[i].hidden) decs[i] = decimate(raws[i], dot_cols);
+
+      std::vector<Cell> cells(static_cast<std::size_t>(Wg) * Hg);
+      if (visible == 1) {
+        for (std::size_t i = 0; i < p.series.size(); ++i) {
+          if (p.series[i].hidden || !raws[i].valid()) continue;
+          draw_area_cells(cells, Wg, Hg, decs[i], raws[i], vmax,
+                          c.series_raw[p.series[i].color_index], c.mode);
+          break;
+        }
+      } else {
+        std::vector<GraphSeries> gs(p.series.size());
+        for (std::size_t i = 0; i < p.series.size(); ++i) {
+          if (p.series[i].hidden) continue;
+          const int ci = p.series[i].color_index;
+          gs[i] = GraphSeries{&decs[i], c.series[ci]};
+        }
+        draw_graph_cells(cells, Wg, Hg, gs, raws, vmax);
       }
-    // Gridlines: dim dotted "┈" at each tick row, only in cells with no data.
-    for (std::size_t i = 0; i < fracs.size(); ++i) {
-      const int ry = g.tick_row(i);
-      for (int cc = 0; cc < Wg; ++cc)
-        if (cells[static_cast<std::size_t>(ry) * Wg + cc].order < 0)
-          put_px(s, gx + cc, gy + ry, "┈", c.grid);
+
+      for (int cy = 0; cy < Hg; ++cy)
+        for (int cc = 0; cc < Wg; ++cc) {
+          const Cell& cell = cells[static_cast<std::size_t>(cy) * Wg + cc];
+          if (cell.order < 0) continue;
+          put_px(s, gx + cc, gy + cy,
+                 cell.glyph.empty() ? braille_char(cell.mask) : cell.glyph,
+                 cell.color);
+        }
+      // Gridlines: dim dotted "┈" at each tick row, only in cells with no data.
+      for (std::size_t i = 0; i < fracs.size(); ++i) {
+        const int ry = g.tick_row(i);
+        for (int cc = 0; cc < Wg; ++cc)
+          if (cells[static_cast<std::size_t>(ry) * Wg + cc].order < 0)
+            put_px(s, gx + cc, gy + ry, "┈", c.grid);
+      }
     }
   }
 
@@ -914,7 +1045,10 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
         }
 
     const double vm = visible_max(raws);
-    const double vmax = panel_y_max(p, vm, state, now);
+    // Bars mode: the y axis matches the bars' scale (their maxes), not the
+    // line-chart auto-scale.
+    const double vmax =
+        chrome.bars ? bars_axis_max(p, snap) : panel_y_max(p, vm, state, now);
 
     std::vector<std::string> legend_values(p.series.size(), "—");
     for (std::size_t i = 0; i < p.series.size(); ++i)
@@ -930,7 +1064,8 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
 
     const GraphGeom gg =
         draw_panel(screen, px, py, pw, ph, p, pm, sleeping, raws, legend_values,
-                   snap, vmax, c, chrome.pixels, pi == focus_panel);
+                   snap, vmax, c, chrome.pixels, pi == focus_panel,
+                   chrome.bars);
 
     // Pixel mode: record this panel's rasterized graph image for placement one
     // round later (same thread, at exactly (gg.gx, gg.gy), size gg.Wg x gg.Hg
