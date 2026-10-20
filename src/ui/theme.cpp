@@ -462,15 +462,36 @@ Theme Theme::amber() {
   return t;
 }
 
-const std::array<BuiltinTheme, 4>& builtin_themes() {
+Theme Theme::blaze_orange() {
+  Theme t;
+  t.accent = rgb(0xFF, 0x7A, 0x1A);    // #FF7A1A
+  t.title = rgb(0xFF, 0x7A, 0x1A);     // #FF7A1A
+  t.text = rgb(0xFF, 0xD9, 0xBF);      // #FFD9BF
+  t.label_dim = rgb(0xC2, 0x73, 0x3A); // #C2733A
+  t.border = rgb(0x6B, 0x30, 0x10);    // #6B3010
+  t.grid = rgb(0x3D, 0x1C, 0x08);      // #3D1C08
+  t.axis_text = rgb(0xA0, 0x58, 0x2A); // #A0582A
+  t.warn = rgb(0xFF, 0x3B, 0x5C);      // #FF3B5C
+  t.bg = rgb(0x16, 0x0C, 0x05);        // #160C05 (solid mode)
+  t.series[0] = rgb(0xFF, 0x7A, 0x1A);               // #FF7A1A orange
+  t.series[1] = rgb(0x4D, 0xD9, 0xFF);               // #4DD9FF cyan
+  t.series[2] = rgb(0xFF, 0xF3, 0x6B);               // #FFF36B yellow
+  t.series[3] = rgb(0x9D, 0x8C, 0xFF);               // #9D8CFF periwinkle
+  t.series[4] = mix_toward_white(t.series[0], 0.4);  // #FFAF76
+  t.series[5] = mix_toward_white(t.series[1], 0.4);  // #94E8FF
+  return t;
+}
+
+const std::array<BuiltinTheme, 5>& builtin_themes() {
   // Built element-by-element (not a braced-init-list): the nested braces of a
   // std::array of aggregates trip a GCC brace-matching false positive.
-  static const std::array<BuiltinTheme, 4> kThemes = [] {
-    std::array<BuiltinTheme, 4> a{};
+  static const std::array<BuiltinTheme, 5> kThemes = [] {
+    std::array<BuiltinTheme, 5> a{};
     a[0] = BuiltinTheme{"cyberpunk-blue", Theme::cyberpunk_blue()};
     a[1] = BuiltinTheme{"matrix-green", Theme::matrix_green()};
     a[2] = BuiltinTheme{"crimson-red", Theme::crimson_red()};
     a[3] = BuiltinTheme{"amber", Theme::amber()};
+    a[4] = BuiltinTheme{"blaze-orange", Theme::blaze_orange()};
     return a;
   }();
   return kThemes;

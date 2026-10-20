@@ -2,6 +2,27 @@
 
 All notable changes to GETH. The format follows the five-phase build plan.
 
+## 1.4.0 — blaze-orange: new built-in theme (2026-10-20)
+
+A fifth built-in theme, **blaze-orange** — a bright, saturated orange,
+distinctly redder and punchier than `amber` (whose `#FFB000` is a yellow-gold).
+Select it with `[general] theme = "blaze-orange"`, `--theme blaze-orange`,
+`--list-themes`, or the `T` cycle, which now runs
+cyberpunk-blue → matrix-green → crimson-red → amber → blaze-orange → back.
+
+- **Series palette** (role slots): orange `#FF7A1A`, cyan `#4DD9FF`,
+  yellow `#FFF36B`, periwinkle `#9D8CFF`; slots 5–6 are the standard
+  40 % toward-white mixes (`#FFAF76`, `#94E8FF`). The palette passes every
+  Part C rule with margin (tightest: ΔE 20.6 normal / 14.3 deutan between
+  the cyan and periwinkle slots; smallest contrast 7.0:1 vs `#0B0F14`) —
+  the full measured matrix is printed by the test suite.
+- **Tests:** the spec-table, 16-color-mapping, Part C validation,
+  resolve/all_themes, render, and no-background suites now cover all five
+  built-ins (207 cases / 526,046 assertions, both Debug and Release).
+- **Docs:** docs/THEMES.md (theme table + measured margins), the README
+  theme list and gallery, and the built-in names in the geth.1 `-theme`
+  entry.
+
 ## 1.3.0 — steps mode: nvtop-style step-line chart (2026-10-20)
 
 The v1.2.0 bars mode is replaced by a new third graph mode, **steps** — an

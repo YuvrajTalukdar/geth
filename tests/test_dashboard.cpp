@@ -473,7 +473,9 @@ TEST_CASE("settings: T cycles the themes and saves the name (Part B)") {
   // Cycling persists the name even in no-save mode (the disk write is what
   // no_save suppresses).
   CHECK_EQ(d->config().theme, "matrix-green");
-  // Three more cycles complete the lap and wrap to the first theme.
+  // Four more cycles complete the lap (five built-ins) and wrap to the first
+  // theme.
+  d->OnEvent(ftxui::Event::Character('T'));
   d->OnEvent(ftxui::Event::Character('T'));
   d->OnEvent(ftxui::Event::Character('T'));
   d->OnEvent(ftxui::Event::Character('T'));

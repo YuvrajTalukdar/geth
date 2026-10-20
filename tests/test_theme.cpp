@@ -122,19 +122,28 @@ TEST_CASE("built-in palettes match the spec table exactly") {
       rgb(0x8C, 0x6D, 0x3E), rgb(0xFF, 0x3B, 0x5C), rgb(0xFF, 0xB0, 0x00),
       rgb(0xFF, 0x55, 0x33), rgb(0x5C, 0xD0, 0xFF), rgb(0xE3, 0xFF, 0x7A),
       rgb(0xFF, 0xD0, 0x66), rgb(0xFF, 0x99, 0x85)};
+  const std::array<Rgb, 14> blaze = {
+      rgb(0xFF, 0x7A, 0x1A), rgb(0xFF, 0x7A, 0x1A), rgb(0xFF, 0xD9, 0xBF),
+      rgb(0xC2, 0x73, 0x3A), rgb(0x6B, 0x30, 0x10), rgb(0x3D, 0x1C, 0x08),
+      rgb(0xA0, 0x58, 0x2A), rgb(0xFF, 0x3B, 0x5C), rgb(0xFF, 0x7A, 0x1A),
+      rgb(0x4D, 0xD9, 0xFF), rgb(0xFF, 0xF3, 0x6B), rgb(0x9D, 0x8C, 0xFF),
+      rgb(0xFF, 0xAF, 0x76), rgb(0x94, 0xE8, 0xFF)};
 
   const Theme cb = Theme::cyberpunk_blue();
   const Theme mg = Theme::matrix_green();
   const Theme cr = Theme::crimson_red();
   const Theme am = Theme::amber();
+  const Theme bo = Theme::blaze_orange();
   CHECK(same_flat(flat(cb), cyber));
   CHECK(same_flat(flat(mg), matrix));
   CHECK(same_flat(flat(cr), crimson));
   CHECK(same_flat(flat(am), amber));
+  CHECK(same_flat(flat(bo), blaze));
   CHECK(cb.fill_mix == doctest::Approx(0.30));
   CHECK(mg.fill_mix == doctest::Approx(0.30));
   CHECK(cr.fill_mix == doctest::Approx(0.30));
   CHECK(am.fill_mix == doctest::Approx(0.30));
+  CHECK(bo.fill_mix == doctest::Approx(0.30));
 }
 
 TEST_CASE("16-color mapping: six distinct slots for every built-in theme") {
@@ -196,6 +205,7 @@ TEST_CASE("resolve_theme: built-in names, unknown name -> nullopt") {
   CHECK(resolve_theme("matrix-green", &warn).has_value());
   CHECK(resolve_theme("crimson-red", &warn).has_value());
   CHECK(resolve_theme("amber", &warn).has_value());
+  CHECK(resolve_theme("blaze-orange", &warn).has_value());
   CHECK_FALSE(resolve_theme("does-not-exist", &warn).has_value());
 }
 
@@ -304,14 +314,15 @@ TEST_CASE("all_themes: built-ins, then custom files (sorted); broken files skipp
   g.write("broken2", "not toml [ [");
   std::vector<std::string> warn;
   const auto all = all_themes(&warn);
-  // 4 built-ins + alpha + zeta (broken2 does not resolve -> not selectable).
-  REQUIRE_EQ(all.size(), 6u);
+  // 5 built-ins + alpha + zeta (broken2 does not resolve -> not selectable).
+  REQUIRE_EQ(all.size(), 7u);
   CHECK_EQ(all[0].first, std::string("cyberpunk-blue"));
   CHECK_EQ(all[1].first, std::string("matrix-green"));
   CHECK_EQ(all[2].first, std::string("crimson-red"));
   CHECK_EQ(all[3].first, std::string("amber"));
-  CHECK_EQ(all[4].first, std::string("alpha"));
-  CHECK_EQ(all[5].first, std::string("zeta"));
+  CHECK_EQ(all[4].first, std::string("blaze-orange"));
+  CHECK_EQ(all[5].first, std::string("alpha"));
+  CHECK_EQ(all[6].first, std::string("zeta"));
 }
 
 TEST_CASE("theme_file_path: name validation") {

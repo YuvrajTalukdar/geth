@@ -13,7 +13,8 @@
 // Theme::bg across the whole screen — the only code path allowed to emit a
 // background color (see render_frame's final pass).
 //
-// Built-in themes: cyberpunk-blue, matrix-green, crimson-red, amber.
+// Built-in themes: cyberpunk-blue, matrix-green, crimson-red, amber,
+// blaze-orange.
 // Custom themes: $XDG_CONFIG_HOME/geth/themes/<name>.toml (or ~/.config),
 // the same fields plus base = "<theme>" — a field left out keeps the base's
 // value. Invalid hex values and unknown fields warn and fall back to the
@@ -115,6 +116,7 @@ struct Theme {
   static Theme matrix_green();
   static Theme crimson_red();
   static Theme amber();
+  static Theme blaze_orange();
 };
 
 // The built-in themes, in `T` cycle order.
@@ -122,7 +124,7 @@ struct BuiltinTheme {
   const char* name;
   Theme theme;
 };
-const std::array<BuiltinTheme, 4>& builtin_themes();
+const std::array<BuiltinTheme, 5>& builtin_themes();
 
 // ---------------------------------------------------------------------------
 // Phase 6 (Part C) palette validation.

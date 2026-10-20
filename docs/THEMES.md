@@ -12,6 +12,7 @@ Themes are 24-bit palettes. GETH auto-detects the terminal's color depth
 | `matrix-green` | `#39FF14` | Terminal green |
 | `crimson-red` | `#FF2E4D` | Warm red |
 | `amber` | `#FFB000` | Monochrome amber |
+| `blaze-orange` | `#FF7A1A` | Bright red-shifted orange |
 
 Select one with `[general] theme = "…"`, `--theme NAME`, or press `T` in the
 UI to cycle (each press saves). `--list-themes` lists every selectable theme
@@ -73,7 +74,7 @@ fallback stays in the theme's hue family.
 
 ## Series color validation
 
-The four built-in palettes are checked in the test suite, and **custom
+The five built-in palettes are checked in the test suite, and **custom
 themes are validated at load**: a failing check produces a warning (theme
 name, slots, measured value) but the theme still loads.
 
@@ -92,7 +93,7 @@ name, slots, measured value) but the theme still loads.
 
 Measured margins of the built-ins (smallest per rule): cyberpunk-blue 25.4
 ΔE normal / 5.9:1 contrast, matrix-green 21.5 / 7.1 (the exception) / 9.7:1,
-crimson-red 22.0 / 5.4:1, amber 18.6 / 6.0:1.
+crimson-red 22.0 / 5.4:1, amber 18.6 / 6.0:1, blaze-orange 20.6 / 7.0:1.
 
 ## Background mode
 

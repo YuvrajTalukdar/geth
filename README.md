@@ -87,7 +87,7 @@ dependencies are fetched by CMake and pinned to exact versions (see
 - **Panel manager + config** — `e` opens the manager: show/hide, reorder,
   rename, per-series visibility. Every change is saved to a TOML config
   (atomic writes; unknown keys are warned, never an error).
-- **Themes + transparency** — four built-in 24-bit themes, custom themes
+- **Themes + transparency** — five built-in 24-bit themes, custom themes
   from `$XDG_CONFIG_HOME/geth/themes/*.toml` with inheritance, live cycling
   (`T`), and automatic 256/16-color fallback that keeps the six series
   colors in distinct 16-color slots.
@@ -104,7 +104,9 @@ hardware data from the dev machine (Ryzen 5 5600H, Cezanne iGPU, RTX 3050
 Laptop). The theme and layout shots use the pixel renderer — smooth
 anti-aliased charts sent over Konsole's Kitty graphics protocol; the panel
 manager and help shots use the text renderer, because the overlays replace
-the charts with text lists. Grid sizes: 205×56 (themes, manager, help),
+the charts with text lists. The Blaze Orange shot is a static `--render-png`
+capture (200×56, steps mode) rather than a live Konsole grab. Grid sizes:
+205×56 (themes, manager, help),
 230×68 (wide), 108×30 (narrow), 83×23 (compact). For CI-style static
 frames, see `--render-frame`, `--render-png` and `tools/frame2png.py` in
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
@@ -116,6 +118,10 @@ frames, see `--render-frame`, `--render-png` and `tools/frame2png.py` in
 | Crimson Red | Amber |
 |---|---|
 | ![crimson-red](docs/screenshots/theme-crimson-red.png) | ![amber](docs/screenshots/theme-amber.png) |
+
+| Blaze Orange | |
+|---|---|
+| ![blaze-orange](docs/screenshots/theme-blaze-orange.png) | |
 
 | Panel manager (`e`) | Help (`?`) |
 |---|---|
@@ -150,7 +156,7 @@ and the RAPL/powercap details: [docs/HARDWARE.md](docs/HARDWARE.md).
 Build the package first (next section), then:
 
 ```sh
-sudo pacman -U dist/geth-1.3.0-1-x86_64.pkg.tar.zst   # install
+sudo pacman -U dist/geth-1.4.0-1-x86_64.pkg.tar.zst   # install
 sudo pacman -R geth                                   # uninstall
 rm -r ~/.config/geth                                  # remove your config (optional)
 ```
@@ -213,7 +219,7 @@ cached), and runs `makepkg -f --cleanbuild` — with **no network access in
 `build()`**. Output:
 
 ```
-dist/geth-1.3.0-1-x86_64.pkg.tar.zst
+dist/geth-1.4.0-1-x86_64.pkg.tar.zst
 dist/SHA256SUMS
 ```
 
@@ -275,7 +281,7 @@ order/visibility/series, and per-GPU renames. Written only when a setting change
 warned, never an error. Full schema and merge rules:
 [docs/CONFIG.md](docs/CONFIG.md).
 
-Themes: four built-in 24-bit palettes, custom themes with inheritance, live
+Themes: five built-in 24-bit palettes, custom themes with inheritance, live
 cycling, automatic 256/16-color fallback, and a transparent-by-default
 rendering rule (zero background SGR codes, asserted by tests). Full field
 reference: [docs/THEMES.md](docs/THEMES.md).

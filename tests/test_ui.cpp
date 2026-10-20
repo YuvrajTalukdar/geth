@@ -752,7 +752,8 @@ TEST_CASE("steps: chrome.steps draws box glyphs, keeps geometry, no background S
 TEST_CASE("every built-in theme renders in truecolor, 256 and 16 colors") {
   const UiFixture fx;
   const ui::Theme themes[] = {ui::Theme::cyberpunk_blue(), ui::Theme::matrix_green(),
-                              ui::Theme::crimson_red(), ui::Theme::amber()};
+                              ui::Theme::crimson_red(), ui::Theme::amber(),
+                              ui::Theme::blaze_orange()};
   const ui::ColorMode modes[] = {ui::ColorMode::TrueColor, ui::ColorMode::Color256,
                                  ui::ColorMode::Color16};
   for (const auto& theme : themes)
