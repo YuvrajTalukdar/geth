@@ -262,6 +262,10 @@ class Dashboard : public ftxui::ComponentBase {
   // panel id). round() emits one tick's byte stream; delete_all() feeds the
   // SIGHUP handler.
   ImageSet _images;
+  // The theme index the live images were last placed under. A theme switch
+  // changes only the image COLORS (invisible to the data-space re-send gate),
+  // so render_images force-resets the set when this differs from _theme_idx.
+  int _img_theme_idx = -1;
 };
 
 // Parse one --script token into a synthetic FTXUI Event:

@@ -1,10 +1,14 @@
-// Kitty graphics-protocol tests (v1.1.0 Part A): the APC encoder produces the
-// exact parameter set Konsole's handler expects, chunks the base64 payload
-// correctly (<= 4096 bytes, m=1/m=0, multiple-of-4), and the chunks reassemble
-// and inflate back to the original RGBA. The live ImageSet keeps one stable id
-// per panel key (in-place replace) and deletes the ids whose key disappeared.
+// Kitty graphics-protocol tests (v1.1.0 Part A + iGPU re-send policy): the APC
+// encoder produces the exact parameter set Konsole's handler expects, chunks
+// the base64 payload correctly (<= 4096 bytes, m=1/m=0, multiple-of-4), and the
+// chunks reassemble and inflate back to the original RGBA. The live ImageSet
+// keeps one stable id per panel key (in-place replace), deletes the ids whose
+// key disappeared, and applies the data-space re-send policy: quiet data
+// (change <= kChangeFrac, under kMaxLagMs) is skipped, while a real move, a
+// rescale, a gap, a move, or a resize re-sends immediately under the SAME id.
 #include <doctest.h>
 
+#include <chrono>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -20,6 +24,12 @@ using namespace geth::ui;
 namespace {
 
 constexpr char kEsc = 0x1b;
+
+// A fixed time base for the re-send policy's kMaxLagMs cap; T(ms) is
+// `now0 + ms`.
+using Steady = std::chrono::steady_clock;
+const Steady::time_point now0 = Steady::now();
+Steady::time_point T(int ms) { return now0 + std::chrono::milliseconds(ms); }
 
 // Builds a RasterImage (field-by-field, so the empty palette is initialized
 // cleanly under -Wmissing-field-initializers).
@@ -155,21 +165,85 @@ TEST_CASE("kitty ImageSet: stable id per key, delete on disappearance") {
   pB.img = raster(imgB, 4, 4);
 
   // Round 1: two panels -> ids 1 (cpu) and 2 (mem).
-  const std::string s1 = set.round({pA, pB}, park());
+  const std::string s1 = set.round({pA, pB}, park(), T(0));
   CHECK_EQ(set.id_of("cpu"), 1);
   CHECK_EQ(set.id_of("mem"), 2);
   CHECK(s1.find("i=1,p=0,f=32") != std::string::npos);
   CHECK(s1.find("i=2,p=0,f=32") != std::string::npos);
 
-  // Round 2: only cpu remains -> mem's id (2) is deleted, cpu KEEPS id 1
-  // (in-place replace, no new id, no flicker).
-  const std::string s2 = set.round({pA}, park());
+  // Round 2: only cpu remains and the DATA moved (change > kChangeEps) so it
+  // re-sends -> mem's id (2) is deleted, cpu KEEPS id 1 (in-place replace, no
+  // new id, no flicker).
+  auto imgA2 = imgA;
+  for (auto& x : imgA2) x = static_cast<std::uint8_t>(255 - x);
+  pA.img = raster(imgA2, 4, 4);
+  pA.change = 0.5;  // a real data move: forces the re-send this test needs
+  const std::string s2 = set.round({pA}, park(), T(1000));
   CHECK_EQ(set.id_of("cpu"), 1);
   CHECK_EQ(set.id_of("mem"), -1);
   CHECK(s2.find("i=2,a=d,d=i") != std::string::npos);  // delete mem
   CHECK(s2.find("i=1,p=0,f=32") != std::string::npos);  // replace cpu in place
   CHECK(s2.find("i=3,p=0") == std::string::npos);  // no new id was minted
   CHECK_EQ(set.active(), 1);
+}
+
+TEST_CASE("kitty ImageSet: the re-send policy (quiet skips, real moves go live)") {
+  ImageSet set;
+  set.proto = ImageProto::kKitty;
+  ImagePlace p;
+  p.key = "cpu";
+  p.x = 2;
+  p.y = 3;
+  const auto img = make_rgba(4, 4);
+
+  // First placement of the key: always sent.
+  p.img = raster(img, 4, 4);
+  const std::string s1 = set.round({p}, park(), T(0));
+  CHECK_EQ(chunk_count(s1), 1);
+  CHECK(s1.find("i=1,p=0,f=32") != std::string::npos);
+
+  // Quiet data (change <= kChangeFrac) well under kMaxLagMs: skipped — the
+  // placed image persists, no re-upload.
+  p.change = 0.01;
+  const std::string s2 = set.round({p}, park(), T(1000));
+  CHECK_EQ(chunk_count(s2), 0);
+  CHECK(s2.find("p=0,f=32") == std::string::npos);
+  CHECK_EQ(set.id_of("cpu"), 1);  // still tracked (for its delete)
+
+  // Still quiet, but past the kMaxLagMs cap: re-sent in place (same id).
+  const std::string s3 = set.round({p}, park(), T(kMaxLagMs + 1000));
+  CHECK_EQ(chunk_count(s3), 1);
+  CHECK(s3.find("i=1,p=0,f=32") != std::string::npos);
+  CHECK(s3.find("i=2,p=0") == std::string::npos);
+  CHECK_EQ(set.id_of("cpu"), 1);
+
+  // A real broad data move (change > kChangeFrac): re-sent immediately, same
+  // id.
+  p.change = 0.5;
+  const std::string s4 = set.round({p}, park(), T(kMaxLagMs + 2000));
+  CHECK_EQ(chunk_count(s4), 1);
+  CHECK(s4.find("i=1,p=0,f=32") != std::string::npos);
+
+  // A vmax rescale re-sends even with quiet data.
+  p.change = 0.0;
+  p.vmax = 2.0;
+  const std::string s5 = set.round({p}, park(), T(kMaxLagMs + 3000));
+  CHECK_EQ(chunk_count(s5), 1);
+
+  // A gap appearing (nan_count change) re-sends.
+  p.nan_count = 3;
+  const std::string s6 = set.round({p}, park(), T(kMaxLagMs + 4000));
+  CHECK_EQ(chunk_count(s6), 1);
+
+  // A moved panel re-sends even with an identical, quiet raster.
+  p.x = 4;
+  const std::string s7 = set.round({p}, park(), T(kMaxLagMs + 5000));
+  CHECK_EQ(chunk_count(s7), 1);
+
+  // A resized raster re-sends.
+  p.img = raster(make_rgba(5, 5), 5, 5);
+  const std::string s8 = set.round({p}, park(), T(kMaxLagMs + 6000));
+  CHECK_EQ(chunk_count(s8), 1);
 }
 
 TEST_CASE("kitty ImageSet: delete_all covers every live id") {
@@ -182,7 +256,7 @@ TEST_CASE("kitty ImageSet: delete_all covers every live id") {
   ImagePlace pb;
   pb.key = "mem";
   pb.img = raster(img, 3, 3);
-  set.round({pa, pb}, park());
+  set.round({pa, pb}, park(), T(0));
   const std::string del = set.delete_all();
   CHECK(del.find("i=1,a=d,d=i") != std::string::npos);
   CHECK(del.find("i=2,a=d,d=i") != std::string::npos);

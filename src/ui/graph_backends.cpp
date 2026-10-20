@@ -3,6 +3,8 @@
 #include <bit>
 #include <climits>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <map>
 
 #include <zlib.h>
@@ -346,15 +348,33 @@ namespace {
 std::string cup(int x, int y) {
   return "\x1b[" + std::to_string(y + 1) + ";" + std::to_string(x + 1) + "H";
 }
+
+// Diagnostics (GETH_IMG_LOG=<file>): append one line per panel per round so
+// the re-send policy's decisions can be audited against live data.
+bool send_log_active() {
+  static const bool active = std::getenv("GETH_IMG_LOG") != nullptr;
+  return active;
 }
+void send_log_append(const char* line) {
+  static FILE* f = [] {
+    const char* p = std::getenv("GETH_IMG_LOG");
+    return p ? std::fopen(p, "a") : nullptr;
+  }();
+  if (f) {
+    std::fputs(line, f);
+    std::fflush(f);
+  }
+}
+}  // namespace
 
 int ImageSet::id_of(const std::string& key) const {
   const auto it = ids_.find(key);
-  return it == ids_.end() ? -1 : it->second;
+  return it == ids_.end() ? -1 : it->second.id;
 }
 
 std::string ImageSet::round(const std::vector<ImagePlace>& places,
-                            const ftxui::Screen::Cursor& park) {
+                            const ftxui::Screen::Cursor& park,
+                            std::chrono::steady_clock::time_point now) {
   std::string s;
   if (proto == ImageProto::kNone) return s;
 
@@ -368,7 +388,7 @@ std::string ImageSet::round(const std::vector<ImagePlace>& places,
           break;
         }
       if (!live) {
-        s += kitty_delete(it->second);
+        s += kitty_delete(it->second.id);
         it = ids_.erase(it);
       } else {
         ++it;
@@ -376,16 +396,74 @@ std::string ImageSet::round(const std::vector<ImagePlace>& places,
     }
   }
 
-  // 2. The live images: CUP to the rect, then the transfer. A new key gets
-  //    the next id; a known key KEEPS its id (Konsole replaces id+pid in
-  //    place — no flicker).
+  // 2. The live images: for every place that RE-SENDS (the policy in the
+  //    header), a CUP to the rect and the encoded image. A new key gets the
+  //    next id; a known key KEEPS its id (Konsole replaces id+pid in place —
+  //    no flicker). A skipped panel's placed image persists in the terminal,
+  //    which IS the correct picture while its data is quiet (re-uploading it
+  //    only churns the terminal and the compositor — the measured iGPU cost
+  //    of pixels mode).
   for (const auto& pl : places) {
     if (!pl.img.valid()) continue;
     auto it = ids_.find(pl.key);
-    if (it == ids_.end()) it = ids_.emplace(pl.key, next_id_++).first;
+    if (it == ids_.end())
+      it = ids_.emplace(pl.key, Entry{}).first;
+    Entry& e = it->second;
+    const bool first = (e.last_send == std::chrono::steady_clock::time_point{});
+    if (first) e.id = next_id_++;
+    // The data-space gate: the window slid one sample since the last tick,
+    // so `pl.change` (the fraction of columns whose line moved more than
+    // kColMoveEps) is how much of the chart moved. Skip while it is below
+    // kChangeFrac and the last send is recent; everything structural (move,
+    // resize, rescale, gap, id birth) re-sends immediately.
+    const bool stale =
+        (now - e.last_send) >= std::chrono::milliseconds(kMaxLagMs);
+    const bool moved = first || e.x != pl.x || e.y != pl.y;
+    const bool resized = first || e.w != pl.img.w || e.h != pl.img.h;
+    const bool rescaled = !first && e.vmax != pl.vmax;
+    const bool gapped = !first && e.nan_count != pl.nan_count;
+    const bool big = !first && pl.change > kChangeFrac;
+    const bool send = first || stale || moved || resized || rescaled || gapped ||
+                      big;
+    // Diagnostics: GETH_IMG_LOG=<file> appends one line per panel per round
+    // (the key, the decision, the reason, and the gate inputs).
+    if (send_log_active()) {
+      char buf[256];
+      const char* why = send ? "SEND" : "skip";
+      std::string reason;
+      if (first)
+        reason = "new";
+      else if (!send)
+        reason = "quiet+fresh";
+      else {
+        if (stale) reason += "stale ";
+        if (moved && !first) reason += "move ";
+        if (resized && !first) reason += "resize ";
+        if (rescaled) reason += "rescale ";
+        if (gapped) reason += "gap ";
+        if (big) reason += "change ";
+      }
+      std::snprintf(buf, sizeof(buf), "%lld %s %s %s change=%.4f vmax=%.1f "
+                                      "nan=%d w=%d h=%d\n",
+                    static_cast<long long>(
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            now.time_since_epoch())
+                            .count()),
+                    pl.key.c_str(), why, reason.c_str(), pl.change, pl.vmax,
+                    pl.nan_count, pl.img.w, pl.img.h);
+      send_log_append(buf);
+    }
+    if (!send) continue;
+    e.x = pl.x;
+    e.y = pl.y;
+    e.w = pl.img.w;
+    e.h = pl.img.h;
+    e.vmax = pl.vmax;
+    e.nan_count = pl.nan_count;
+    e.last_send = now;
     s += cup(pl.x, pl.y);
     if (proto == ImageProto::kKitty)
-      s += kitty_transfer(it->second, pl.img.w, pl.img.h, pl.img.rgba.data(),
+      s += kitty_transfer(e.id, pl.img.w, pl.img.h, pl.img.rgba.data(),
                           pl.img.rgba.size());
     else if (proto == ImageProto::kSixel && bg != nullptr)
       s += sixel_encode(pl.img.w, pl.img.h, pl.img.rgba.data(), *bg,
@@ -403,7 +481,7 @@ std::string ImageSet::round(const std::vector<ImagePlace>& places,
 std::string ImageSet::delete_all() const {
   if (proto != ImageProto::kKitty || ids_.empty()) return "";
   std::string s;
-  for (const auto& e : ids_) s += kitty_delete(e.second);
+  for (const auto& e : ids_) s += kitty_delete(e.second.id);
   return s;
 }
 

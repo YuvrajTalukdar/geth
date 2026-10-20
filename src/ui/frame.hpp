@@ -114,6 +114,13 @@ struct GraphImage {
   int panel_idx = -1;  // index into the page passed to render_frame
   int x = 0, y = 0, w = 0, h = 0;  // the graph rect (cells)
   RasterImage raster;              // w*cell_w x h*cell_h RGBA8
+  // The re-send gate (graph_backends.hpp): this frame's y scale, the
+  // fraction of the decimated columns whose line moved more than
+  // kColMoveEps this tick (how much of the chart moved), and the in-window
+  // gap count.
+  double vmax = 0;
+  double change = 0;
+  int nan_count = 0;
 };
 
 // Per-panel scale state that must survive across frames: the auto-scale

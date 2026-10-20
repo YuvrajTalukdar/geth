@@ -30,6 +30,7 @@
 // relative from there).
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -86,19 +87,84 @@ std::string kitty_delete_all();
 std::string sixel_encode(int w, int h, const std::uint8_t* rgba, const Rgb& bg,
                          const std::vector<Rgb>& palette);
 
+// -- The re-send policy -------------------------------------------------------
+//
+// A panel's raster at tick N+1 is its raster at tick N slid by one sample.
+// While the data is quiet (the machine is idle), that slide is invisible:
+// the chart looks pixel-identical. Re-uploading it anyway keeps the
+// terminal (and the compositor) redrawing megapixel images every tick —
+// measured 47-80% sustained iGPU on a Ryzen 7 260 APU while an idle geth
+// sat in pixels, 2-8% in text. The skip must fire on QUIET data, and that
+// rules out comparing rasters: a line chart carries almost no ink, so even
+// the ±1-3 %-of-scale jitter real sensors produce every tick displaces a
+// large share of the only pixels present — and the L1 distance of a pure
+// translation is independent of the distance moved, so no raster-space
+// threshold separates jitter from a real move.
+//
+// The gate is on the DATA instead, where the change is directly measurable.
+// Between two ticks the window slides one sample, so the line at each column
+// moves by that column's adjacent-sample delta (|s_k - s_{k-1}|), in units of
+// 1/vmax. The metric is the FRACTION of the panel's columns whose line moved
+// more than kColMoveEps — computed by the rasterizer's caller (frame.cpp) and
+// carried on the ImagePlace. A quiet window moves ~0 columns (skipped, up to
+// kMaxLagMs); a real change moves most columns (sent on the next tick).
+//
+// Why the fraction, not the max: a line chart is a thin stroke on a mostly
+// empty background, and a spike that is merely SCROLLING (the chart sliding
+// by one sample) keeps the *max* column delta large for the whole ~60 s the
+// spike sits in the window — a max-delta gate would re-upload the entire
+// image just to shift that spike one column left. But the scroll only moves
+// the columns around the spike (a few percent); a real change (a broad move,
+// a jump, a new sustained level) moves most columns. The fraction separates
+// the two: a few % -> skip, most % -> send.
+//
+// A panel re-sends when ANY of: first placement, the rect moved or
+// resized, vmax changed (the sticky auto-scale rescaled), the in-window
+// gap count changed, more than kChangeFrac of its columns moved, or kMaxLagMs
+// passed since the last send (the placed image persists in the terminal —
+// kitty keeps the same id in place, sixel keeps the stored placement — so a
+// skipped tick still shows the last real picture). A theme switch is invisible
+// to the gate (colors only); the live loop force-resets the set when it
+// happens.
+
+// A column counts as "moved" when the line at that column changed by more
+// than this fraction of the panel's height this tick (a smooth slide moves
+// the line sub-pixel per column, far below this; a real local move does not).
+constexpr double kColMoveEps = 0.03;
+// Send when more than this fraction of the panel's columns moved. A scrolling
+// spike moves only the columns around it (~5 %); a real broad change moves
+// most of them.
+constexpr double kChangeFrac = 0.25;
+// Hard cap: every panel is re-sent at least this often, so slow drifts and
+// sub-eps jitter cannot accumulate unbounded staleness.
+constexpr int kMaxLagMs = 10000;
+
 // -- The live set -----------------------------------------------------------
 
 // One panel graph to place this round: `key` (the panel id) addresses the
-// stable kitty id, (x,y) the graph rect's top-left in cells.
+// stable kitty id, (x,y) the graph rect's top-left in cells. `vmax`,
+// `change` and `nan_count` feed the re-send policy (above).
 struct ImagePlace {
   std::string key;
   int x = 0, y = 0;
   RasterImage img;
+  // This tick's y scale (a change forces a re-send — the sticky auto-scale
+  // rescaled).
+  double vmax = 0;
+  // The fraction (0..1) of the decimated columns whose line moved more than
+  // kColMoveEps this tick (all series) — how much of the chart moved.
+  double change = 0;
+  // In-window gap (NaN) count; a gap opening or closing changes the shape.
+  int nan_count = 0;
 };
 
 // The placed-image bookkeeping. round() builds the byte stream of one tick
 // (deletes + CUP/transfers + the cursor-park restore); the stream is written
-// to stdout from the UI thread, byte-ordered after FTXUI's frame.
+// to stdout from the UI thread, byte-ordered after FTXUI's frame. The
+// re-send policy (kChangeEps / kMaxLagMs) skips panels whose data has not
+// perceptibly moved — the terminal keeps the placed image in place, which
+// is the correct picture while the data is quiet, and stops the per-tick
+// re-upload (the measured iGPU cost of pixels mode).
 class ImageSet {
  public:
   ImageProto proto = ImageProto::kNone;
@@ -109,23 +175,33 @@ class ImageSet {
   int id_of(const std::string& key) const;  // -1 when absent
 
   // The stream of one round: deletes of the ids whose key is gone (kitty),
-  // then for every place a CUP to its rect and the encoded image (a NEW key
-  // gets the next id, a known key keeps its id = in-place replace), and
-  // finally the restore of FTXUI's cursor park `park` (0-based x/y/shape).
+  // then for every place that re-sends (policy above) a CUP to its rect and
+  // the encoded image (a NEW key gets the next id, a known key keeps its
+  // id = in-place replace), and finally the restore of FTXUI's cursor park
+  // `park` (0-based x/y/shape). `now` drives the kMaxLagMs cap.
   std::string round(const std::vector<ImagePlace>& places,
-                    const ftxui::Screen::Cursor& park);
+                    const ftxui::Screen::Cursor& park,
+                    std::chrono::steady_clock::time_point now);
   // Every live id in one burst (normal exit; the SIGHUP/SIGTERM handlers
   // write a snapshot of this ahead of the terminal restore).
   std::string delete_all() const;
-  // A protocol/renderer change: drop all bookkeeping (the caller emits
-  // delete_all() first when images were on screen).
+  // A protocol/renderer/theme change: drop all bookkeeping (the caller
+  // emits delete_all() first when images were on screen).
   void reset() {
     ids_.clear();
     next_id_ = 1;
   }
 
  private:
-  std::map<std::string, int> ids_;  // key -> kitty id
+  struct Entry {
+    int id = 0;
+    int x = 0, y = 0;    // last-sent position (a move always re-sends)
+    int w = 0, h = 0;    // last-sent raster size (a resize re-sends)
+    double vmax = 0;     // last-sent y scale (a rescale re-sends)
+    int nan_count = 0;   // last-sent gap count (a gap appearing re-sends)
+    std::chrono::steady_clock::time_point last_send{};
+  };
+  std::map<std::string, Entry> ids_;  // key -> the last-sent state
   int next_id_ = 1;
 };
 

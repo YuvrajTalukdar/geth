@@ -602,6 +602,16 @@ std::string Dashboard::render_images(const ftxui::Screen::Cursor& park) {
   // _state.graph_images). Keyed by panel id, so a stable kitty id per panel.
   _images.proto = _proto;  // round() keys its encoder on the live protocol
   _images.bg = &theme().bg;  // the sixel compositing color (kitty ignores it)
+  std::string s;
+  // A theme switch changes only the image COLORS — invisible to the data-space
+  // re-send gate — so delete the old-id images and drop the bookkeeping; the
+  // round below then re-places every panel fresh, with the new colors, in the
+  // SAME stream (no gap frame).
+  if (_img_theme_idx != _theme_idx) {
+    _img_theme_idx = _theme_idx;
+    s += _images.delete_all();
+    _images.reset();
+  }
   std::vector<ImagePlace> places;
   places.reserve(_state.graph_images.size());
   // Move the raster out: render_frame clears and refills _state.graph_images
@@ -614,9 +624,12 @@ std::string Dashboard::render_images(const ftxui::Screen::Cursor& park) {
     pl.x = gi.x;
     pl.y = gi.y;
     pl.img = std::move(gi.raster);
+    pl.vmax = gi.vmax;
+    pl.change = gi.change;
+    pl.nan_count = gi.nan_count;
     places.push_back(std::move(pl));
   }
-  const std::string s = _images.round(places, park);
+  s += _images.round(places, park, std::chrono::steady_clock::now());
   // The SIGHUP handler needs the delete-all of the CURRENT live set.
   util::set_image_cleanup_seq(_images.delete_all());
   return s;

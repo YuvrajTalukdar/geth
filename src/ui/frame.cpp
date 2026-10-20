@@ -1,4 +1,5 @@
 #include "ui/frame.hpp"
+#include "ui/graph_backends.hpp"  // the re-send gate's policy constants
 #include "ui/graph_data.hpp"
 
 #include <algorithm>
@@ -940,6 +941,33 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
       std::vector<Decimated> decs(p.series.size());
       for (std::size_t i = 0; i < p.series.size(); ++i)
         if (!p.series[i].hidden) decs[i] = decimate(raws[i], gg.dot_cols);
+      // The re-send gate's data-space change metric (graph_backends.hpp):
+      // the window slides one sample per tick, so the line at each column
+      // moves by that column's adjacent-sample delta. The metric is the
+      // FRACTION of columns whose line moved more than kColMoveEps (in units
+      // of 1/vmax): quiet data moves ~0 columns (the image gets skipped), a
+      // scrolling spike moves only the columns around it (a small fraction —
+      // skipped), and a real broad move moves most columns (re-sent on the
+      // next tick).
+      double change = 0.0;
+      int nan_count = 0;
+      for (const auto& d : decs) {
+        std::size_t moved = 0, total = 0;
+        for (std::size_t i = 0; i < d.v.size(); ++i) {
+          const float v = d.v[i];
+          if (std::isnan(v)) {
+            ++nan_count;
+            continue;
+          }
+          if (i > 0 && !std::isnan(d.v[i - 1])) {
+            ++total;
+            if (vmax > 0 &&
+                std::fabs((double)v - d.v[i - 1]) / vmax > kColMoveEps)
+              ++moved;
+          }
+        }
+        if (total > 0) change = std::max(change, (double)moved / (double)total);
+      }
       const RasterArgs ra{gg, chrome.cell_w, chrome.cell_h, theme,
                           chrome.solid_bg, raws, decs, p.series};
       GraphImage gi;
@@ -948,6 +976,9 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
       gi.y = gg.gy;
       gi.w = gg.Wg;
       gi.h = gg.Hg;
+      gi.vmax = vmax;
+      gi.change = change;
+      gi.nan_count = nan_count;
       gi.raster = raster_panel(ra);
       if (gi.raster.valid()) state.graph_images.push_back(std::move(gi));
     }
