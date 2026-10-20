@@ -411,11 +411,21 @@ std::string ImageSet::round(const std::vector<ImagePlace>& places,
     Entry& e = it->second;
     const bool first = (e.last_send == std::chrono::steady_clock::time_point{});
     if (first) e.id = next_id_++;
-    // The data-space gate: the window slid one sample since the last tick,
-    // so `pl.change` (the fraction of columns whose line moved more than
-    // kColMoveEps) is how much of the chart moved. Skip while it is below
+    // The data-space gate (KITTY ONLY): the window slid one sample since the
+    // last tick, so `pl.change` (the fraction of columns whose line moved more
+    // than kColMoveEps) is how much of the chart moved. Skip while it is below
     // kChangeFrac and the last send is recent; everything structural (move,
     // resize, rescale, gap, id birth) re-sends immediately.
+    //
+    // SIXEL RE-EMITS EVERY FRAME. A sixel image (the tmux+Konsole path) does
+    // NOT persist: tmux attaches it to the screen cells it covers, and FTXUI's
+    // full-screen rewrite (the graph cells are plain spaces in pixels mode)
+    // detaches it on the very next frame — so a skipped sixel panel would
+    // vanish from the screen. The quiet-skip never applies to sixel; it is
+    // re-placed every frame (the pre-optimization behavior). Kitty keeps its
+    // image in a separate buffer (same-id replace in place), so a skipped
+    // kitty panel's picture persists and the skip is safe there.
+    const bool skip_allowed = (proto == ImageProto::kKitty);
     const bool stale =
         (now - e.last_send) >= std::chrono::milliseconds(kMaxLagMs);
     const bool moved = first || e.x != pl.x || e.y != pl.y;
@@ -423,8 +433,9 @@ std::string ImageSet::round(const std::vector<ImagePlace>& places,
     const bool rescaled = !first && e.vmax != pl.vmax;
     const bool gapped = !first && e.nan_count != pl.nan_count;
     const bool big = !first && pl.change > kChangeFrac;
-    const bool send = first || stale || moved || resized || rescaled || gapped ||
-                      big;
+    const bool send =
+        !skip_allowed || first || stale || moved || resized || rescaled ||
+        gapped || big;
     // Diagnostics: GETH_IMG_LOG=<file> appends one line per panel per round
     // (the key, the decision, the reason, and the gate inputs).
     if (send_log_active()) {
@@ -433,6 +444,8 @@ std::string ImageSet::round(const std::vector<ImagePlace>& places,
       std::string reason;
       if (first)
         reason = "new";
+      else if (!skip_allowed)
+        reason = "sixel-every-frame";
       else if (!send)
         reason = "quiet+fresh";
       else {

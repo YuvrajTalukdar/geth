@@ -246,6 +246,41 @@ TEST_CASE("kitty ImageSet: the re-send policy (quiet skips, real moves go live)"
   CHECK_EQ(chunk_count(s8), 1);
 }
 
+TEST_CASE("kitty ImageSet: sixel re-emits every frame (no quiet-skip)") {
+  // A sixel image (the tmux+Konsole path) does NOT persist: FTXUI's
+  // full-screen rewrite detaches it on the next frame, so the quiet-skip is
+  // kitty-only and sixel must re-place every panel every frame. A skipped
+  // sixel panel vanishes from the screen (the empty-quiet-panel regression).
+  const auto img = make_rgba(4, 4);
+  ImageSet set;
+  set.proto = ImageProto::kSixel;
+  const Rgb bg = rgb(10, 12, 16);
+  set.bg = &bg;
+  ImagePlace p;
+  p.key = "cpu";
+  p.x = 2;
+  p.y = 3;
+  p.img = raster(img, 4, 4);
+
+  const std::string start = "\x1bP9;1q";
+  const auto count_sixel = [&start](const std::string& s) {
+    int n = 0;
+    std::size_t pos = 0;
+    while ((pos = s.find(start, pos)) != std::string::npos)
+      ++n, pos += start.size();
+    return n;
+  };
+
+  // First frame: placed.
+  CHECK_EQ(count_sixel(set.round({p}, park(), T(0))), 1);
+
+  // Quiet data (change 0) well under kMaxLagMs: kitty would skip, but sixel
+  // MUST re-emit (the previous frame's image was detached by the rewrite).
+  p.change = 0.0;
+  CHECK_EQ(count_sixel(set.round({p}, park(), T(1000))), 1);
+  CHECK_EQ(count_sixel(set.round({p}, park(), T(2000))), 1);
+}
+
 TEST_CASE("kitty ImageSet: delete_all covers every live id") {
   const auto img = make_rgba(3, 3);
   ImageSet set;

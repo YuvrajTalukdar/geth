@@ -121,11 +121,15 @@ std::string sixel_encode(int w, int h, const std::uint8_t* rgba, const Rgb& bg,
 // A panel re-sends when ANY of: first placement, the rect moved or
 // resized, vmax changed (the sticky auto-scale rescaled), the in-window
 // gap count changed, more than kChangeFrac of its columns moved, or kMaxLagMs
-// passed since the last send (the placed image persists in the terminal —
-// kitty keeps the same id in place, sixel keeps the stored placement — so a
-// skipped tick still shows the last real picture). A theme switch is invisible
-// to the gate (colors only); the live loop force-resets the set when it
-// happens.
+// passed since the last send. THIS QUIET-SKIP IS KITTY-ONLY: a kitty image
+// persists in the terminal's separate image buffer (same id, p=0, replaced in
+// place), so a skipped tick still shows the last real picture. SIXEL RE-EMITS
+// EVERY FRAME — a sixel image (the tmux+Konsole path) does NOT persist: tmux
+// attaches it to the screen cells it covers and FTXUI's full-screen rewrite
+// (graph cells are plain spaces in pixels mode) detaches it on the next frame,
+// so a skipped sixel panel would vanish from the screen. A theme switch is
+// invisible to the gate (colors only); the live loop force-resets the set when
+// it happens.
 
 // A column counts as "moved" when the line at that column changed by more
 // than this fraction of the panel's height this tick (a smooth slide moves
@@ -161,10 +165,11 @@ struct ImagePlace {
 // The placed-image bookkeeping. round() builds the byte stream of one tick
 // (deletes + CUP/transfers + the cursor-park restore); the stream is written
 // to stdout from the UI thread, byte-ordered after FTXUI's frame. The
-// re-send policy (kChangeEps / kMaxLagMs) skips panels whose data has not
-// perceptibly moved — the terminal keeps the placed image in place, which
-// is the correct picture while the data is quiet, and stops the per-tick
-// re-upload (the measured iGPU cost of pixels mode).
+// re-send policy (kChangeFrac / kMaxLagMs) skips quiet panels — KITTY ONLY,
+// where the placed image persists in the terminal's buffer. SIXEL re-emits
+// every panel every frame (its image does not persist — FTXUI's rewrite
+// detaches it), so that path is byte-identical to the pre-optimization
+// behavior.
 class ImageSet {
  public:
   ImageProto proto = ImageProto::kNone;
