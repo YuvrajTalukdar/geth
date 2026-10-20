@@ -2,6 +2,37 @@
 
 All notable changes to GETH. The format follows the five-phase build plan.
 
+## 1.3.0 — steps mode: nvtop-style step-line chart (2026-10-20)
+
+The v1.2.0 bars mode is replaced by a new third graph mode, **steps** — an
+nvtop-style step-line history chart, cycled with `g` and selectable via
+`graph_renderer = "steps"` / `--renderer steps`. The history is drawn with
+box-drawing characters: one data point per character column, newest at the
+right edge, flat runs as `─`, and a value change as a square-cornered
+vertical step (`┘`/`┌` stepping up, `┐`/`└` stepping down, `│` between) —
+no fill, no braille. The graph width spans the whole time window (`t`), each
+column is the mean of the samples in that slice, and a slice with no sample
+is interpolated. Multi-series panels draw each series in its own theme color,
+with junction glyphs (`┼`/`┴`/`┬`) where one line crosses another's vertical
+step, in the color of the series that owns the vertical. Steps are always
+text-rendered (foreground-only, transparent background), so they work in any
+terminal and in tmux, and they share the line charts' axes, tick rows, and
+auto-scaling.
+
+- **The `bars` value is retired.** `graph_renderer = "bars"` (v1.2.0) is
+  still accepted so old configs keep loading: it is migrated to `"steps"`, a
+  one-time toast is shown, and the file is rewritten with `"steps"`.
+  `--renderer bars` is rejected with a message pointing at `"steps"`.
+- **`g` now cycles text → pixels → steps → text** (saved to the config);
+  with no image protocol it cycles text ↔ steps.
+- **Tests:** exact glyph/position assertions for the step-line renderer
+  (constant line, step up/down, first column, gaps, multi-series junctions,
+  gridlines), plus the config round-trip and the `bars` → `steps` migration.
+- **Docs:** README (a mode table with one screenshot per mode),
+  docs/CONFIG.md, the geth.1 man page, and an nvtop acknowledgement (the step
+  line is inspired by nvtop, GPLv3; reimplemented independently for GETH — no
+  nvtop code is copied).
+
 ## 1.2.0 — bars mode: nvtop-style per-unit meters (2026-10-20)
 
 A third graph mode, cycled by `g` and selectable via

@@ -266,11 +266,12 @@ ProbeResult probe_terminal(int timeout_ms) {
 
 ImageProto resolve_protocol(const std::string& intent, const ProbeResult& p,
                             std::string* warning) {
-  if (intent == "text") return ImageProto::kNone;
-  // "pixels" and "bars" both want an IMAGE renderer (kitty > sixel); "bars"
-  // just draws the bar meters instead of a line chart, but the renderer that
-  // draws them is the same. `explicit_image` gates the sixel opt-in.
-  const bool explicit_image = (intent == "pixels" || intent == "bars");
+  // "text" and "steps" are always text-rendered (the step-line chart uses
+  // box-drawing glyphs, not an image protocol), so they resolve to kNone.
+  if (intent == "text" || intent == "steps") return ImageProto::kNone;
+  // Only "pixels" wants an IMAGE renderer (kitty > sixel). `explicit_image`
+  // gates the sixel opt-in.
+  const bool explicit_image = (intent == "pixels");
   const bool sized = p.cell_w > 0 && p.cell_h > 0;
   // Kitty is the OPTIMIZED, fully-supported renderer: the placed image
   // persists in the terminal, so the re-send policy (the iGPU optimization)
@@ -280,7 +281,7 @@ ImageProto resolve_protocol(const std::string& intent, const ProbeResult& p,
   // not persist (tmux attaches it to the cells it covers and FTXUI's rewrite
   // detaches it), so it re-emits EVERY frame — no re-send policy, higher iGPU.
   // It is therefore NOT selected under `auto`; it is used only when pixels are
-  // EXPLICITLY requested (graph_renderer="pixels"/"bars" / --renderer) and
+  // EXPLICITLY requested (graph_renderer="pixels" / --renderer pixels) and
   // kitty is unavailable — exactly the tmux+Konsole case.
   if (sized && p.sixel) {
     if (explicit_image) return ImageProto::kSixel;

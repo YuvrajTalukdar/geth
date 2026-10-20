@@ -14,7 +14,7 @@
 //   title = ""                # header title override ("" = the auto title)
 //   theme = "cyberpunk-blue"  # a built-in or a custom themes/<name>.toml
 //   background = "transparent"  # "transparent" | "solid" (paints the theme's bg)
-//   graph_renderer = "auto"   # "auto" | "pixels" | "text" (how graphs are drawn)
+//   graph_renderer = "auto"   # "auto" | "pixels" | "text" | "steps" (how graphs are drawn)
 //
 //   [[panels]]                # one table per panel, in display order
 //   id = "cpu"
@@ -76,12 +76,16 @@ struct Config {
   std::string background = "transparent";
   // How the graph interiors are drawn: "auto" (pixels when the terminal
   // speaks a graphics protocol, else text — the default), "pixels" (force
-  // the image protocol; falls back to text with a warning), or "text".
+  // the image protocol; falls back to text with a warning), "text", or
+  // "steps" (the nvtop-style step-line chart, always text-rendered).
   // Toggled live with `g` between the available ones.
   std::string graph_renderer = "auto";
   // The file contained the retired graph_style key (v1.0.3): it is accepted,
   // ignored, and dropped on the next save; the UI warns once.
   bool had_graph_style = false;
+  // The file contained a legacy graph_renderer = "bars" (v1.2.0): it migrated
+  // to "steps" on load; the UI warns once.
+  bool had_bars = false;
 
   std::vector<PanelEntry> panels;  // file order
   std::map<std::string, GpuEntry> gpus;  // PCI bus id -> override

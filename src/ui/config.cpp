@@ -203,12 +203,17 @@ Config Config::load(const std::string& path, bool no_save) {
           } else if (name == "graph_renderer") {
             if (v.is_string()) {
               const std::string s = v.as<std::string>()->get();
-              if (s == "auto" || s == "pixels" || s == "text" || s == "bars")
+              if (s == "auto" || s == "pixels" || s == "text" || s == "steps")
                 c.graph_renderer = s;
-              else
+              else if (s == "bars") {
+                // v1.2.0's "bars" migrated to the nvtop-style "steps" chart;
+                // the UI shows one warning (had_bars).
+                c.graph_renderer = "steps";
+                c.had_bars = true;
+              } else
                 c.warnings.push_back(warn(
                     c, line, "general.graph_renderer must be \"auto\", "
-                             "\"pixels\", \"text\" or \"bars\" — ignored"));
+                             "\"pixels\", \"text\" or \"steps\" — ignored"));
             } else
               c.warnings.push_back(warn(
                   c, line, "general.graph_renderer must be a string — "

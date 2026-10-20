@@ -76,7 +76,7 @@ struct Options {
   std::string theme;          // --theme NAME ("" = the config's [general] theme)
   bool list_themes = false;   // --list-themes
   bool probe_terminal = false;  // --probe-terminal: terminal capabilities, exit
-  std::string renderer;      // --renderer pixels|text|bars ("" = config's value)
+  std::string renderer;      // --renderer pixels|text|steps ("" = config's value)
   std::string trace_series;   // --trace SERIES_ID: per-tick stage trace (off if empty)
 };
 
@@ -118,9 +118,9 @@ void print_help() {
       "                      (kitty/sixel), the cell pixel size, and the graph\n"
       "                      renderer that will be chosen; does not touch the\n"
       "                      hardware\n"
-      "  --renderer <name>   pixels | text | bars — session override for the\n"
+      "  --renderer <name>   pixels | text | steps — session override for the\n"
       "                      graph renderer (default: the config's\n"
-      "                      graph_renderer; bars = nvtop-style per-unit meters)\n"
+      "                      graph_renderer; steps = nvtop-style step-line)\n"
       "  --no-save           Never write the config file (read-only)\n"
       "  --script <events>   --render-frame only: replay a comma-separated list\n"
       "                      of synthetic events (keys, enter, space, tab,\n"
@@ -215,13 +215,19 @@ int parse_args(int argc, char** argv, Options& o) {
     } else if (a == "--renderer") {
       const char* v = need_value("--renderer");
       if (!v) return -1;
-      if (std::string(v) != "pixels" && std::string(v) != "text" &&
-          std::string(v) != "bars") {
+      const std::string r(v);
+      if (r == "pixels" || r == "text" || r == "steps") {
+        o.renderer = r;
+      } else if (r == "bars") {
         std::fprintf(stderr,
-                     "geth: --renderer must be pixels, text or bars\n");
+                     "geth: --renderer \"bars\" is now \"steps\" "
+                     "(nvtop-style step-line charts)\n");
+        return -1;
+      } else {
+        std::fprintf(stderr,
+                     "geth: --renderer must be pixels, text or steps\n");
         return -1;
       }
-      o.renderer = v;
     } else if (a == "--no-save") {
       o.no_save = true;
     } else if (a == "--script") {

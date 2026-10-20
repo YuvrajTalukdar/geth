@@ -469,86 +469,259 @@ TEST_CASE("no background color is ever emitted (160x48, all modes, both layers)"
     }
 }
 
-// v1.1.1 bars mode: the data provider returns one bar per unit from the
-// Snapshot's CURRENT values (a snapshot, unlike the line charts' history).
-TEST_CASE("bars: bars_for_panel returns one bar per unit from the Snapshot") {
-  Snapshot s;
-  s.cpu.per_core_pct = {50.0, 100.0, 0.0, 75.0};
-  s.cpu.temp_c = 60.0;
-  s.cpu.package_power_w = 45.0;
-  s.mem.ram_total_bytes = 32.0 * 1024 * 1024 * 1024;
-  s.mem.ram_used_bytes = 8.0 * 1024 * 1024 * 1024;
-  GpuSample g;
-  g.pci_bus_id = "0000:01:00.0";
-  g.usage_pct = 50.0;
-  g.vram_total_bytes = 8.0 * 1024 * 1024 * 1024;
-  g.vram_used_bytes = 4.0 * 1024 * 1024 * 1024;
-  g.temp_c = 55.0;
-  g.power_w = 20.0;
-  s.gpus.push_back(g);
-  NetIfSample ni;
-  ni.rx_bytes_per_s = 10.0 * 1024 * 1024;
-  ni.tx_bytes_per_s = 2.0 * 1024 * 1024;
-  s.net.interfaces.push_back(ni);
-  DiskDeviceSample dd;
-  dd.read_bytes_per_s = 100.0 * 1024 * 1024;
-  dd.write_bytes_per_s = 0.0;
-  s.disk.devices.push_back(dd);
+// v1.3.0 steps mode (nvtop-style step-line history chart).
+//
+// A flat run is "─"; a value change is a vertical segment of "│" between two
+// square corners. row 0 = top, row Hg-1 = bottom; value = vmax -> top, 0 ->
+// bottom. No fill, no braille. Inspired by nvtop (GPLv3); reimplemented
+// independently for GETH (MIT) — no nvtop code is copied.
 
-  ui::PanelSpec cpu; cpu.id = "cpu";
-  const auto cpu_bars = ui::bars_for_panel(cpu, s);
-  CHECK_EQ(cpu_bars.size(), 4u);  // one per core
-  CHECK_EQ(cpu_bars[0].value, 50.0);
-  CHECK_EQ(cpu_bars[1].value, 100.0);
-  CHECK_EQ(cpu_bars[3].value, 75.0);
-  CHECK_EQ(cpu_bars[0].max, 100.0);
-  CHECK_FALSE(cpu_bars[0].missing);
-  CHECK_EQ(ui::bars_axis_max(cpu, s), 100.0);
-
-  ui::PanelSpec gpu; gpu.id = "gpu.0000:01:00.0.usage";
-  gpu.gpu_bus = "0000:01:00.0";
-  const auto gpu_bars = ui::bars_for_panel(gpu, s);
-  CHECK_EQ(gpu_bars.size(), 1u);
-  CHECK_EQ(gpu_bars[0].value, 50.0);
-  CHECK_EQ(gpu_bars[0].max, 100.0);
-
-  ui::PanelSpec vram; vram.id = "gpu.0000:01:00.0.vram";
-  vram.gpu_bus = "0000:01:00.0";
-  const auto vram_bars = ui::bars_for_panel(vram, s);
-  CHECK_EQ(vram_bars.size(), 1u);
-  CHECK_EQ(vram_bars[0].value, 4.0 * 1024 * 1024 * 1024);
-  CHECK_EQ(vram_bars[0].max, 8.0 * 1024 * 1024 * 1024);
-
-  ui::PanelSpec mem; mem.id = "mem";
-  const auto mem_bars = ui::bars_for_panel(mem, s);
-  CHECK_EQ(mem_bars.size(), 1u);
-  CHECK_EQ(mem_bars[0].value, 8.0 * 1024 * 1024 * 1024);
-  CHECK_EQ(mem_bars[0].max, 32.0 * 1024 * 1024 * 1024);
-
-  ui::PanelSpec temps; temps.id = "temps";
-  CHECK_EQ(ui::bars_for_panel(temps, s).size(), 2u);  // CPU + GPU
-  CHECK_EQ(ui::bars_axis_max(temps, s), 110.0);
-
-  ui::PanelSpec power; power.id = "power";
-  CHECK_EQ(ui::bars_for_panel(power, s).size(), 2u);  // APU + dGPU
-  CHECK_EQ(ui::bars_axis_max(power, s), 128.0);
-
-  ui::PanelSpec net; net.id = "net";
-  const auto net_bars = ui::bars_for_panel(net, s);
-  CHECK_EQ(net_bars.size(), 1u);
-  CHECK_EQ(net_bars[0].value, 12.0 * 1024 * 1024);  // rx + tx
-  CHECK_EQ(net_bars[0].max, 100.0 * 1024 * 1024);
-
-  ui::PanelSpec disk; disk.id = "disk";
-  const auto disk_bars = ui::bars_for_panel(disk, s);
-  CHECK_EQ(disk_bars.size(), 1u);
-  CHECK_EQ(disk_bars[0].value, 100.0 * 1024 * 1024);  // read + write
-  CHECK_EQ(disk_bars[0].max, 1024.0 * 1024 * 1024);
+// A RawWindow view over test-owned sample vectors (time-ordered).
+ui::RawWindow make_raw(const std::vector<int64_t>& t, const std::vector<float>& v,
+                       int64_t t_start, int64_t t_end) {
+  ui::RawWindow w;
+  w.t = t.data();
+  w.v = v.data();
+  w.n = t.size();
+  w.t_start = t_start;
+  w.t_end = t_end;
+  w.span_ns = static_cast<double>(t_end - t_start);
+  return w;
 }
 
-// v1.1.1 bars mode: chrome.bars draws block meters (text-rendered), keeps the
-// geometry valid, and never emits a background SGR (in every color mode).
-TEST_CASE("bars: chrome.bars draws block meters, keeps geometry, no background SGR") {
+// The glyph at graph-local cell (cc, rr) of a screen whose graph rect starts
+// at (gx, gy). A cell draw_step_chart did not touch is "" (after Clear()).
+std::string glyph_at(const ftxui::Screen& s, int gx, int gy, int cc, int rr) {
+  if (cc < 0 || rr < 0) return "";
+  return s.PixelAt(gx + cc, gy + rr).character;
+}
+
+TEST_CASE("steps: step_row maps value -> row (top = 0, clamped)") {
+  // Hg = 11 rows, vmax = 100: row = round((1 - v/100) * 10).
+  CHECK_EQ(ui::step_row(100.0, 100.0, 11), 0);   // max -> top
+  CHECK_EQ(ui::step_row(0.0, 100.0, 11), 10);    // 0 -> bottom
+  CHECK_EQ(ui::step_row(30.0, 100.0, 11), 7);    // (1 - 0.3) * 10 = 7
+  CHECK_EQ(ui::step_row(70.0, 100.0, 11), 3);    // (1 - 0.7) * 10 = 3
+  CHECK_EQ(ui::step_row(50.0, 100.0, 11), 5);    // (1 - 0.5) * 10 = 5
+  // Out-of-range values are clamped into the graph rectangle.
+  CHECK_EQ(ui::step_row(150.0, 100.0, 11), 0);   // above vmax -> top
+  CHECK_EQ(ui::step_row(-20.0, 100.0, 11), 10);  // below 0 -> bottom
+  // Degenerate: value == vmax -> top; vmax <= 0 -> bottom; one row -> 0.
+  CHECK_EQ(ui::step_row(5.0, 5.0, 11), 0);
+  CHECK_EQ(ui::step_row(5.0, 0.0, 11), 10);
+  CHECK_EQ(ui::step_row(5.0, 100.0, 1), 0);
+}
+
+TEST_CASE("steps: step_column_values is the mean of the in-slice samples") {
+  // Wg = 2, window 20 s: column 0 = [0, 10 s), column 1 = [10 s, 20 s).
+  const int64_t S = 1000000000LL;
+  std::vector<int64_t> t = {2 * S, 6 * S, 12 * S, 16 * S};
+  std::vector<float> v = {10.0f, 30.0f, 50.0f, 70.0f};
+  ui::RawWindow w = make_raw(t, v, 2 * S, 20 * S);
+  ui::Decimated d;  // empty: every slice holds a sample, value_at is unused
+  const auto vals = ui::step_column_values(w, d, 2, 20 * S, 20 * S);
+  CHECK_EQ(vals.size(), 2u);
+  CHECK_EQ(vals[0], 20.0);  // mean(10, 30)
+  CHECK_EQ(vals[1], 60.0);  // mean(50, 70)
+}
+
+TEST_CASE("steps: an empty slice falls back to value_at at its midpoint") {
+  const int64_t S = 1000000000LL;
+  // Column 0 = [0,10 s) holds one sample; column 1 = [10,20 s) holds none, so
+  // it interpolates the decimated line at the slice midpoint (15 s).
+  std::vector<int64_t> t = {2 * S};
+  std::vector<float> v = {10.0f};
+  ui::RawWindow w = make_raw(t, v, 2 * S, 20 * S);
+  ui::Decimated d;
+  d.t = {10 * S, 20 * S};
+  d.v = {20.0f, 40.0f};  // value_at(15 s) = 20 + (40 - 20) * 0.5 = 30
+  const auto vals = ui::step_column_values(w, d, 2, 20 * S, 20 * S);
+  CHECK_EQ(vals.size(), 2u);
+  CHECK_EQ(vals[0], 10.0);  // the lone in-slice sample
+  CHECK_EQ(vals[1], 30.0);  // interpolated at the slice midpoint
+}
+
+TEST_CASE("steps: an all-NaN slice is a gap (NaN); the next slice resumes") {
+  const int64_t S = 1000000000LL;
+  // Column 0 = [0,10 s) holds only NaN samples -> NaN (a gap). Column 1 =
+  // [10,20 s) holds a finite sample -> its value.
+  std::vector<int64_t> t = {2 * S, 12 * S};
+  std::vector<float> v = {std::nan(""), 50.0f};
+  ui::RawWindow w = make_raw(t, v, 2 * S, 20 * S);
+  ui::Decimated d;
+  const auto vals = ui::step_column_values(w, d, 2, 20 * S, 20 * S);
+  CHECK_EQ(vals.size(), 2u);
+  CHECK(std::isnan(vals[0]));  // gap: no line in this column
+  CHECK_EQ(vals[1], 50.0);
+}
+
+TEST_CASE("steps: a constant series draws a flat line across the full width") {
+  const int Wg = 10, Hg = 11;
+  ftxui::Screen screen(40, 40);
+  screen.Clear();
+  const int gx = 5, gy = 5;
+  // Constant value 70 -> row 3 ((1 - 0.7) * 10 = 3).
+  std::vector<double> cols(Wg, 70.0);
+  const std::vector<ftxui::Color> colors = {ftxui::Color::Red};
+  const std::vector<int> order = {0};
+  ui::draw_step_chart(screen, gx, gy, Wg, Hg, {cols}, colors, order,
+                      /*vmax=*/100.0, {}, ftxui::Color::GrayDark);
+  // Every column is a horizontal on row 3; every other row is empty.
+  for (int c = 0; c < Wg; ++c)
+    CHECK_EQ(glyph_at(screen, gx, gy, c, 3), "\xE2\x94\x80");  // ─
+  for (int c = 0; c < Wg; ++c)
+    for (int r = 0; r < Hg; ++r)
+      if (r != 3) CHECK_EQ(glyph_at(screen, gx, gy, c, r), "");
+}
+
+TEST_CASE("steps: a step up draws ┘ at the old (lower) row, ┌ at the new (upper), │ between") {
+  const int Wg = 10, Hg = 11;
+  ftxui::Screen screen(40, 40);
+  screen.Clear();
+  const int gx = 5, gy = 5;
+  // Columns 0-4 = 30 (row 7), columns 5-9 = 70 (row 3). The step is at c = 5.
+  std::vector<double> cols(Wg, 70.0);
+  for (int c = 0; c < 5; ++c) cols[c] = 30.0;
+  const std::vector<ftxui::Color> colors = {ftxui::Color::Red};
+  const std::vector<int> order = {0};
+  ui::draw_step_chart(screen, gx, gy, Wg, Hg, {cols}, colors, order,
+                      /*vmax=*/100.0, {}, ftxui::Color::GrayDark);
+  // The old (lower) run: horizontal on row 7 up to the step column.
+  for (int c = 0; c < 5; ++c)
+    CHECK_EQ(glyph_at(screen, gx, gy, c, 7), "\xE2\x94\x80");  // ─
+  // The step column: ┘ at row 7 (old/lower), │ at rows 4-6, ┌ at row 3 (new/upper).
+  CHECK_EQ(glyph_at(screen, gx, gy, 5, 7), "\xE2\x94\x98");  // ┘
+  CHECK_EQ(glyph_at(screen, gx, gy, 5, 6), "\xE2\x94\x82");  // │
+  CHECK_EQ(glyph_at(screen, gx, gy, 5, 5), "\xE2\x94\x82");  // │
+  CHECK_EQ(glyph_at(screen, gx, gy, 5, 4), "\xE2\x94\x82");  // │
+  CHECK_EQ(glyph_at(screen, gx, gy, 5, 3), "\xE2\x94\x8C");  // ┌
+  // The new (upper) run: horizontal on row 3 after the step.
+  for (int c = 6; c < Wg; ++c)
+    CHECK_EQ(glyph_at(screen, gx, gy, c, 3), "\xE2\x94\x80");  // ─
+  // Nothing else is drawn (no gridlines given; rows 2 and 8 stay empty).
+  CHECK_EQ(glyph_at(screen, gx, gy, 5, 2), "");
+  CHECK_EQ(glyph_at(screen, gx, gy, 5, 8), "");
+}
+
+TEST_CASE("steps: a step down draws ┐ at the old (upper) row, └ at the new (lower), │ between") {
+  const int Wg = 10, Hg = 11;
+  ftxui::Screen screen(40, 40);
+  screen.Clear();
+  const int gx = 5, gy = 5;
+  // Columns 0-4 = 70 (row 3), columns 5-9 = 30 (row 7). The step is at c = 5.
+  std::vector<double> cols(Wg, 30.0);
+  for (int c = 0; c < 5; ++c) cols[c] = 70.0;
+  const std::vector<ftxui::Color> colors = {ftxui::Color::Red};
+  const std::vector<int> order = {0};
+  ui::draw_step_chart(screen, gx, gy, Wg, Hg, {cols}, colors, order,
+                      /*vmax=*/100.0, {}, ftxui::Color::GrayDark);
+  // The old (upper) run: horizontal on row 3 up to the step column.
+  for (int c = 0; c < 5; ++c)
+    CHECK_EQ(glyph_at(screen, gx, gy, c, 3), "\xE2\x94\x80");  // ─
+  // The step column: ┐ at row 3 (old/upper), │ at rows 4-6, └ at row 7 (new/lower).
+  CHECK_EQ(glyph_at(screen, gx, gy, 5, 3), "\xE2\x94\x90");  // ┐
+  CHECK_EQ(glyph_at(screen, gx, gy, 5, 4), "\xE2\x94\x82");  // │
+  CHECK_EQ(glyph_at(screen, gx, gy, 5, 5), "\xE2\x94\x82");  // │
+  CHECK_EQ(glyph_at(screen, gx, gy, 5, 6), "\xE2\x94\x82");  // │
+  CHECK_EQ(glyph_at(screen, gx, gy, 5, 7), "\xE2\x94\x94");  // └
+  // The new (lower) run: horizontal on row 7 after the step.
+  for (int c = 6; c < Wg; ++c)
+    CHECK_EQ(glyph_at(screen, gx, gy, c, 7), "\xE2\x94\x80");  // ─
+}
+
+TEST_CASE("steps: the first column and a post-gap restart are ─, never a corner") {
+  const int Wg = 8, Hg = 11;
+  ftxui::Screen screen(40, 40);
+  screen.Clear();
+  const int gx = 5, gy = 5;
+  // Columns 0-2 = 30 (row 7), column 3 = NaN (gap), columns 4-7 = 30 (row 7).
+  const std::vector<double> cols = {30.0, 30.0, 30.0, std::nan(""),
+                                    30.0, 30.0, 30.0, 30.0};
+  const std::vector<ftxui::Color> colors = {ftxui::Color::Red};
+  const std::vector<int> order = {0};
+  ui::draw_step_chart(screen, gx, gy, Wg, Hg, {cols}, colors, order,
+                      /*vmax=*/100.0, {}, ftxui::Color::GrayDark);
+  // The first column is a plain horizontal (a corner never comes from nothing).
+  CHECK_EQ(glyph_at(screen, gx, gy, 0, 7), "\xE2\x94\x80");  // ─
+  // The gap column is entirely empty.
+  for (int r = 0; r < Hg; ++r) CHECK_EQ(glyph_at(screen, gx, gy, 3, r), "");
+  // The restart after the gap is a plain horizontal again (no corner).
+  for (int c = 4; c < Wg; ++c)
+    CHECK_EQ(glyph_at(screen, gx, gy, c, 7), "\xE2\x94\x80");  // ─
+}
+
+TEST_CASE("steps: a horizontal crossing a vertical takes ┼ / ┴ / ┬ in the vertical's color") {
+  const int Wg = 8, Hg = 11;
+  // Series 0 (red) steps UP at column 4: row 7 -> row 3 (a vertical spanning
+  // rows 3..7). Series 1 (green) is a horizontal that crosses it.
+  std::vector<double> a(Wg, 70.0);  // 70 -> row 3
+  for (int c = 0; c < 4; ++c) a[c] = 30.0;  // 30 -> row 7
+  const std::vector<ftxui::Color> colors = {ftxui::Color::Red, ftxui::Color::Green};
+  const std::vector<int> order = {0, 1};
+
+  // (a) Crossing the middle of the segment: green at row 5 -> ┼, in RED.
+  {
+    ftxui::Screen screen(40, 40);
+    screen.Clear();
+    const int gx = 5, gy = 5;
+    const std::vector<double> b(Wg, 50.0);  // 50 -> row 5 (inside 3..7)
+    ui::draw_step_chart(screen, gx, gy, Wg, Hg, {a, b}, colors, order,
+                        /*vmax=*/100.0, {}, ftxui::Color::GrayDark);
+    const ftxui::Pixel p = screen.PixelAt(gx + 4, gy + 5);
+    CHECK_EQ(p.character, "\xE2\x94\xBC");  // ┼
+    CHECK(p.foreground_color == ftxui::Color::Red);  // the vertical owner's color
+  }
+  // (b) Meeting the lower corner row: green at row 7 -> ┴, in RED.
+  {
+    ftxui::Screen screen(40, 40);
+    screen.Clear();
+    const int gx = 5, gy = 5;
+    const std::vector<double> b(Wg, 30.0);  // 30 -> row 7 (= the lower corner)
+    ui::draw_step_chart(screen, gx, gy, Wg, Hg, {a, b}, colors, order,
+                        /*vmax=*/100.0, {}, ftxui::Color::GrayDark);
+    const ftxui::Pixel p = screen.PixelAt(gx + 4, gy + 7);
+    CHECK_EQ(p.character, "\xE2\x94\xB4");  // ┴
+    CHECK(p.foreground_color == ftxui::Color::Red);
+  }
+  // (c) Meeting the upper corner row: green at row 3 -> ┬, in RED.
+  {
+    ftxui::Screen screen(40, 40);
+    screen.Clear();
+    const int gx = 5, gy = 5;
+    const std::vector<double> b(Wg, 70.0);  // 70 -> row 3 (= the upper corner)
+    ui::draw_step_chart(screen, gx, gy, Wg, Hg, {a, b}, colors, order,
+                        /*vmax=*/100.0, {}, ftxui::Color::GrayDark);
+    const ftxui::Pixel p = screen.PixelAt(gx + 4, gy + 3);
+    CHECK_EQ(p.character, "\xE2\x94\xAC");  // ┬
+    CHECK(p.foreground_color == ftxui::Color::Red);
+  }
+}
+
+TEST_CASE("steps: gridlines (┈) fill only the cells no line occupies") {
+  const int Wg = 8, Hg = 11;
+  ftxui::Screen screen(40, 40);
+  screen.Clear();
+  const int gx = 5, gy = 5;
+  // One series steps up at column 4, crossing the gridline row (5).
+  std::vector<double> a(Wg, 70.0);  // 70 -> row 3
+  for (int c = 0; c < 4; ++c) a[c] = 30.0;  // 30 -> row 7
+  const std::vector<ftxui::Color> colors = {ftxui::Color::Red};
+  const std::vector<int> order = {0};
+  const std::vector<int> grid_rows = {5};
+  ui::draw_step_chart(screen, gx, gy, Wg, Hg, {a}, colors, order,
+                      /*vmax=*/100.0, grid_rows, ftxui::Color::GrayDark);
+  // Row 5 is the gridline row: ┈ in every cell the line does not occupy, and
+  // the line's own glyph (the vertical's │) where it does.
+  CHECK_EQ(glyph_at(screen, gx, gy, 4, 5), "\xE2\x94\x82");  // │ (the vertical)
+  for (int c = 0; c < Wg; ++c)
+    if (c != 4) CHECK_EQ(glyph_at(screen, gx, gy, c, 5), "\xE2\x94\x88");  // ┈
+  // A non-gridline, non-line row stays empty.
+  for (int c = 0; c < Wg; ++c) CHECK_EQ(glyph_at(screen, gx, gy, c, 1), "");
+}
+
+// v1.3.0 steps mode: chrome.steps draws the step-line chart (text-rendered),
+// keeps the geometry valid, and never emits a background SGR (every color mode).
+TEST_CASE("steps: chrome.steps draws box glyphs, keeps geometry, no background SGR") {
   const UiFixture fx;
   const ui::Theme theme = ui::Theme::cyberpunk_blue();
   for (auto mode : {ui::ColorMode::TrueColor, ui::ColorMode::Color256,
@@ -558,15 +731,15 @@ TEST_CASE("bars: chrome.bars draws block meters, keeps geometry, no background S
     ftxui::Screen screen(160, 48);
     screen.Clear();
     ui::FrameChrome chrome;
-    chrome.bars = true;  // pixels stays false: bars are text-rendered
+    chrome.steps = true;  // pixels stays false: steps are text-rendered
     ui::render_frame(screen, fx.hw, fx.page, fx.c.store(), fx.c.latest(), nullptr,
                      state, theme, mode, /*paused=*/false, 1000, cache, 0, kWinNs,
                      chrome);
     const std::string out = screen.ToString();
-    CHECK(out.find('\xe2') != std::string::npos);  // glyphs drawn
+    CHECK(out.find('\xe2') != std::string::npos);  // some glyph drawn
     CHECK(!has_forbidden_style(out));  // no background SGR
-    // Block meters are drawn: a full block '█' (U+2588) appears in the rects.
-    CHECK(out.find("\xe2\x96\x88") != std::string::npos);
+    // Box-drawing glyphs (the U+2500 block) are present in the graph rects.
+    CHECK(out.find("\xE2\x94\x80") != std::string::npos);  // ─
     // The geometry self-check: every line is exactly 160 display cols wide.
     const ui::GeometryReport rep = ui::check_geometry(ui::screen_to_text(screen), 160);
     CHECK_EQ(rep.lines, 48);

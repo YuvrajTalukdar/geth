@@ -22,6 +22,7 @@
 #include "ftxui/dom/elements.hpp"
 #include "ftxui/screen/screen.hpp"
 
+#include "ui/graph_data.hpp"
 #include "ui/graph_image.hpp"
 #include "ui/layout.hpp"
 #include "ui/panel_spec.hpp"
@@ -193,30 +194,46 @@ struct FrameChrome {
   // gridlines, no SGR) — the pixel backend draws the graph image on top of
   // exactly that rectangle, one round later.
   bool pixels = false;
-  // v1.1.1: the graph TYPE is bars (nvtop-style per-unit meters) instead of a
-  // line chart. Bars are always text-rendered (block columns, the nvtop look):
-  // graph_renderer="bars" forces the text renderer for the graph, so this is
-  // set together with a text `pixels` (chrome.pixels is false in bars mode).
-  bool bars = false;
+  // v1.3.0: the graph TYPE is steps (nvtop-style step-line history chart)
+  // instead of the area/braille line. Steps are always text-rendered
+  // (box-drawing glyphs), so graph_renderer="steps" forces the text renderer
+  // for the graph (chrome.pixels is false in steps mode).
+  bool steps = false;
   // v1.1.0: the terminal's cell size in pixels (cell_w x cell_h), from the
   // startup probe. Rasterizing a panel needs it (w = Wg*cell_w, etc.); 0 means
   // unknown, in which case no image is produced for that frame.
   int cell_w = 0, cell_h = 0;
 };
 
-// v1.1.1 bars mode (nvtop-style per-unit meters): one vertical bar. Bars show
-// the CURRENT value per unit (a snapshot), unlike the line charts (history).
-struct BarData {
-  double value = 0;    // current value
-  double max = 0;      // scale max (100 for %, the total for absolute); <=0 = missing
-  bool missing = false;  // no data: draw a dim stub
-};
-// The bars for a panel in bars mode, from the Snapshot's CURRENT values. One
-// bar per unit: per-core for CPU, per-GPU for the GPU panels, per-sensor /
-// interface / device for temps/net/disk, a single bar for memory.
-std::vector<BarData> bars_for_panel(const PanelSpec& p, const Snapshot& s);
-// The y-axis max for bars mode (so the top tick matches the bar's scale).
-double bars_axis_max(const PanelSpec& p, const Snapshot& s);
+// -- v1.3.0 steps mode (nvtop-style step-line history chart) -------------------
+// One data point per character column, newest at the right edge, drawn with
+// box-drawing glyphs (square corners, vertical segments, no fill, no braille).
+// Inspired by nvtop (https://github.com/Syllo/nvtop, GPLv3); reimplemented
+// independently for GETH (MIT) — no nvtop code is copied.
+
+// The row (0 = top) of a value on a `rows`-tall graph with y-max `vmax`,
+// clamped to [0, rows-1]: value = vmax -> 0 (top), value = 0 -> rows-1 (bottom).
+int step_row(double value, double vmax, int rows);
+
+// One value per character column (index 0 = leftmost/oldest, Wg-1 =
+// rightmost/newest). Column c covers the slice [t_end - window_ns +
+// c*window_ns/Wg, ... + window_ns/Wg); its value is the mean of the samples in
+// the slice, or value_at() at the slice midpoint when the slice holds no
+// sample. NaN marks a gap (an empty column; the line restarts after it).
+std::vector<double> step_column_values(const RawWindow& w, const Decimated& d,
+                                       int Wg, int64_t window_ns, int64_t t_end);
+
+// Draw the step chart of several series into the Wg x Hg rect at (gx,gy) of
+// `s`. series_cols[i][c] is series i's value at column c (NaN = gap);
+// colors[i] its theme color; draw_order lists the series indices in draw
+// order (the primary last, so it wins shared cells). grid_rows are the tick
+// rows (dim `grid` "┈" in the cells no line occupies). Foreground only: it
+// never sets a background color.
+void draw_step_chart(ftxui::Screen& s, int gx, int gy, int Wg, int Hg,
+                     const std::vector<std::vector<double>>& series_cols,
+                     const std::vector<ftxui::Color>& colors,
+                     const std::vector<int>& draw_order, double vmax,
+                     const std::vector<int>& grid_rows, const ftxui::Color& grid);
 
 // The panel-manager overlay (drawn over the live dashboard, which keeps
 // relaying out behind it — the live preview).

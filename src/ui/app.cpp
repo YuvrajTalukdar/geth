@@ -317,10 +317,11 @@ ftxui::Element Dashboard::OnRender() {
   // v1.1.0: the text layer leaves the graph rects as plain spaces when the
   // resolved renderer is pixels (the pixel backend paints them over). The cell
   // size (from the probe) is what rasterizes each graph rect to pixels.
-  // Bars mode forces the text layer for the graph (nvtop-style block bars are
-  // text-rendered); the pixel backend is off, so chrome.pixels is false there.
-  chrome.pixels = _pixels_layer && !_bars;
-  chrome.bars = _bars;
+  // Steps mode forces the text layer for the graph (the nvtop-style step-line
+  // chart is text-rendered); the pixel backend is off, so chrome.pixels is
+  // false there.
+  chrome.pixels = _pixels_layer && !_steps;
+  chrome.steps = _steps;
   // --render-png injects the cell size (no probe there); otherwise the probe.
   chrome.cell_w = _cell_w > 0 ? _cell_w : _probe.cell_w;
   chrome.cell_h = _cell_h > 0 ? _cell_h : _probe.cell_h;
@@ -373,7 +374,7 @@ ftxui::Element Dashboard::OnRender() {
         {"t", "cycle the graph window (30 s \xE2\x80\xA6 10 m)"},
         {"c", "cycle the columns (auto, 1 \xE2\x80\xA6 8)"},
         {"T", "cycle the theme (saves)"},
-        {"g", "toggle the graph renderer (text / pixels, saves)"},
+        {"g", "cycle the graph mode (text / pixels / steps, saves)"},
         {"\xE2\x86\x91 / \xE2\x86\x93 \xC2\xB7 j / k", "scroll one row"},
         {"PgUp / PgDn", "scroll one page"},
         {"Home / End", "top / bottom"},
@@ -548,12 +549,12 @@ void Dashboard::cycle_theme() {
 }
 
 void Dashboard::cycle_graph_renderer() {
-  // g cycles the graph MODE: text (line, text renderer) -> pixels (line, pixel
-  // renderer, when a protocol is available) -> bars (nvtop-style per-unit
-  // meters, ALWAYS text-rendered) -> text. The choice is saved. "auto" counts
-  // as its line resolution (pixels when available) for the cycle position;
-  // availability comes from the PROBE (not _proto, which reads kNone while
-  // text/bars is active).
+  // g cycles the graph MODE: text (area/braille line, text renderer) ->
+  // pixels (anti-aliased line, pixel renderer, when a protocol is available)
+  // -> steps (nvtop-style step-line chart, ALWAYS text-rendered) -> text. The
+  // choice is saved. "auto" counts as its line resolution (pixels when
+  // available) for the cycle position; availability comes from the PROBE (not
+  // _proto, which reads kNone while text/steps is active).
   std::string w;
   const bool pixels_avail =
       (resolve_protocol("pixels", _probe, &w) != ImageProto::kNone);
@@ -561,29 +562,29 @@ void Dashboard::cycle_graph_renderer() {
   if (cur == "auto") cur = pixels_avail ? "pixels" : "text";
   std::string next;
   if (cur == "text")
-    next = pixels_avail ? "pixels" : "bars";
+    next = pixels_avail ? "pixels" : "steps";
   else if (cur == "pixels")
-    next = "bars";
-  else  // "bars"
+    next = "steps";
+  else  // "steps"
     next = "text";
   _cfg.graph_renderer = next;
   _renderer_eff = next;  // a UI change supersedes any --renderer override
   _dirty = true;
   save_now();
-  if (next == "bars") {
-    // Bars are text-rendered: no pixel images. render_images() early-returns
-    // for _bars and deletes any stale images from a prior pixels session.
+  if (next == "steps") {
+    // Steps are text-rendered: no pixel images. render_images() early-returns
+    // for _steps and deletes any stale images from a prior pixels session.
     _proto = ImageProto::kNone;
     _pixels_layer = false;
-    _bars = true;
-    toast("graph: bars (nvtop-style meters)");
+    _steps = true;
+    toast("graph: steps (nvtop-style)");
   } else {
     const ImageProto p = (next == "text")
                              ? ImageProto::kNone
                              : resolve_protocol("pixels", _probe, &w);
     _proto = p;                       // the new choice's resolution now
     _pixels_layer = (p != ImageProto::kNone);
-    _bars = false;
+    _steps = false;
     if (next == "pixels" && p == ImageProto::kNone)
       toast("no image protocol in this terminal — staying on text");
     else if (p == ImageProto::kSixel)
@@ -597,10 +598,10 @@ void Dashboard::cycle_graph_renderer() {
 // -- v1.1.0 pixel backend -------------------------------------------------------
 
 std::string Dashboard::render_images(const ftxui::Screen::Cursor& park) {
-  // Bars mode (v1.1.1): the graph is text-rendered (nvtop-style block bars),
-  // so no pixel images. This ALSO deletes any stale images left over from a
-  // pixels session (e.g. right after `g` flipped to bars).
-  if (_bars) {
+  // Steps mode (v1.3.0): the graph is text-rendered (nvtop-style step-line
+  // chart), so no pixel images. This ALSO deletes any stale images left over
+  // from a pixels session (e.g. right after `g` flipped to steps).
+  if (_steps) {
     const std::string s = _images.delete_all();
     _images.reset();
     util::set_image_cleanup_seq("");
@@ -1199,6 +1200,8 @@ int run_ui(Collector& collector, const Hardware& hw_in, const UiOptions& opts) {
   const std::string renderer_intent =
       opts.renderer.empty() ? cfg.graph_renderer : opts.renderer;
   const bool had_graph_style = cfg.had_graph_style;
+  // A legacy graph_renderer = "bars" migrated to "steps" at load (v1.3.0).
+  const bool had_bars = cfg.had_bars;
 
   FrameStats stats;
   auto component = ftxui::Make<Dashboard>(
@@ -1220,6 +1223,10 @@ int run_ui(Collector& collector, const Hardware& hw_in, const UiOptions& opts) {
     component->note_warning(
         "the retired graph_style key was ignored "
         "(graph_renderer replaces it)");
+  if (had_bars)
+    component->note_warning(
+        "graph_renderer \"bars\" is now \"steps\" "
+        "(nvtop-style step-line charts)");
   // Sixel is EXPERIMENTAL (the tmux path): it re-emits every frame (no
   // re-send policy, higher iGPU), because its image does not persist. When it
   // is the active renderer (an explicit pixels choice in a tmux/sixel
@@ -1356,7 +1363,7 @@ int run_render_frame(Collector& collector, const Hardware& hw_in, int W, int H,
   // layer still renders the pixels form (graphs left as plain spaces), so
   // the text layer of both renderers is capturable.
   dash->set_pixels_layer(opts.renderer == "pixels");
-  dash->set_bars_layer(opts.renderer == "bars");
+  dash->set_steps_layer(opts.renderer == "steps");
 
   // --script: replay synthetic events against the live Dashboard, then render
   // the result. The final state is what gets printed.
@@ -1541,7 +1548,7 @@ int run_render_png(Collector& collector, const Hardware& hw_in, int W, int H,
   dash->set_size(W, H);
   const bool pixels = (opts.renderer == "pixels");
   dash->set_pixels_layer(pixels);
-  dash->set_bars_layer(opts.renderer == "bars");
+  dash->set_steps_layer(opts.renderer == "steps");
   // Rasterize each graph at exactly the PNG's cell size (the embedded glyph
   // metrics), so the rasters fill their cell rects.
   dash->set_cell_px(kGlyphCw, kGlyphCh);

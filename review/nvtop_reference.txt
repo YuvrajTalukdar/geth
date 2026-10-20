@@ -1,0 +1,47 @@
+# nvtop 44x120, 15s, idle+CPU-burners (no GPU display)
+# reconstructed screen (plain text, colors stripped)
+
+ Device 0 [NVIDIA GeForce RTX 3050 Laptop GPU] PCIe GEN 1@ 8x RX: 390.0 KiB/s TX: 488.0 KiB/s
+ GPU 210MHz  MEM 405MHz   TEMP  48fC   FAN N/A   POW   6 /  60 W
+ GPU[                               0%(eff 0%)] MEM[|||                      0.305Gi/4.000Gi]
+
+ Device 1 [AMD Radeon Graphics]                Integrated GPU RX: N/A TX: N/A
+ GPU 400MHz  MEM 1600MHz  TEMP  56fC   CPU-FAN   POW  22 W
+ GPU[                                       0%] MEM[||                      0.505Gi/11.902Gi]
+   ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+100│GPU0 %                                                                                                            │
+   │GPU0 mem%                                                                                                         │
+   │                                                                                                                  │
+ 75│                                                                                                                  │
+   │                                                                                                                  │
+   │                                                                                                                  │
+ 50│                                                                                                                  │
+   │                                                                                                                  │
+   │                                                                                                                  │
+ 25│                                                                                                                  │
+   │                                                                                   ┌──────────────────────────────│
+  0│───────────────────────────────────────────────────────────────────────────────────┘──────────────────────────────│
+   ├57s────────────────────────42s──────────────────────────28s─────────────────────────14s─────────────────────────0s└
+   ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+100│GPU1 %                                                                                                            │
+   │GPU1 mem%                                                                                                         │
+   │                                                                                                                  │
+ 75│                                                                                                                  │
+   │                                                                                                                  │
+   │                                                                                                                  │
+ 50│                                                                                                                  │
+   │                                                                                                                  │
+   │                                                                                                                  │
+ 25│                                                                                                                  │
+   │                                                                                                                  │
+  0│──────────────────────────────────────────────────────────────────────────────────────────────────────────────────│
+   ├57s────────────────────────42s──────────────────────────28s─────────────────────────14s─────────────────────────0s└
+    PID           USER DEV     TYPE  GPU        GPU MEM    CPU  HOST MEM Command
+   1752 yuvrajtalukdar   1 Both G+C   0%    133MiB   1%     2%    354MiB /usr/bin/plasmashell --no-respawn
+ 601654 yuvrajtalukdar   1 Both G+C   0%     70MiB   1%     0%    287MiB /usr/bin/systemsettings
+   4896 yuvrajtalukdar   1 Both G+C   0%     25MiB   0%     0%    134MiB /usr/bin/krdpserver
+   1680 yuvrajtalukdar   1 Both G+C   0%     10MiB   0%     0%     22MiB /usr/bin/Xwayland :0 -auth /run/user/1000/xauth
+   1606 yuvrajtalukdar   0  Graphic N/A       6MiB   0%     1%    191MiB /usr/bin/kwin_wayland --wayland-fd 7 --socket w
+   1606 yuvrajtalukdar   0  Compute N/A       6MiB   0%     0%    191MiB /usr/bin/kwin_wayland --wayland-fd 7 --socket w
+
+F2Setup   F6Sort    F9Kill    F10Quit    F12Save Config

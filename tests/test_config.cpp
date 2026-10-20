@@ -182,8 +182,8 @@ TEST_CASE("round-trip: an empty title serializes to \"\" and a gpus auto is kept
   CHECK_FALSE(r.gpus.at("0000:07:00.0").integrated.has_value());  // back to auto
 }
 
-TEST_CASE("graph_renderer: auto/pixels/text/bars round-trip; invalid values warn") {
-  for (const char* r : {"auto", "pixels", "text", "bars"}) {
+TEST_CASE("graph_renderer: auto/pixels/text/steps round-trip; invalid values warn") {
+  for (const char* r : {"auto", "pixels", "text", "steps"}) {
     ui::Config c;
     c.graph_renderer = r;
     const std::string path = tmp_path(std::string("renderer_") + r + ".toml");
@@ -211,6 +211,34 @@ TEST_CASE("graph_renderer: auto/pixels/text/bars round-trip; invalid values warn
   CHECK(n.loaded);
   CHECK_EQ(n.graph_renderer, "auto");
   CHECK(warned(n.warnings, "general.graph_renderer"));
+}
+
+TEST_CASE("graph_renderer: a legacy \"bars\" value migrates to \"steps\" (no warning)") {
+  // A v1.2.0 file with graph_renderer = "bars" loads clean (the UI shows one
+  // toast instead, via had_bars) and the value is migrated to "steps".
+  const std::string path = tmp_path("migrate_bars.toml");
+  write_file(path,
+             "[general]\n"
+             "interval_ms = 500\n"
+             "graph_renderer = \"bars\"\n");
+  const ui::Config c = ui::Config::load(path, false);
+  CHECK(c.loaded);
+  CHECK(c.warnings.empty());
+  CHECK(c.had_bars);
+  CHECK_EQ(c.interval_ms, 500);
+  CHECK_EQ(c.graph_renderer, "steps");
+  // The next save writes "steps" (never "bars").
+  const std::string out = c.serialize();
+  CHECK(out.find("graph_renderer = \"steps\"") != std::string::npos);
+  CHECK(out.find("\"bars\"") == std::string::npos);
+  // And a file written with "steps" loads back clean, without the flag.
+  const std::string path2 = tmp_path("migrate_bars_saved.toml");
+  write_file(path2, out);
+  const ui::Config r = ui::Config::load(path2, false);
+  CHECK(r.loaded);
+  CHECK(r.warnings.empty());
+  CHECK_FALSE(r.had_bars);
+  CHECK_EQ(r.graph_renderer, "steps");
 }
 
 TEST_CASE("graph_style: the retired key loads clean, is ignored, dropped on save") {

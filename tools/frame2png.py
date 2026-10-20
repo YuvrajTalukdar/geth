@@ -247,6 +247,7 @@ def main():
     ap.add_argument("--rows", type=int, required=True)
     ap.add_argument("--theme", default="")
     ap.add_argument("--script", default="")
+    ap.add_argument("--renderer", default="")
     ap.add_argument("--accent", default="#4a6fa5")
     ap.add_argument("--fontsize", type=int, default=22)
     ap.add_argument("--font", default=FONT_DEFAULT)
@@ -271,6 +272,8 @@ def main():
         cmd += ["--theme", args.theme]
     if args.script:
         cmd += ["--script", args.script]
+    if args.renderer:
+        cmd += ["--renderer", args.renderer]
     r = subprocess.run(cmd, capture_output=True, env=env)
     if r.returncode != 0:
         sys.exit(f"geth failed ({r.returncode}):\n{r.stderr.decode(errors='replace')}")

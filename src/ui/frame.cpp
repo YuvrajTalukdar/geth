@@ -515,136 +515,189 @@ void draw_compact_legend(ftxui::Screen& s, int x, int y, int iw,
   }
 }
 
-// -- v1.1.1 bars mode (nvtop-style per-unit meters) ---------------------------
-//
-// Bars show the CURRENT value per unit (a snapshot), unlike the line charts
-// (history). The data comes straight off the Snapshot (no history needed).
-// Bars are always text-rendered (block columns, the nvtop look);
-// graph_renderer="bars" forces the text renderer for the graph so it works in
-// any terminal and stays crisp.
-
-// The nvtop green -> yellow -> red ramp, by the value fraction f in [0,1].
-Rgb bar_color(double f) {
-  if (f < 0) f = 0;
-  if (f > 1) f = 1;
-  const Rgb a = f <= 0.5 ? rgb(90, 200, 110) : rgb(235, 205, 70);
-  const Rgb b = f <= 0.5 ? rgb(235, 205, 70) : rgb(230, 80, 80);
-  const double t = f <= 0.5 ? f * 2.0 : (f - 0.5) * 2.0;
-  return rgb(static_cast<std::uint8_t>(a.r + (b.r - a.r) * t),
-             static_cast<std::uint8_t>(a.g + (b.g - a.g) * t),
-             static_cast<std::uint8_t>(a.b + (b.b - a.b) * t));
-}
 }  // namespace
 
-// The bar data provider (in geth::ui, so the unit tests can drive it): one bar
-// per unit, from the Snapshot's CURRENT values (bars show a snapshot, unlike
-// the line charts' history).
-std::vector<BarData> bars_for_panel(const PanelSpec& p, const Snapshot& s) {
-  std::vector<BarData> bars;
-  auto push = [&](double v, double mx, bool missing) {
-    bars.push_back(BarData{v, mx, missing});
-  };
-  const std::string& id = p.id;
-  const bool is_vram = id.size() >= 5 && id.compare(id.size() - 5, 5, ".vram") == 0;
-  if (id == "cpu") {
-    for (const auto& c : s.cpu.per_core_pct)
-      push(c ? *c : 0.0, 100.0, !c.has_value());
-    if (bars.empty()) push(0, 100, true);
-  } else if (id.rfind("gpu.", 0) == 0) {
-    const GpuSample* g = nullptr;
-    for (const auto& x : s.gpus)
-      if (x.pci_bus_id == p.gpu_bus) { g = &x; break; }
-    if (is_vram) {
-      if (g && g->vram_total_bytes && *g->vram_total_bytes > 0)
-        push(g->vram_used_bytes ? *g->vram_used_bytes : 0.0,
-             *g->vram_total_bytes, !g->vram_used_bytes.has_value());
-      else
-        push(0, 1, true);
-    } else {  // gpu.<bus>.usage
-      if (g)
-        push(g->usage_pct ? *g->usage_pct : 0.0, 100.0,
-             !g->usage_pct.has_value());
-      else
-        push(0, 100, true);
-    }
-  } else if (id == "mem") {
-    if (s.mem.ram_total_bytes && *s.mem.ram_total_bytes > 0)
-      push(s.mem.ram_used_bytes ? *s.mem.ram_used_bytes : 0.0,
-           *s.mem.ram_total_bytes, !s.mem.ram_used_bytes.has_value());
-    else
-      push(0, 1, true);
-  } else if (id == "temps") {
-    if (s.cpu.temp_c) push(*s.cpu.temp_c, 110.0, false);
-    for (const auto& g : s.gpus)
-      if (g.temp_c) push(*g.temp_c, 110.0, false);
-    if (bars.empty()) push(0, 110, true);
-  } else if (id == "power") {
-    if (s.cpu.package_power_w) push(*s.cpu.package_power_w, 128.0, false);
-    for (const auto& g : s.gpus)
-      if (g.power_w) push(*g.power_w, 128.0, false);
-    if (bars.empty()) push(0, 128, true);
-  } else if (id == "net") {
-    const double mx = 100.0 * 1024 * 1024;  // 100 MiB/s
-    for (const auto& i : s.net.interfaces)
-      push((i.rx_bytes_per_s ? *i.rx_bytes_per_s : 0.0) +
-               (i.tx_bytes_per_s ? *i.tx_bytes_per_s : 0.0),
-           mx, false);
-    if (bars.empty()) push(0, mx, true);
-  } else if (id == "disk") {
-    const double mx = 1024.0 * 1024 * 1024;  // 1 GiB/s
-    for (const auto& d : s.disk.devices)
-      push((d.read_bytes_per_s ? *d.read_bytes_per_s : 0.0) +
-               (d.write_bytes_per_s ? *d.write_bytes_per_s : 0.0),
-           mx, false);
-    if (bars.empty()) push(0, mx, true);
-  } else {
-    push(0, 1, true);
-  }
-  return bars;
+// -- v1.3.0 steps mode (nvtop-style step-line history chart) -------------------
+//
+// One data point per character column, newest at the right edge, drawn with
+// box-drawing glyphs: a flat run is "─", a change is a vertical segment of "│"
+// between two square corners. No fill, no braille. Inspired by nvtop (GPLv3);
+// reimplemented independently for GETH (MIT) — no nvtop code is copied.
+
+int step_row(double value, double vmax, int rows) {
+  if (rows < 1) return 0;
+  if (vmax <= 0) return rows - 1;
+  const double clamped = std::clamp(value, 0.0, vmax);
+  const int r =
+      static_cast<int>(std::lround((1.0 - clamped / vmax) * (rows - 1)));
+  return std::clamp(r, 0, rows - 1);
 }
 
-double bars_axis_max(const PanelSpec& p, const Snapshot& s) {
-  double mx = 0;
-  for (const auto& b : bars_for_panel(p, s))
-    if (b.max > mx) mx = b.max;
-  return mx > 0 ? mx : 100.0;
+std::vector<double> step_column_values(const RawWindow& w, const Decimated& d,
+                                       int Wg, int64_t window_ns,
+                                       int64_t t_end) {
+  const int W = Wg < 0 ? 0 : Wg;
+  std::vector<double> vals(static_cast<std::size_t>(W), std::nan(""));
+  if (W < 1 || window_ns <= 0 || !w.valid()) return vals;
+  const double col_dt = static_cast<double>(window_ns) / Wg;  // ns per column
+  const int64_t t0 = t_end - window_ns;  // the window's left edge
+  const int64_t* t = w.t;
+  const float* v = w.v;
+  const std::size_t n = w.n;
+  // Two-pointer over the in-window samples (time-ordered): column c covers
+  // [t0 + c*col_dt, t0 + (c+1)*col_dt). Its value is the mean of the samples in
+  // the slice, or value_at() at the slice midpoint when the slice holds none.
+  std::size_t si = 0;
+  for (int c = 0; c < Wg; ++c) {
+    const int64_t start = t0 + static_cast<int64_t>(c * col_dt);
+    const int64_t end = t0 + static_cast<int64_t>((c + 1) * col_dt);
+    while (si < n && t[si] < start) ++si;  // skip samples before this slice
+    std::size_t sj = si;
+    double sum = 0.0;
+    std::size_t cnt = 0;
+    while (sj < n && t[sj] < end) {
+      if (std::isfinite(v[sj])) { sum += v[sj]; ++cnt; }
+      ++sj;
+    }
+    if (cnt > 0) {
+      vals[c] = sum / static_cast<double>(cnt);  // mean of the in-slice samples
+    } else if (si == sj) {
+      // No sample in the slice: interpolate at its midpoint (value_at returns
+      // NaN when the midpoint falls in a gap).
+      vals[c] = value_at(d, static_cast<double>(start) + col_dt / 2.0);
+    }
+    // else: samples existed but were all NaN -> the column stays NaN (a gap).
+    si = sj;  // the next slice starts where this one ended
+  }
+  return vals;
+}
+
+void draw_step_chart(ftxui::Screen& s, int gx, int gy, int Wg, int Hg,
+                     const std::vector<std::vector<double>>& series_cols,
+                     const std::vector<ftxui::Color>& colors,
+                     const std::vector<int>& draw_order, double vmax,
+                     const std::vector<int>& grid_rows, const ftxui::Color& grid) {
+  if (Wg < 1 || Hg < 1) return;
+  // One cell per graph-rect position: the glyph to draw ("" = empty) and its
+  // foreground color. Later draws overwrite earlier ones (the painter's
+  // algorithm); the primary series is drawn last (draw_order), so it wins the
+  // shared cells it does not resolve as a junction.
+  struct Cell {
+    std::string glyph;
+    ftxui::Color color;
+  };
+  std::vector<Cell> cells(static_cast<std::size_t>(Wg) * Hg);
+  auto set = [&](int cc, int rr, const std::string& g, const ftxui::Color& col) {
+    if (cc < 0 || rr < 0 || cc >= Wg || rr >= Hg) return;
+    Cell& cell = cells[static_cast<std::size_t>(rr) * Wg + cc];
+    cell.glyph = g;
+    cell.color = col;
+  };
+
+  const int nser = static_cast<int>(series_cols.size());
+  // Each series' row per column (-1 = gap).
+  std::vector<std::vector<int>> rows(nser);
+  for (int si = 0; si < nser; ++si) {
+    rows[si].assign(static_cast<std::size_t>(Wg), -1);
+    for (int c = 0; c < Wg; ++c) {
+      const double v =
+          si < static_cast<int>(series_cols[si].size()) ? series_cols[si][c]
+                                                        : std::nan("");
+      if (std::isfinite(v)) rows[si][c] = step_row(v, vmax, Hg);
+    }
+  }
+  auto is_vseg = [&](int si, int c) {
+    const int r = rows[si][c];
+    if (r < 0) return false;
+    const int rprev = (c > 0) ? rows[si][c - 1] : -1;
+    return rprev >= 0 && rprev != r;
+  };
+
+  // Base glyphs: each series in draw order (primary last).
+  for (int si : draw_order) {
+    if (si < 0 || si >= nser) continue;
+    const ftxui::Color& col = colors[si];
+    for (int c = 0; c < Wg; ++c) {
+      const int r = rows[si][c];
+      if (r < 0) continue;  // gap: an empty column
+      if (is_vseg(si, c)) {
+        const int rprev = rows[si][c - 1];
+        const int top = std::min(r, rprev);
+        const int bottom = std::max(r, rprev);
+        if (r < rprev) {  // value went UP (row moved up): ┘ at the old (lower)
+          set(c, bottom, "\xE2\x94\x98", col);  // ┘
+          set(c, top, "\xE2\x94\x8C", col);     // ┌ at the new (upper)
+        } else {          // value went DOWN: ┐ at the old (upper)
+          set(c, top, "\xE2\x94\x90", col);     // ┐
+          set(c, bottom, "\xE2\x94\x94", col);  // └ at the new (lower)
+        }
+        for (int rr = top + 1; rr < bottom; ++rr) set(c, rr, "\xE2\x94\x82", col);
+      } else {
+        // First column / after a gap / level: a single "─" (never a corner
+        // coming from nothing).
+        set(c, r, "\xE2\x94\x80", col);  // ─
+      }
+    }
+  }
+
+  // Junctions: where one series' vertical segment (in a column) crosses another
+  // series' horizontal continuation at the same row. Drawn in the color of the
+  // series that owns the vertical segment (as nvtop does): "┼" where the
+  // horizontal crosses the segment, "┴" at the lower corner row, "┬" at the
+  // upper corner row.
+  for (int si : draw_order) {
+    if (si < 0 || si >= nser) continue;
+    const ftxui::Color& col = colors[si];
+    for (int c = 0; c < Wg; ++c) {
+      if (!is_vseg(si, c)) continue;
+      const int top = std::min(rows[si][c], rows[si][c - 1]);
+      const int bottom = std::max(rows[si][c], rows[si][c - 1]);
+      for (int sj = 0; sj < nser; ++sj) {
+        if (sj == si || is_vseg(sj, c)) continue;  // only a horizontal crosses
+        const int rb = rows[sj][c];
+        if (rb < top || rb > bottom) continue;
+        if (rb == top) set(c, rb, "\xE2\x94\xAC", col);       // ┬
+        else if (rb == bottom) set(c, rb, "\xE2\x94\xB4", col);  // ┴
+        else set(c, rb, "\xE2\x94\xBC", col);                  // ┼
+      }
+    }
+  }
+
+  // Write the line cells to the screen (foreground only, bounds-checked).
+  for (int rr = 0; rr < Hg; ++rr)
+    for (int cc = 0; cc < Wg; ++cc) {
+      const Cell& cell = cells[static_cast<std::size_t>(rr) * Wg + cc];
+      if (cell.glyph.empty()) continue;
+      const int x = gx + cc, y = gy + rr;
+      if (x < 0 || y < 0 || x >= s.dimx() || y >= s.dimy()) continue;
+      ftxui::Pixel& p = s.PixelAt(x, y);
+      p.character = cell.glyph;
+      p.foreground_color = cell.color;
+    }
+
+  // Gridlines: dim "┈" at each tick row, only in the cells no line occupies.
+  for (int gr : grid_rows) {
+    if (gr < 0 || gr >= Hg) continue;
+    for (int cc = 0; cc < Wg; ++cc) {
+      if (!cells[static_cast<std::size_t>(gr) * Wg + cc].glyph.empty()) continue;
+      const int x = gx + cc, y = gy + gr;
+      if (x < 0 || y < 0 || x >= s.dimx() || y >= s.dimy()) continue;
+      ftxui::Pixel& p = s.PixelAt(x, y);
+      p.character = "\xE2\x94\x88";  // ┈
+      p.foreground_color = grid;
+    }
+  }
 }
 
 namespace {
-// Draws the bars as vertical block columns in the graph rect
-// (gx..gx+Wg, gy..gy+Hg): bottom-up fill, the nvtop green->red ramp by value,
-// a dim stub for a missing unit.
-void draw_bars(ftxui::Screen& s, int gx, int gy, int Wg, int Hg,
-               const std::vector<BarData>& bars, const Colors& c) {
-  const int n = static_cast<int>(bars.size());
-  if (n <= 0 || Wg < 1 || Hg < 1) return;
-  const int bar_w = std::max(1, Wg / n);
-  const int total = bar_w * n;
-  const int gap = total < Wg ? (Wg - total) / (n + 1) : 0;
-  for (int i = 0; i < n; ++i) {
-    const int x = gx + gap * (i + 1) + bar_w * i;
-    if (x + bar_w > gx + Wg) break;  // more units than width: clip
-    const BarData& b = bars[i];
-    const double frac = b.max > 0 ? std::clamp(b.value / b.max, 0.0, 1.0) : 0.0;
-    int filled = static_cast<int>(std::lround(frac * Hg));
-    ftxui::Color col;
-    if (b.missing) {
-      filled = 1;
-      col = c.label_dim;
-    } else {
-      col = to_ftxui(bar_color(frac), c.mode);
-    }
-    for (int yy = 0; yy < Hg; ++yy)
-      if (yy >= Hg - filled) put_px(s, x, gy + yy, "█", col);
-  }
-}
 
 GraphGeom draw_panel(ftxui::Screen& s, int x0, int y0, int W, int H,
                      const PanelSpec& p, PanelMode mode, bool sleeping,
                      const std::vector<RawWindow>& raws,
                      const std::vector<std::string>& legend_values,
                      const Snapshot& snap, double vmax, const Colors& c,
-                     bool pixels, bool focused = false, bool bars = false) {
+                     bool pixels, bool focused = false, bool steps = false,
+                     int64_t window_ns = 0) {
   if (W < 4 || H < 2) return GraphGeom{};
 
   // --- rounded border + title --------------------------------------------------
@@ -701,11 +754,35 @@ GraphGeom draw_panel(ftxui::Screen& s, int x0, int y0, int W, int H,
   // this rect one round later, so the text layer leaves it plain spaces
   // (the y axis, titles and legends stay text — the image sits beside them).
   if (have_graph && !pixels) {
-    if (bars) {
-      // v1.1.1 bars mode: nvtop-style per-unit meters (current values, not
-      // history). The y axis and ticks still render (below); the bars sit in
-      // the graph rect at the same scale (vmax = bars_axis_max).
-      draw_bars(s, gx, gy, Wg, Hg, bars_for_panel(p, snap), c);
+    if (steps) {
+      // v1.3.0 steps mode: an nvtop-style step-line history chart (always
+      // text-rendered). It shares the y axis, ticks and auto-scale (vmax)
+      // with the other modes; only the graph rect's contents differ.
+      std::vector<Decimated> decs(p.series.size());
+      for (std::size_t i = 0; i < p.series.size(); ++i)
+        if (!p.series[i].hidden) decs[i] = decimate(raws[i], dot_cols);
+      int64_t t_end = 0;  // the window's right edge (the global latest time)
+      for (const auto& r : raws)
+        if (r.valid()) { t_end = r.t_end; break; }
+      std::vector<std::vector<double>> series_cols(p.series.size());
+      for (std::size_t i = 0; i < p.series.size(); ++i)
+        if (!p.series[i].hidden)
+          series_cols[i] =
+              step_column_values(raws[i], decs[i], Wg, window_ns, t_end);
+      std::vector<ftxui::Color> colors(p.series.size());
+      for (std::size_t i = 0; i < p.series.size(); ++i)
+        colors[i] = c.series[p.series[i].color_index];
+      // Draw order: legend order with the primary (0) last, so it wins the
+      // shared cells it does not resolve as a junction.
+      std::vector<int> draw_order;
+      for (std::size_t i = 1; i < p.series.size(); ++i)
+        if (!p.series[i].hidden) draw_order.push_back((int)i);
+      if (!p.series.empty() && !p.series[0].hidden) draw_order.push_back(0);
+      std::vector<int> grid_rows;
+      for (std::size_t i = 0; i < fracs.size(); ++i)
+        grid_rows.push_back(g.tick_row(i));
+      draw_step_chart(s, gx, gy, Wg, Hg, series_cols, colors, draw_order,
+                      vmax, grid_rows, c.grid);
     } else {
       // Series that will actually draw (hidden series get no data): ONE -> the
       // area chart, SEVERAL -> one-dot braille lines with no fill.
@@ -1045,10 +1122,9 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
         }
 
     const double vm = visible_max(raws);
-    // Bars mode: the y axis matches the bars' scale (their maxes), not the
-    // line-chart auto-scale.
-    const double vmax =
-        chrome.bars ? bars_axis_max(p, snap) : panel_y_max(p, vm, state, now);
+    // All three graph modes (area/braille, pixels, steps) share the same
+    // y-axis auto-scale.
+    const double vmax = panel_y_max(p, vm, state, now);
 
     std::vector<std::string> legend_values(p.series.size(), "—");
     for (std::size_t i = 0; i < p.series.size(); ++i)
@@ -1065,7 +1141,7 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
     const GraphGeom gg =
         draw_panel(screen, px, py, pw, ph, p, pm, sleeping, raws, legend_values,
                    snap, vmax, c, chrome.pixels, pi == focus_panel,
-                   chrome.bars);
+                   chrome.steps, window_ns);
 
     // Pixel mode: record this panel's rasterized graph image for placement one
     // round later (same thread, at exactly (gg.gx, gg.gy), size gg.Wg x gg.Hg

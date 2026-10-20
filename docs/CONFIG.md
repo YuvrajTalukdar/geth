@@ -25,7 +25,7 @@ columns = "auto"        # "auto" | 1..8
 title = ""              # header title override ("" = auto: CPU & GPU names)
 theme = "cyberpunk-blue"# built-in or custom theme name (see --list-themes)
 background = "transparent"  # "transparent" | "solid" (paints the theme bg)
-graph_renderer = "auto"     # "auto" | "pixels" | "text" | "bars" (auto = kitty when available)
+graph_renderer = "auto"     # "auto" | "pixels" | "text" | "steps" (auto = kitty when available)
 
 # One [[panels]] table per panel, in display order.
 [[panels]]
@@ -54,14 +54,19 @@ panel every frame (higher GPU load, no re-send policy). It is not the `auto`
 default; select it with `graph_renderer = "pixels"` (or `--renderer pixels`),
 and geth flags it as experimental when it is active.
 
-`bars` is a third, nvtop-style graph mode: instead of a scrolling history
-line chart, each panel draws one vertical bar per unit — a bar per CPU core,
-per GPU, per sensor, per network interface, and per disk device — filled to
-the current value and ramped green → yellow → red as it rises. The y axis
-matches each bar's scale (100 % for usage, the total for memory, …). Bars
-are always text-rendered (block columns), so they work in any terminal and
-in tmux; they show the CURRENT value (a snapshot), not history. The `g` key
-cycles text → pixels → bars → text.
+`steps` is a third graph mode, an nvtop-style step-line chart: the history
+is drawn as box-drawing characters — one data point per character column,
+newest at the right edge, flat runs as `─` and value changes as square-
+cornered vertical steps (no fill, no braille). The graph width spans the
+whole time window; each column is the mean of the samples in that slice.
+Steps are always text-rendered (box-drawing glyphs), so they work in any
+terminal and in tmux, foreground-only (transparent background). They show
+history, not a snapshot. The `g` key cycles text → pixels → steps → text.
+
+The v1.2.0 `graph_renderer = "bars"` value is retired: it is still accepted
+(so old configs keep loading), is migrated to `"steps"`, a one-time warning
+is shown, and it is written as `"steps"` the next time the config file is
+saved.
 
 ### Panel and series ids
 
