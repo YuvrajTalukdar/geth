@@ -573,6 +573,9 @@ void Dashboard::cycle_graph_renderer() {
   _pixels_layer = (p != ImageProto::kNone);
   if (next == "pixels" && p == ImageProto::kNone)
     toast("no image protocol in this terminal — staying on text");
+  else if (p == ImageProto::kSixel)
+    note_warning("renderer: pixels (sixel) — EXPERIMENTAL (re-emits every "
+                 "frame, higher GPU load; kitty/text is the optimized path)");
   else
     toast("renderer: " + renderer_name(p));
 }
@@ -1194,7 +1197,19 @@ int run_ui(Collector& collector, const Hardware& hw_in, const UiOptions& opts) {
     component->note_warning(
         "the retired graph_style key was ignored "
         "(graph_renderer replaces it)");
-  if (renderer_intent == "pixels" && proto == ImageProto::kNone && !pwarn.empty())
+  // Sixel is EXPERIMENTAL (the tmux path): it re-emits every frame (no
+  // re-send policy, higher iGPU), because its image does not persist. When it
+  // is the active renderer (an explicit pixels choice in a tmux/sixel
+  // terminal), say so once and point at the optimized path.
+  if (proto == ImageProto::kSixel)
+    component->note_warning(
+        "sixel (the tmux path) is EXPERIMENTAL — it re-emits every frame "
+        "(higher GPU load). The optimized renderer is kitty (run geth "
+        "directly in Konsole) or text");
+  // Otherwise a resolution note: `auto` in a sixel-only multiplexer stays on
+  // the optimized text renderer (and mentions the experimental option), or
+  // `pixels` with no usable protocol.
+  else if (proto == ImageProto::kNone && !pwarn.empty())
     component->note_warning(pwarn);
 
   ftxui::ScreenInteractive screen = ftxui::ScreenInteractive::Fullscreen();

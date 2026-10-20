@@ -132,26 +132,38 @@ TEST_CASE("detect: inside_multiplexer via TMUX and TERM") {
   CHECK(!inside_multiplexer());
 }
 
-// Regression: the multiplexer flag must NOT block a detected protocol.
-// Inside tmux the pane's tty is owned by tmux; tmux (3.8+, built with sixel)
-// answers DA1 with the '4' attribute and forwards re-encoded sixel to a
-// sixel-capable attached terminal, so the probe's sixel=yes resolves to
-// pixels (sixel) even with multiplexer=true.
-TEST_CASE("resolve: sixel inside a multiplexer still resolves to pixels") {
+// Sixel (the tmux path) is EXPERIMENTAL: its image does not persist, so it
+// re-emits every frame (no re-send policy, higher iGPU). It is therefore NOT
+// the `auto` default: `auto` in a sixel-only multiplexer stays on the
+// optimized text renderer and points at the experimental option; an explicit
+// `pixels` request selects sixel. Inside tmux the pane's tty is owned by tmux
+// (3.8+, built with sixel), which answers DA1 with the '4' attribute and
+// forwards re-encoded sixel to a sixel-capable attached terminal.
+TEST_CASE("resolve: sixel is experimental — opt-in via explicit pixels") {
   ProbeResult p;
   p.tty = true;
   p.multiplexer = true;  // $TMUX is set
   p.sixel = true;         // tmux's DA1 carried the '4'
   p.cell_w = 7;           // the pane's TIOCGWINSZ pixel size
   p.cell_h = 18;
-  CHECK(resolve_protocol("auto", p) == ImageProto::kSixel);
-  CHECK(resolve_protocol("pixels", p) == ImageProto::kSixel);
+  // `auto` stays on text (the optimized path), not the experimental sixel,
+  // and names the experimental option in its note.
+  std::string w;
+  CHECK(resolve_protocol("auto", p, &w) == ImageProto::kNone);
+  CHECK(w.find("EXPERIMENTAL") != std::string::npos);
+  CHECK(w.find("pixels") != std::string::npos);
+  // An explicit pixels request selects sixel (no warning).
+  w.clear();
+  CHECK(resolve_protocol("pixels", p, &w) == ImageProto::kSixel);
+  CHECK(w.empty());
   CHECK(resolve_protocol("text", p) == ImageProto::kNone);
 
-  // kitty wins over sixel when both are detected (they are not in tmux,
-  // but the precedence must hold regardless of the multiplexer flag).
+  // kitty beats sixel and IS the `auto` default (the optimized path).
   p.kitty = true;
-  CHECK(resolve_protocol("auto", p) == ImageProto::kKitty);
+  w.clear();
+  CHECK(resolve_protocol("auto", p, &w) == ImageProto::kKitty);
+  CHECK(w.empty());
+  CHECK(resolve_protocol("pixels", p, &w) == ImageProto::kKitty);
 }
 
 // Regression: the multiplexer warning is only reached when NO protocol is

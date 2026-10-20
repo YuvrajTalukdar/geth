@@ -142,7 +142,7 @@ and the RAPL/powercap details: [docs/HARDWARE.md](docs/HARDWARE.md).
 Build the package first (next section), then:
 
 ```sh
-sudo pacman -U dist/geth-1.1.0-1-x86_64.pkg.tar.zst   # install
+sudo pacman -U dist/geth-1.1.1-1-x86_64.pkg.tar.zst   # install
 sudo pacman -R geth                                   # uninstall
 rm -r ~/.config/geth                                  # remove your config (optional)
 ```
@@ -205,7 +205,7 @@ cached), and runs `makepkg -f --cleanbuild` — with **no network access in
 `build()`**. Output:
 
 ```
-dist/geth-1.1.0-1-x86_64.pkg.tar.zst
+dist/geth-1.1.1-1-x86_64.pkg.tar.zst
 dist/SHA256SUMS
 ```
 
@@ -334,14 +334,18 @@ wakes a sleeping dGPU. Details:
   font with full Unicode coverage in your terminal's settings.
 - **No pixel charts (text renderer only).** The pixel renderer needs the
   terminal to speak the Kitty graphics protocol or Sixel — `geth
-  --probe-terminal` shows exactly what it detected. Inside tmux, geth
-  probes the multiplexer itself: tmux ≥ 3.8 (built with sixel) advertises
-  Sixel and re-encodes/forwards it to the attached terminal, so pixels
-  (sixel) work inside tmux whenever the outer terminal (Konsole, wezterm,
-  mlterm, …) supports Sixel. screen does not advertise Sixel, so it stays
-  text there. Konsole (≥ 25.08), kitty, and Ghostty all support Kitty;
-  wezterm and mlterm support Sixel. `g` or `--renderer text` forces the
-  text renderer.
+  --probe-terminal` shows exactly what it detected. The **Kitty** path (run
+  geth directly in Konsole ≥ 25.08, kitty, or Ghostty — no tmux) is the
+  **optimized** renderer: the image persists, so quiet panels are not
+  re-sent and GPU load stays low. The **Sixel** path (inside tmux) is
+  **EXPERIMENTAL**: geth probes the multiplexer itself (tmux ≥ 3.8, built
+  with sixel, re-encodes/forwards it to a Sixel-capable outer terminal such
+  as Konsole or wezterm), but a sixel image does not persist, so geth
+  re-emits every panel every frame — higher GPU load. Sixel is therefore not
+  the `auto` default; use it with `graph_renderer = "pixels"` (or
+  `--renderer pixels`), and geth flags it as experimental when active.
+  screen does not advertise Sixel, so it stays text there. `g` or
+  `--renderer text` forces the text renderer.
 - **Colors look wrong / no color.** Force a mode with
   `--color truecolor|256|16`, and make sure the terminal advertises it
   (`COLORTERM=truecolor` for 24-bit).

@@ -25,7 +25,7 @@ columns = "auto"        # "auto" | 1..8
 title = ""              # header title override ("" = auto: CPU & GPU names)
 theme = "cyberpunk-blue"# built-in or custom theme name (see --list-themes)
 background = "transparent"  # "transparent" | "solid" (paints the theme bg)
-graph_renderer = "auto"     # "auto" | "pixels" | "text" (the chart renderer)
+graph_renderer = "auto"     # "auto" | "pixels" | "text" (auto = kitty when available)
 
 # One [[panels]] table per panel, in display order.
 [[panels]]
@@ -45,6 +45,14 @@ The retired v1.0.3 key `graph_style` (the graph line style, `"braille" |
 "blocks"`) is still accepted so old configs keep loading: it is ignored in
 favor of `graph_renderer`, a one-time warning is shown, and it is dropped
 the next time the config file is saved.
+
+`auto` resolves to the **optimized** renderer: Kitty when the terminal
+speaks it (run geth directly in Konsole, kitty, or Ghostty — no tmux), else
+text. The **Sixel** path — the only image option inside tmux — is
+**EXPERIMENTAL**: a sixel image does not persist, so geth re-emits every
+panel every frame (higher GPU load, no re-send policy). It is not the `auto`
+default; select it with `graph_renderer = "pixels"` (or `--renderer pixels`),
+and geth flags it as experimental when it is active.
 
 ### Panel and series ids
 

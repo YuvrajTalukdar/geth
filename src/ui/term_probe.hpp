@@ -89,8 +89,12 @@ struct ProbeResult {
 ProbeResult probe_terminal(int timeout_ms = 150);
 
 // Resolves the [general].graph_renderer intent against the probe:
-// "auto"   -> pixels when a protocol AND the cell size are known, else text
-// "pixels" -> pixels when available, else text (warning says why)
+// "auto"   -> kitty when available (the OPTIMIZED renderer: its image
+//             persists, so the re-send policy applies), else text. Sixel is
+//             EXPERIMENTAL (re-emits every frame, higher iGPU) and is NOT
+//             selected under `auto`.
+// "pixels" -> kitty when available, else sixel (the experimental tmux path),
+//             else text (warning says why)
 // "text"   -> text
 // Returns the protocol to use (kNone = the text renderer).
 ImageProto resolve_protocol(const std::string& intent, const ProbeResult& p,

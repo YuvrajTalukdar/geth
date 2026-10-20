@@ -101,7 +101,9 @@ value from the
 .Sq general
 section of the config file
 (Sy auto
-resolves to pixels when the terminal supports an image protocol).
+resolves to the optimized renderer — Kitty when the terminal
+speaks it, else text; Sixel is experimental and is selected only with
+.Sy pixels ).
 .It Sy "-config Ar path"
 Path to the config file (default:
 .Pa $XDG_CONFIG_HOME/geth/config.toml ,

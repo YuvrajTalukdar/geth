@@ -268,12 +268,26 @@ ImageProto resolve_protocol(const std::string& intent, const ProbeResult& p,
                             std::string* warning) {
   if (intent == "text") return ImageProto::kNone;
   const bool sized = p.cell_w > 0 && p.cell_h > 0;
-  ImageProto avail = ImageProto::kNone;
-  if (sized) {
-    if (p.kitty) avail = ImageProto::kKitty;
-    else if (p.sixel) avail = ImageProto::kSixel;
+  // Kitty is the OPTIMIZED, fully-supported renderer: the placed image
+  // persists in the terminal, so the re-send policy (the iGPU optimization)
+  // applies. `auto` selects it whenever it is available.
+  if (sized && p.kitty) return ImageProto::kKitty;
+  // Sixel is the EXPERIMENTAL renderer (the tmux+Konsole path): its image does
+  // not persist (tmux attaches it to the cells it covers and FTXUI's rewrite
+  // detaches it), so it re-emits EVERY frame — no re-send policy, higher iGPU.
+  // It is therefore NOT selected under `auto`; it is used only when pixels are
+  // EXPLICITLY requested (graph_renderer="pixels" / --renderer pixels) and
+  // kitty is unavailable — exactly the tmux+Konsole case.
+  if (sized && p.sixel) {
+    if (intent == "pixels") return ImageProto::kSixel;
+    // `auto` in a sixel-only multiplexer: stay on the optimized text
+    // renderer, and point at the experimental option.
+    if (warning)
+      *warning = "sixel is EXPERIMENTAL and not the default — set "
+                 "graph_renderer=\"pixels\" to use it (it re-emits every "
+                 "frame, higher GPU load; kitty/text is the optimized path)";
+    return ImageProto::kNone;
   }
-  if (avail != ImageProto::kNone) return avail;
   if (warning && intent == "pixels") {
     if (p.multiplexer)
       *warning = "pixels requested, but no image protocol was detected "

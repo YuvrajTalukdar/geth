@@ -2,7 +2,35 @@
 
 All notable changes to GETH. The format follows the five-phase build plan.
 
-## Unreleased — pixels (sixel) inside tmux
+## 1.1.1 — Sixel is experimental; iGPU and RAPL fixes (2026-10-20)
+
+Follow-up to 1.1.0: the pixel renderer now works inside tmux (via Sixel),
+but that path is **experimental**; the direct-terminal Kitty path is the
+**optimized** one. Also fixes the iGPU load of the pixel renderer and a RAPL
+triple-count on AMD.
+
+### Sixel (tmux) is experimental; Kitty is the optimized path
+
+The iGPU re-send policy (quiet panels are not re-uploaded) applies to the
+Kitty renderer only: a Kitty image persists in the terminal and is replaced
+in place. A sixel image (the tmux+Konsole path) does not persist, so geth
+must re-emit every panel every frame — higher GPU load, no re-send savings.
+
+- **Sixel is now EXPERIMENTAL and opt-in.** `graph_renderer = "auto"`
+  resolves to the optimized renderer: Kitty when the terminal speaks it
+  (run geth directly in Konsole / kitty / Ghostty — no tmux), else text. It
+  no longer selects Sixel. Sixel is used only with an explicit
+  `graph_renderer = "pixels"` (or `--renderer pixels`) in a tmux pane whose
+  outer terminal supports Sixel.
+- **A one-time notice** flags Sixel as experimental when it is active
+  (at startup, or when `g` cycles into it), pointing at the optimized
+  path. `--probe-terminal` reports the renderer the rules would actually
+  choose, so in a tmux pane `auto` now reports `renderer: text` (with a
+  note that Sixel is available as an experimental opt-in).
+- Docs (README, CONFIG, the man page) label Sixel-in-tmux experimental and
+  recommend direct Konsole (Kitty) as the optimized renderer.
+
+### Pixels (Sixel) inside tmux
 
 The v1.1.0 pixel renderer never reached users behind tmux. Two
 geth-side problems, both now fixed (verified end-to-end: real geth in a
@@ -30,6 +58,31 @@ tmux 3.8 pane against a sixel-advertising outer terminal):
 End-to-end: 149/149 panel images crossed the tmux boundary as
 re-encoded `9;1q` sixel; with a non-sixel outer terminal the same 149
 fall back to tmux's text rendering, as expected.
+
+### iGPU load: data-space re-send policy
+
+The pixel renderer re-sent every panel's chart image every tick, which
+measured 30-50% iGPU on an APU (vs 2-8% for text). Re-sends are now gated on
+the DATA, not the raster: a panel is re-uploaded only when a real change
+moves more than a threshold fraction of its columns, or its y-scale / gap
+count / rect changed, or a 10 s cap elapsed. Quiet panels are skipped — the
+placed image persists (Kitty) so the picture stays — cutting idle image
+traffic ~3.5-4x while real movement still appears within one tick. The gate
+is Kitty-only (Sixel must re-emit every frame; see below).
+
+### RAPL: count each package domain once
+
+On some AMD machines the single RAPL package counter was reachable through
+three different sysfs paths, so CPU package power was triple-counted. Probe
+domains are now deduplicated by canonical path, so the counter is read once.
+
+### Sixel re-emits every frame (regression fix)
+
+A sixel image does not persist in the tmux path: tmux attaches it to the
+screen cells it covers and FTXUI's next full-screen rewrite detaches it. The
+quiet-skip (above) therefore made quiet panels' graphs vanish in tmux. The
+skip is now Kitty-only; Sixel re-emits every panel every frame so its graphs
+stay on screen (at the cost of the higher GPU load — hence experimental).
 
 ## 1.1.0 — Real charts: pixel renderer + better text fallback (2026-10-18)
 
