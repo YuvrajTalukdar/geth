@@ -99,17 +99,16 @@ dependencies are fetched by CMake and pinned to exact versions (see
 
 ## Screenshots
 
-Live captures from a maximized Konsole window (1920×1080) showing real
-hardware data from the dev machine (Ryzen 5 5600H, Cezanne iGPU, RTX 3050
-Laptop). The theme and layout shots use the pixel renderer — smooth
-anti-aliased charts sent over Konsole's Kitty graphics protocol; the panel
-manager and help shots use the text renderer, because the overlays replace
-the charts with text lists. The Blaze Orange shot is a static `--render-png`
-capture (200×56, steps mode) rather than a live Konsole grab. Grid sizes:
-205×56 (themes, manager, help),
-230×68 (wide), 108×30 (narrow), 83×23 (compact). For CI-style static
-frames, see `--render-frame`, `--render-png` and `tools/frame2png.py` in
-[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+Static renders via `--render-png` — deterministic demo data (60 s of
+warm-up samples; the demo hardware: Ryzen 5 5600H, Cezanne iGPU, RTX 3050
+Laptop) composited to an 8-bit RGB PNG, so every shot is the app alone,
+with no terminal chrome or desktop behind it. Theme and layout shots use
+the steps renderer (nvtop-style step-line charts); the panel manager and
+help shots use the text renderer with the overlay open over the live
+panels. Grid sizes: 200×56 (themes, manager, help), 230×68 (wide),
+108×30 (narrow), 83×23 (compact). The same command produces CI-style
+frames in any color mode — see `--render-frame`, `--render-png` and
+`tools/frame2png.py` in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 | Cyberpunk Blue (default) | Matrix Green |
 |---|---|
