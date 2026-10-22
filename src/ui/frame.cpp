@@ -1242,11 +1242,18 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
     const std::string rtime = time_str();
     const std::string rmid =
         interval_str(interval_ms) + " \xC2\xB7 " + window_str(window_ns) + " ";
+    // v1.5.0: the recording indicator, before (left of) the interval and
+    // window info.
+    const std::string rrec = chrome.rec_label;
     const std::string rpaused = paused ? "PAUSED " : "";
     int x = W - utf8_cols(rtime);
     put_str(screen, x, 0, rtime, c.label_dim);
     x -= utf8_cols(rmid);
     put_str(screen, x, 0, rmid, c.label_dim);
+    if (!rrec.empty()) {
+      x -= utf8_cols(rrec);
+      put_str(screen, x, 0, rrec, c.warn);
+    }
     if (!rpaused.empty()) {
       x -= utf8_cols(rpaused);
       put_str(screen, x, 0, rpaused, c.warn);
@@ -1257,7 +1264,9 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
   // --- footer --------------------------------------------------------------------
   {
     for (int x = 0; x < W; ++x) put_px(screen, x, H - 1, " ", c.label_dim);
-    std::string foot = "q quit \xC2\xB7 space pause \xC2\xB7 t window \xC2\xB7 e panels \xC2\xB7 ? help";
+    std::string foot =
+        "q quit \xC2\xB7 space pause \xC2\xB7 t window \xC2\xB7 e panels "
+        "\xC2\xB7 ? help \xC2\xB7 l log";
     // Scrolling: "· ↑↓ scroll · [▲ ]N more[ ▼]" — N is the number of hidden
     // rows (total - k, constant while scrolling); "▲ " only when there are
     // hidden rows above, " ▼" only when there are hidden rows below. This

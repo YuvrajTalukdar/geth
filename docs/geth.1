@@ -125,6 +125,24 @@ List the selectable themes (built-in and custom) and mark the active one.
 Does not touch the hardware.
 .It Sy -no-save
 Never write the config file (read-only).
+.It Sy -log
+Start the CSV data logger immediately (the
+.Sy l
+key toggles it at runtime; overrides
+.Sq autostart
+in the
+.Sq logging
+config table).
+.It Sy "-log-dir Ar path"
+Directory for the CSV log files (default:
+.Pa $XDG_DATA_HOME/geth/logs ,
+else
+.Pa ~/.local/share/geth/logs ).
+Overrides
+.Sq dir
+in the
+.Sq logging
+config table.
 .It Sy "-script Ar events"
 Valid with
 .Sy -render-frame
@@ -171,6 +189,9 @@ Cycle the theme (saves the config).
 .It Sy g
 Cycle the graph mode (text, pixels, steps; saves the config). Steps are an
 nvtop-style step-line chart, always text-rendered.
+.It Sy l
+Toggle the CSV data logger (start / stop); it records only what you have
+chosen to view.
 .It Sy "Up / Down or j / k"
 Scroll one row (when the page overflows).
 .It Sy "PgUp / PgDn"
@@ -211,6 +232,14 @@ Installed packages never modify this file; removing it (or the whole
 .Pa ~/.config/geth
 directory) restores the defaults.
 .It
+.Pa $XDG_DATA_HOME/geth/logs/
+(or
+.Pa ~/.local/share/geth/logs/ ):
+CSV log files, written only while the logger is active (the
+.Sy l
+key or
+.Sy -log ).
+.It
 .Pa $XDG_CONFIG_HOME/geth/themes/ :
 custom theme files (TOML).
 .It
@@ -237,6 +266,12 @@ the MIT license.
 .Bl -tag -width "XDG_CONFIG_HOME"
 .It Ev XDG_CONFIG_HOME
 Base directory for the config file and the custom themes directory.
+.It Ev XDG_DATA_HOME
+Base directory for the CSV log files
+.Pa (geth/logs/ ).
+Falls back to
+.Pa ~/.local/share
+when not set.
 .It Ev HOME
 Fallback base directory when
 .Ev XDG_CONFIG_HOME

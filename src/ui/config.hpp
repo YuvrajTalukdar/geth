@@ -16,6 +16,11 @@
 //   background = "transparent"  # "transparent" | "solid" (paints the theme's bg)
 //   graph_renderer = "auto"   # "auto" | "pixels" | "text" | "steps" (how graphs are drawn)
 //
+//   [logging]                 # v1.5.0: the CSV data logger (toggled with `l`)
+//   dir = ""                  # log directory ("" = $XDG_DATA_HOME/geth/logs,
+//                             #               else ~/.local/share/geth/logs)
+//   autostart = false         # start logging at launch (--log overrides)
+//
 //   [[panels]]                # one table per panel, in display order
 //   id = "cpu"
 //   visible = true
@@ -86,6 +91,10 @@ struct Config {
   // The file contained a legacy graph_renderer = "bars" (v1.2.0): it migrated
   // to "steps" on load; the UI warns once.
   bool had_bars = false;
+
+  // [logging] (v1.5.0): the CSV data logger (toggled with `l`).
+  std::string log_dir;       // "" = $XDG_DATA_HOME/geth/logs, else ~/.local/share/geth/logs
+  bool log_autostart = false;  // start logging at launch (overridden by --log)
 
   std::vector<PanelEntry> panels;  // file order
   std::map<std::string, GpuEntry> gpus;  // PCI bus id -> override

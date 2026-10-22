@@ -122,7 +122,8 @@ Config Config::load(const std::string& path, bool no_save) {
     // Unknown root keys.
     for (auto& [k, v] : root) {
       const std::string name = key_str(k);
-      if (name != "general" && name != "panels" && name != "gpus")
+      if (name != "general" && name != "panels" && name != "gpus" &&
+          name != "logging")
         c.warnings.push_back(
             warn(c, key_line(k), "unknown key '" + name + "' — ignored"));
     }
@@ -357,6 +358,35 @@ Config Config::load(const std::string& path, bool no_save) {
         }
       }
     }
+
+    // [logging] --------------------------------------------------------------
+    if (root.contains("logging")) {
+      const auto& lv = root.at("logging");
+      if (!lv.is_table()) {
+        c.warnings.push_back(warn(c, 0, "'logging' must be a table — ignored"));
+      } else {
+        const toml::table* lt = lv.as<toml::table>();
+        for (auto& [k, v] : *lt) {
+          const std::string name = key_str(k);
+          const int line = key_line(k);
+          if (name == "dir") {
+            if (v.is_string()) c.log_dir = v.as<std::string>()->get();
+            else
+              c.warnings.push_back(
+                  warn(c, line, "logging.dir must be a string — ignored"));
+          } else if (name == "autostart") {
+            if (v.is_boolean()) c.log_autostart = v.as<bool>()->get();
+            else
+              c.warnings.push_back(warn(
+                  c, line, "logging.autostart must be a boolean — ignored"));
+          } else {
+            c.warnings.push_back(warn(c, line,
+                                      "unknown key 'logging." + name +
+                                          "' — ignored"));
+          }
+        }
+      }
+    }
   } catch (const toml::parse_error& e) {
     c.loaded = false;
     const int line = e.source().begin.line;
@@ -382,6 +412,9 @@ std::string Config::serialize() const {
   s += "theme = \"" + escape_toml(theme) + "\"\n";
   s += "background = \"" + escape_toml(background) + "\"\n";
   s += "graph_renderer = \"" + escape_toml(graph_renderer) + "\"\n\n";
+  s += "[logging]\n";
+  s += "dir = \"" + escape_toml(log_dir) + "\"\n";
+  s += "autostart = " + std::string(log_autostart ? "true" : "false") + "\n\n";
   for (const auto& e : panels) {
     s += "[[panels]]\n";
     s += "id = \"" + escape_toml(e.id) + "\"\n";

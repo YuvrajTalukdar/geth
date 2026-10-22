@@ -39,6 +39,10 @@ hidden_series = []      # series ids hidden in this panel
 [gpus."0000:01:00.0"]
 name = "RTX 3050"
 integrated = "auto"     # "auto" | true | false
+
+[logging]
+dir = ""                # CSV output directory ("" = $XDG_DATA_HOME/geth/logs)
+autostart = false       # start CSV logging at launch (overridden by --log)
 ```
 
 The retired v1.0.3 key `graph_style` (the graph line style, `"braille" |
@@ -97,3 +101,22 @@ A per-panel `title` overrides the default for that one panel only; the
 - Test-safety: when `GETH_TEST=1` is set (soaks, CI, dev harnesses), saving
   is refused anywhere under the real `~/.config`. Set `XDG_CONFIG_HOME` to a
   temporary directory instead.
+
+### CSV logging
+
+`[logging]` controls the opt-in CSV data logger (the `l` key; see
+[Logging to CSV](../README.md#logging-to-csv) in the README). It records only
+what you have chosen to view — the visible panels in display order, each shown
+series and numeric info row, de-duplicated by metric.
+
+- `dir` — where the CSV files are written. `""` (the default) means
+  `$XDG_DATA_HOME/geth/logs/`, falling back to `~/.local/share/geth/logs/`.
+  Overridden per run by `--log-dir`.
+- `autostart` — when `true`, logging starts as soon as the UI comes up.
+  `--log` forces it on for one run; either way the `l` key toggles it at
+  runtime.
+
+Files are named `geth-YYYYMMDD-HHMMSS.csv` and are never overwritten. Changing
+the visible selection while recording (hiding a panel, toggling a series,
+renaming or reordering panels) starts a new file; changing theme, graph mode,
+window, columns, or the sampling interval does not.

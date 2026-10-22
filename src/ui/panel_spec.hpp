@@ -18,6 +18,11 @@ namespace geth::ui {
 // without changing the PanelSpec shape.
 enum class PanelKind { kGraph };
 
+// v1.5.0 CSV logging: the unit of a loggable value. It fixes the header
+// suffix ("[%]", "[MHz]", ...) and the CSV precision: % and °C one decimal,
+// MHz / B / B/s integer, W two decimals.
+enum class LogUnit { kNone, kPercent, kMHz, kBytes, kBytesPerSec, kWatts, kCelsius };
+
 struct SeriesSpec {
   SeriesId id;          // must exist in the SeriesStore
   std::string label;    // legend label
@@ -32,6 +37,19 @@ struct SeriesSpec {
   // Current-value text for the legend ("—"/"sleeping" is substituted by the
   // renderer when the value is missing / the GPU is asleep).
   std::function<std::string(const Snapshot&)> value_fn;
+  // v1.5.0 CSV logging: the RAW value (nullopt/NaN = an empty field, never
+  // 0). Null numeric_fn = the series is not logged. (The explicit defaults
+  // on the logging fields keep -Wmissing-field-initializers quiet for
+  // initializers that predate them.)
+  std::function<std::optional<double>(const Snapshot&)> numeric_fn = nullptr;
+  // The de-duplication key: it defaults to the series id, and an info row
+  // showing the same value carries the SAME key, so the value gets exactly
+  // one column. (The explicit default keeps -Wmissing-field-initializers
+  // quiet for initializers that skip it.)
+  std::string metric = "";
+  // The unit (header suffix + precision). kNone = not logged. Always set
+  // explicitly in initializers (it is the last member).
+  LogUnit unit = LogUnit::kNone;
 };
 
 struct InfoRow {
@@ -39,6 +57,16 @@ struct InfoRow {
   std::function<std::string(const Snapshot&)> value_fn;
   // -1: no bar (a plain aligned row); else a bar in Theme::series[color_index].
   int color_index = -1;
+  // v1.5.0 CSV logging: the de-dup key. `metric` matching a visible series'
+  // id / `metric` folds the row into that column (the row is the display
+  // surface for values whose series has no legend). An empty metric = the
+  // row is not logged. (The explicit defaults on the logging fields keep
+  // -Wmissing-field-initializers quiet for initializers that predate them.)
+  std::string metric = "";
+  // The raw value; null numeric_fn = the row is not logged.
+  std::function<std::optional<double>(const Snapshot&)> numeric_fn = nullptr;
+  // The unit (header suffix + precision); kNone = not logged.
+  LogUnit unit = LogUnit::kNone;
 };
 
 struct ScaleSpec {

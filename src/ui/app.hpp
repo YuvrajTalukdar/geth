@@ -14,6 +14,7 @@
 
 #include "core/collector.hpp"
 #include "ui/config.hpp"
+#include "ui/csv_log.hpp"
 #include "ui/frame.hpp"
 #include "ui/graph_backends.hpp"
 #include "ui/panel_spec.hpp"
@@ -40,6 +41,9 @@ struct UiOptions {
   // --renderer pixels|text ("" = the config's graph_renderer); a session
   // override, never saved.
   std::string renderer;
+  // v1.5.0 CSV logging (UI only):
+  bool log = false;        // --log: start logging immediately (beats autostart)
+  std::string log_dir;     // --log-dir PATH ("" = the config's [logging].dir)
 };
 
 // Validate `opts.color_mode` and resolve the effective color mode.
@@ -69,7 +73,8 @@ class Dashboard : public ftxui::ComponentBase {
             std::vector<std::pair<std::string, Theme>> theme_cycle,
             int theme_idx, ColorMode mode, long long interval_ms,
             unsigned long long count, int window_idx, int columns,
-            FrameStats& stats);
+            FrameStats& stats, bool log_start = false,
+            std::string log_dir = "");
 
   // The terminal size before the first resize event (--render-frame
   // --script and the tests): OnEvent needs it to clamp the scroll and map a
@@ -105,6 +110,15 @@ class Dashboard : public ftxui::ComponentBase {
   const Theme& theme() const;
   // A startup warning shown as a toast (e.g. a broken custom-theme file).
   void note_warning(const std::string& msg);
+
+  // v1.5.0 CSV logging: the live state (unit tests) and the header indicator.
+  bool logging() const { return _log.active(); }
+  const std::string& log_path() const { return _log.path(); }
+  unsigned long long log_rows() const { return _log.row_count(); }
+  std::string rec_label() const { return _log.rec_label(); }
+  // Exit path (run_ui): flush and close any open log (no-op when not
+  // logging). Rows are written unbuffered, so nothing is lost here.
+  void stop_log() { _log.stop(); }
 
   // The terminal capabilities, set by run_ui before the loop starts: the
   // probe result, the protocol the effective intent resolves to, and the
@@ -190,6 +204,9 @@ class Dashboard : public ftxui::ComponentBase {
   int count_visible() const;
   std::string default_title(const std::string& id) const;
 
+  // v1.5.0 CSV logging (the `l` key): start/stop, with the toasts.
+  void toggle_log();
+
   // The manager overlay box at the current terminal size — the SAME math as
   // OverlayBox::make(W, H, 60, min(H-4, 30), 2) in frame.cpp, so a mouse
   // click maps to the row the renderer drew.
@@ -235,6 +252,13 @@ class Dashboard : public ftxui::ComponentBase {
   std::string _toast;
   TimePoint _toast_until{};
   bool _dirty = false;  // a change not yet saved
+
+  // v1.5.0 CSV logging.
+  CsvLogger _log;
+  std::string _log_dir;  // session dir override (the config's, or --log-dir)
+  // A page mutation (panel/series show/hide, reorder, rename) may have
+  // changed the logged column set: re-fingerprint it on the next tick.
+  bool _sel_dirty = false;
 
   // The panel manager.
   bool _manager_open = false;

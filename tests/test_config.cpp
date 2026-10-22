@@ -160,6 +160,48 @@ TEST_CASE("round-trip: serialize -> load preserves every field") {
   CHECK_FALSE(*r.gpus.at("0000:01:00.0").integrated);
 }
 
+TEST_CASE("round-trip: [logging] dir and autostart") {
+  ui::Config c;
+  c.log_dir = "/var/tmp/geth-logs";
+  c.log_autostart = true;
+
+  const std::string path = tmp_path("logging.toml");
+  write_file(path, c.serialize());
+  const ui::Config r = ui::Config::load(path, /*no_save=*/false);
+  CHECK(r.loaded);
+  CHECK(r.warnings.empty());
+  CHECK_EQ(r.log_dir, "/var/tmp/geth-logs");
+  CHECK(r.log_autostart);
+
+  // The defaults serialize too (an empty dir stays empty).
+  ui::Config d;
+  const std::string s = d.serialize();
+  CHECK(s.find("[logging]") != std::string::npos);
+  CHECK(s.find("dir = \"\"") != std::string::npos);
+  CHECK(s.find("autostart = false") != std::string::npos);
+}
+
+TEST_CASE("logging: unknown / invalid keys warn (never error) and are ignored") {
+  const std::string path = tmp_path("logging_unknown.toml");
+  write_file(path,
+             "[logging]\n"
+             "dir = \"/tmp/ok\"\n"
+             "foo = 1\n");  // unknown logging key -> warning
+  const ui::Config c = ui::Config::load(path, false);
+  CHECK(c.loaded);
+  CHECK_EQ(c.log_dir, "/tmp/ok");
+  CHECK_FALSE(c.log_autostart);
+  CHECK(warned(c.warnings, "logging.foo"));
+
+  const std::string path2 = tmp_path("logging_broken.toml");
+  write_file(path2,
+             "logging = 1\n");  // not a table -> warning, section ignored
+  const ui::Config b = ui::Config::load(path2, false);
+  CHECK(b.loaded);
+  CHECK(b.log_dir.empty());
+  CHECK(warned(b.warnings, "must be a table"));
+}
+
 TEST_CASE("round-trip: an empty title serializes to \"\" and a gpus auto is kept") {
   ui::Config c;
   ui::PanelEntry p;

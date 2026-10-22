@@ -1161,10 +1161,12 @@ TEST_CASE("same-device second series takes the next free slot") {
   p.title = "T \xC2\xB7 Memory";
   p.series.push_back({.id = SeriesId("gpu.0000:07:00.0.gtt"), .label = "GTT",
                       .color_index = 2,
-                      .value_fn = [](const Snapshot&) { return std::string("128 MiB"); }});
+                      .value_fn = [](const Snapshot&) { return std::string("128 MiB"); },
+                      .unit = ui::LogUnit::kNone});
   p.series.push_back({.id = SeriesId("gpu.0000:07:00.0.vram"), .label = "VRAM",
                       .color_index = 0,
-                      .value_fn = [](const Snapshot&) { return std::string("1 GiB"); }});
+                      .value_fn = [](const Snapshot&) { return std::string("1 GiB"); },
+                      .unit = ui::LogUnit::kNone});
   std::vector<ui::PanelSpec> page{p};
   ui::FrameState state;
   ui::LayoutCache cache = cache_for(page);

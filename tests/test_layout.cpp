@@ -83,7 +83,9 @@ std::vector<PanelSpec> make_page_6() {
   cpu.id = "cpu";
   cpu.title = "CPU";
   cpu.series = {s("cpu.usage", "CPU", 0, /*in_legend=*/false)};
-  cpu.info_rows = {{"Total Usage", nullptr, 0}, {"Average CPU Frequency", nullptr, -1}};
+  // (label, value_fn, color_index, metric, numeric_fn, unit)
+  cpu.info_rows = {{"Total Usage", nullptr, 0, "", nullptr, LogUnit::kNone},
+                  {"Average CPU Frequency", nullptr, -1, "", nullptr, LogUnit::kNone}};
   cpu.y_scale.kind = ScaleSpec::Kind::kPercent;
   page.push_back(cpu);
 
@@ -92,7 +94,8 @@ std::vector<PanelSpec> make_page_6() {
   gpu.title = "RTX 3050";
   gpu.gpu_bus = "0000:01:00.0";
   gpu.series = {s("gpu.0000:01:00.0.usage", "RTX 3050", 1, /*in_legend=*/false)};
-  gpu.info_rows = {{"RTX 3050 Usage", nullptr, 1}, {"Core Frequency", nullptr, -1}};
+  gpu.info_rows = {{"RTX 3050 Usage", nullptr, 1, "", nullptr, LogUnit::kNone},
+                  {"Core Frequency", nullptr, -1, "", nullptr, LogUnit::kNone}};
   gpu.y_scale.kind = ScaleSpec::Kind::kPercent;
   page.push_back(gpu);
 
@@ -432,7 +435,7 @@ TEST_CASE("panel minimum widths match the graph-width rules") {
 TEST_CASE("best_mode: the largest mode that fits, false below Tight") {
   PanelSpec p;
   p.y_scale.kind = ScaleSpec::Kind::kPercent;
-  p.info_rows = {{"a", nullptr, 0}};  // full_height = 2 + 4 + 0 + 1 = 7
+  p.info_rows = {{"a", nullptr, 0, "", nullptr, LogUnit::kNone}};  // full_height = 2 + 4 + 0 + 1 = 7
   PanelMode m;
   // Wide panel (gw 91): the mode is decided by height alone.
   CHECK(best_mode(p, 100, 7, m));

@@ -203,6 +203,10 @@ struct FrameChrome {
   // startup probe. Rasterizing a panel needs it (w = Wg*cell_w, etc.); 0 means
   // unknown, in which case no image is produced for that frame.
   int cell_w = 0, cell_h = 0;
+  // v1.5.0: "● REC hh:mm:ss " while CSV logging is active ("" = off).
+  // Drawn in the header in the theme's warn color, before the interval and
+  // window info.
+  std::string rec_label;
 };
 
 // -- v1.3.0 steps mode (nvtop-style step-line history chart) -------------------

@@ -112,14 +112,28 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
     // so the series itself gets no separate legend line.
     p.series = {{.id = SeriesId("cpu.usage"), .label = "CPU", .color_index = 0,
                  .in_legend = false,
-                 .value_fn = [](const Snapshot& s) { return v_pct(s.cpu.usage_pct); }}};
+                 .value_fn = [](const Snapshot& s) { return v_pct(s.cpu.usage_pct); },
+                 .numeric_fn = [](const Snapshot& s) { return s.cpu.usage_pct; },
+                 .metric = "cpu.usage",
+                 .unit = LogUnit::kPercent}};
+    // The info rows carry the same de-dup keys as the series they show
+    // (Total Usage = cpu.usage): the logger folds them into one column.
     p.info_rows = {
         {"Total Usage",
-         [](const Snapshot& s) { return v_pct(s.cpu.usage_pct); }, 0},
+         [](const Snapshot& s) { return v_pct(s.cpu.usage_pct); }, 0,
+         "cpu.usage",
+         [](const Snapshot& s) { return s.cpu.usage_pct; },
+         LogUnit::kPercent},
         {"Average CPU Frequency",
-         [](const Snapshot& s) { return v_freq(s.cpu.freq_avg_mhz); }, -1},
+         [](const Snapshot& s) { return v_freq(s.cpu.freq_avg_mhz); }, -1,
+         "cpu.freq_avg_mhz",
+         [](const Snapshot& s) { return s.cpu.freq_avg_mhz; },
+         LogUnit::kMHz},
         {"Maximum CPU Frequency",
-         [](const Snapshot& s) { return v_freq(s.cpu.freq_max_mhz); }, -1},
+         [](const Snapshot& s) { return v_freq(s.cpu.freq_max_mhz); }, -1,
+         "cpu.freq_max_mhz",
+         [](const Snapshot& s) { return s.cpu.freq_max_mhz; },
+         LogUnit::kMHz},
     };
     page.push_back(std::move(p));
   }
@@ -140,7 +154,14 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
                    for (const auto& x : s.gpus)
                      if (x.pci_bus_id == bus) return v_pct(x.usage_pct);
                    return std::string("—");
-                 }}};
+                 },
+                 .numeric_fn = [bus](const Snapshot& s) -> std::optional<double> {
+                   for (const auto& x : s.gpus)
+                     if (x.pci_bus_id == bus) return x.usage_pct;
+                   return std::nullopt;
+                 },
+                 .metric = "gpu." + bus + ".usage",
+                 .unit = LogUnit::kPercent}};
     p.info_rows = {
         {title + " Usage",
          [bus](const Snapshot& s) {
@@ -148,14 +169,28 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
              if (x.pci_bus_id == bus) return v_pct(x.usage_pct);
            return std::string("—");
          },
-         ci},
+         ci,
+         "gpu." + bus + ".usage",
+         [bus](const Snapshot& s) -> std::optional<double> {
+           for (const auto& x : s.gpus)
+             if (x.pci_bus_id == bus) return x.usage_pct;
+           return std::nullopt;
+         },
+         LogUnit::kPercent},
         {"Core Frequency",
          [bus](const Snapshot& s) {
            for (const auto& x : s.gpus)
              if (x.pci_bus_id == bus) return v_freq(x.core_clock_mhz);
            return std::string("—");
          },
-         -1},
+         -1,
+         "gpu." + bus + ".core_clock_mhz",
+         [bus](const Snapshot& s) -> std::optional<double> {
+           for (const auto& x : s.gpus)
+             if (x.pci_bus_id == bus) return x.core_clock_mhz;
+           return std::nullopt;
+         },
+         LogUnit::kMHz},
     };
     page.push_back(std::move(p));
   }
@@ -167,9 +202,13 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
     p.title = "Memory";
     p.series = {
         {.id = SeriesId("mem.ram_used"), .label = "RAM", .color_index = 0,
-         .value_fn = [](const Snapshot& s) { return v_bytes(s.mem.ram_used_bytes); }},
+         .value_fn = [](const Snapshot& s) { return v_bytes(s.mem.ram_used_bytes); },
+         .numeric_fn = [](const Snapshot& s) { return s.mem.ram_used_bytes; },
+         .unit = LogUnit::kBytes},
         {.id = SeriesId("mem.swap_used"), .label = "Swap", .color_index = 2,
-         .value_fn = [](const Snapshot& s) { return v_bytes(s.mem.swap_used_bytes); }},
+         .value_fn = [](const Snapshot& s) { return v_bytes(s.mem.swap_used_bytes); },
+         .numeric_fn = [](const Snapshot& s) { return s.mem.swap_used_bytes; },
+         .unit = LogUnit::kBytes},
     };
     p.y_scale.kind = ScaleSpec::Kind::kAbsolute;
     p.y_scale.absolute_max = hw.ram_total_bytes;
@@ -200,13 +239,25 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
              for (const auto& x : s.gpus)
                if (x.pci_bus_id == bus) return v_bytes(x.gtt_used_bytes);
              return std::string("—");
-           }},
+           },
+           .numeric_fn = [bus](const Snapshot& s) -> std::optional<double> {
+             for (const auto& x : s.gpus)
+               if (x.pci_bus_id == bus) return x.gtt_used_bytes;
+             return std::nullopt;
+           },
+           .unit = LogUnit::kBytes},
           {.id = SeriesId("gpu." + bus + ".vram"), .label = "VRAM", .color_index = vram_ci,
            .value_fn = [bus](const Snapshot& s) {
              for (const auto& x : s.gpus)
                if (x.pci_bus_id == bus) return v_bytes(x.vram_used_bytes);
              return std::string("—");
-           }},
+           },
+           .numeric_fn = [bus](const Snapshot& s) -> std::optional<double> {
+             for (const auto& x : s.gpus)
+               if (x.pci_bus_id == bus) return x.vram_used_bytes;
+             return std::nullopt;
+           },
+           .unit = LogUnit::kBytes},
       };
       // The scale is the {1, 1.5} x 2^k ceiling (nice_bytes_max, in
       // frame.cpp) of the LARGER of the two totals, so both lines fit.
@@ -220,7 +271,14 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
                      for (const auto& x : s.gpus)
                        if (x.pci_bus_id == bus) return v_bytes(x.vram_used_bytes);
                      return std::string("—");
-                   }}};
+                   },
+                             .numeric_fn =
+                             [bus](const Snapshot& s) -> std::optional<double> {
+                     for (const auto& x : s.gpus)
+                       if (x.pci_bus_id == bus) return x.vram_used_bytes;
+                     return std::nullopt;
+                   },
+                   .unit = LogUnit::kBytes}};
       p.y_scale.kind = ScaleSpec::Kind::kAbsolute;
       p.y_scale.absolute_max = g.vram_total_bytes;
     }
@@ -231,7 +289,14 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
              if (x.pci_bus_id == bus) return v_freq(x.mem_clock_mhz);
            return std::string("—");
          },
-         -1},
+         -1,
+         "gpu." + bus + ".mem_clock_mhz",
+         [bus](const Snapshot& s) -> std::optional<double> {
+           for (const auto& x : s.gpus)
+             if (x.pci_bus_id == bus) return x.mem_clock_mhz;
+           return std::nullopt;
+         },
+         LogUnit::kMHz},
     };
     page.push_back(std::move(p));
   }
@@ -242,7 +307,9 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
     p.id = "temps";
     p.title = "Temperature";
     p.series = {{.id = SeriesId("cpu.temp"), .label = "CPU",
-                 .value_fn = [](const Snapshot& s) { return v_celsius(s.cpu.temp_c); }}};
+                 .value_fn = [](const Snapshot& s) { return v_celsius(s.cpu.temp_c); },
+                 .numeric_fn = [](const Snapshot& s) { return s.cpu.temp_c; },
+                 .unit = LogUnit::kCelsius}};
     for (std::size_t k = 0; k < order.size(); ++k) {
       const auto& g = hw.gpus[order[k]];
       const std::string bus = g.bus_id;
@@ -253,7 +320,14 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
                             for (const auto& x : s.gpus)
                               if (x.pci_bus_id == bus) return v_celsius(x.temp_c);
                             return std::string("—");
-                          }});
+                          },
+                          .numeric_fn =
+                          [bus](const Snapshot& s) -> std::optional<double> {
+                            for (const auto& x : s.gpus)
+                              if (x.pci_bus_id == bus) return x.temp_c;
+                            return std::nullopt;
+                          },
+                          .unit = LogUnit::kCelsius});
     }
     p.y_scale.kind = ScaleSpec::Kind::kTemperature;
     page.push_back(std::move(p));
@@ -268,7 +342,11 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
       p.series.push_back({.id = SeriesId("cpu.power"), .label = hw.cpu_power_label,
                           .value_fn = [](const Snapshot& s) {
                             return v_watts(s.cpu.package_power_w);
-                          }});
+                          },
+                          .numeric_fn = [](const Snapshot& s) {
+                            return s.cpu.package_power_w;
+                          },
+                          .unit = LogUnit::kWatts});
     for (std::size_t k = 0; k < order.size(); ++k) {
       const auto& g = hw.gpus[order[k]];
       if (!g.reports_power) continue;  // never a separate iGPU power line
@@ -280,7 +358,14 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
                             for (const auto& x : s.gpus)
                               if (x.pci_bus_id == bus) return v_watts(x.power_w);
                             return std::string("—");
-                          }});
+                          },
+                          .numeric_fn =
+                          [bus](const Snapshot& s) -> std::optional<double> {
+                            for (const auto& x : s.gpus)
+                              if (x.pci_bus_id == bus) return x.power_w;
+                            return std::nullopt;
+                          },
+                          .unit = LogUnit::kWatts});
     }
     p.y_scale.kind = ScaleSpec::Kind::kWatts;
     p.y_scale.floor_ = 20.0;  // minimum ceiling: 20 W (nice_watts' floor)
@@ -294,9 +379,13 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
     p.title = "Network";
     p.series = {
         {.id = SeriesId("net.total.rx"), .label = "Download",
-         .value_fn = [](const Snapshot& s) { return v_rate(s.net.total_rx_bytes_per_s); }},
+         .value_fn = [](const Snapshot& s) { return v_rate(s.net.total_rx_bytes_per_s); },
+         .numeric_fn = [](const Snapshot& s) { return s.net.total_rx_bytes_per_s; },
+         .unit = LogUnit::kBytesPerSec},
         {.id = SeriesId("net.total.tx"), .label = "Upload", .color_index = 2,
-         .value_fn = [](const Snapshot& s) { return v_rate(s.net.total_tx_bytes_per_s); }},
+         .value_fn = [](const Snapshot& s) { return v_rate(s.net.total_tx_bytes_per_s); },
+         .numeric_fn = [](const Snapshot& s) { return s.net.total_tx_bytes_per_s; },
+         .unit = LogUnit::kBytesPerSec},
     };
     p.y_scale.kind = ScaleSpec::Kind::kBytesPerSec;
     p.y_scale.floor_ = 64.0 * 1024.0;  // minimum ceiling: 64 KiB/s
@@ -310,9 +399,17 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
     p.title = "Disk";
     p.series = {
         {.id = SeriesId("disk.total.r"), .label = "Read",
-         .value_fn = [](const Snapshot& s) { return v_rate(s.disk.total_read_bytes_per_s); }},
+         .value_fn = [](const Snapshot& s) { return v_rate(s.disk.total_read_bytes_per_s); },
+         .numeric_fn = [](const Snapshot& s) {
+           return s.disk.total_read_bytes_per_s;
+         },
+         .unit = LogUnit::kBytesPerSec},
         {.id = SeriesId("disk.total.w"), .label = "Write", .color_index = 2,
-         .value_fn = [](const Snapshot& s) { return v_rate(s.disk.total_write_bytes_per_s); }},
+         .value_fn = [](const Snapshot& s) { return v_rate(s.disk.total_write_bytes_per_s); },
+         .numeric_fn = [](const Snapshot& s) {
+           return s.disk.total_write_bytes_per_s;
+         },
+         .unit = LogUnit::kBytesPerSec},
     };
     p.y_scale.kind = ScaleSpec::Kind::kBytesPerSec;
     p.y_scale.floor_ = 1024.0 * 1024.0;  // minimum ceiling: 1 MiB/s

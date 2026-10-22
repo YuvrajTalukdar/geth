@@ -4,7 +4,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(geth
-  VERSION 1.4.0
+  VERSION 1.5.0
   DESCRIPTION "GETH — Geth Engine for Tracking Hardware"
   LANGUAGES CXX)
 
@@ -92,6 +92,7 @@ set(GETH_SOURCES
   src/sources/temps.cpp
   src/ui/app.cpp
   src/ui/config.cpp
+  src/ui/csv_log.cpp
   src/ui/frame.cpp
   src/ui/glyphs.cpp
   src/ui/graph_backends.cpp
@@ -250,6 +251,7 @@ if(GETH_BUILD_TESTS)
     tests/test_ui.cpp
     tests/test_layout.cpp
     tests/test_config.cpp
+    tests/test_csv_log.cpp
     tests/test_dashboard.cpp
     tests/test_theme.cpp
     tests/test_collector.cpp

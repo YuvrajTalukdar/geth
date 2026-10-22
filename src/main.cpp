@@ -78,6 +78,8 @@ struct Options {
   bool probe_terminal = false;  // --probe-terminal: terminal capabilities, exit
   std::string renderer;      // --renderer pixels|text|steps ("" = config's value)
   std::string trace_series;   // --trace SERIES_ID: per-tick stage trace (off if empty)
+  bool log = false;          // --log: start CSV logging (UI), beats autostart
+  std::string log_dir;       // --log-dir PATH ("" = the config's [logging].dir)
 };
 
 void print_help() {
@@ -121,6 +123,10 @@ void print_help() {
       "  --renderer <name>   pixels | text | steps — session override for the\n"
       "                      graph renderer (default: the config's\n"
       "                      graph_renderer; steps = nvtop-style step-line)\n"
+      "  --log             Start CSV logging immediately (UI; overrides\n"
+      "                    [logging].autostart); toggle with `l` in the UI\n"
+      "  --log-dir <path>  CSV log directory (default: $XDG_DATA_HOME/geth/logs,\n"
+      "                    else ~/.local/share/geth/logs; overrides [logging].dir)\n"
       "  --no-save           Never write the config file (read-only)\n"
       "  --script <events>   --render-frame only: replay a comma-separated list\n"
       "                      of synthetic events (keys, enter, space, tab,\n"
@@ -228,6 +234,12 @@ int parse_args(int argc, char** argv, Options& o) {
                      "geth: --renderer must be pixels, text or steps\n");
         return -1;
       }
+    } else if (a == "--log") {
+      o.log = true;
+    } else if (a == "--log-dir") {
+      const char* v = need_value("--log-dir");
+      if (!v) return -1;
+      o.log_dir = v;
     } else if (a == "--no-save") {
       o.no_save = true;
     } else if (a == "--script") {
@@ -950,6 +962,8 @@ int main(int argc, char** argv) {
     u.no_save = opts.no_save;
     u.theme = opts.theme;
     u.renderer = opts.renderer;
+    u.log = opts.log;
+    u.log_dir = opts.log_dir;
     return ui::run_ui(collector, hw, u);
   }
 

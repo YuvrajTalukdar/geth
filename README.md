@@ -20,6 +20,7 @@ network — with live graphs, built for transparent and blurred terminals.
 - [Building the Arch package](#building-the-arch-package)
 - [Usage](#usage)
 - [Configuration and themes](#configuration-and-themes)
+- [Logging to CSV](#logging-to-csv)
 - [CPU power permissions](#cpu-power-permissions)
 - [Hybrid laptops: discrete-GPU sleep](#hybrid-laptops-discrete-gpu-sleep)
 - [Troubleshooting / FAQ](#troubleshooting--faq)
@@ -43,8 +44,10 @@ dependencies are fetched by CMake and pinned to exact versions (see
 ## What it is NOT
 
 - **Not a process manager** — no per-process list, kill, or rename.
-- **Not a logging/alerting/remote-monitoring tool** — no history persistence,
-  no thresholds, no network server. What you see is live, local sampling.
+- **Not an alerting / remote-monitoring daemon** — no thresholds, no network
+  server, no always-on history. What you see is live, local sampling; the
+  optional CSV logger records only what you have chosen to view, and only
+  while you ask it to (see [Logging to CSV](#logging-to-csv) below).
 - **Linux only.**
 - **No Intel GPU backend yet** — Intel iGPUs are *detected* (they show in
   `--probe`) but not *sampled*; their panels show "—" until a backend lands.
@@ -155,7 +158,7 @@ and the RAPL/powercap details: [docs/HARDWARE.md](docs/HARDWARE.md).
 Build the package first (next section), then:
 
 ```sh
-sudo pacman -U dist/geth-1.4.0-1-x86_64.pkg.tar.zst   # install
+sudo pacman -U dist/geth-1.5.0-1-x86_64.pkg.tar.zst   # install
 sudo pacman -R geth                                   # uninstall
 rm -r ~/.config/geth                                  # remove your config (optional)
 ```
@@ -218,7 +221,7 @@ cached), and runs `makepkg -f --cleanbuild` — with **no network access in
 `build()`**. Output:
 
 ```
-dist/geth-1.4.0-1-x86_64.pkg.tar.zst
+dist/geth-1.5.0-1-x86_64.pkg.tar.zst
 dist/SHA256SUMS
 ```
 
@@ -241,6 +244,8 @@ geth --theme matrix-green   # select a theme (see --list-themes)
 geth --list-themes          # list themes, mark the active one
 geth --config path.toml     # use an alternate config file
 geth --no-save              # treat the config file as read-only
+geth --log                  # start CSV logging immediately (see below)
+geth --log-dir PATH         # CSV log destination for this run
 geth --help                 # all flags
 ```
 
@@ -263,6 +268,7 @@ Keys (press `?` in the UI for the full list):
 | `c` | Cycle the column count |
 | `T` | Cycle the **theme** (saved to the config) |
 | `g` | Cycle the **graph mode** (text → pixels → steps → text, saved) |
+| `l` | Toggle **CSV logging** of exactly what you're viewing (start/stop) |
 
 In the **panel manager** (`e`): `↑` `↓` / `j` `k` select, `space` show/hide a
 panel, `K` `J` (or the mouse) reorder, `r` rename a GPU (applied globally to
@@ -284,6 +290,45 @@ Themes: five built-in 24-bit palettes, custom themes with inheritance, live
 cycling, automatic 256/16-color fallback, and a transparent-by-default
 rendering rule (zero background SGR codes, asserted by tests). Full field
 reference: [docs/THEMES.md](docs/THEMES.md).
+
+## Logging to CSV
+
+Press **`l`** to record a CSV of **exactly what you have chosen to view** —
+each visible panel in display order, every shown series and numeric info row,
+de-duplicated so a value you see in two panels gets one column. Press `l`
+again to stop. While recording, the header shows a `● REC hh:mm:ss` indicator
+and one row is written per sampling tick (so rows keep coming while the
+display is paused).
+
+Files land in `$XDG_DATA_HOME/geth/logs/` (fallback
+`~/.local/share/geth/logs/`) as `geth-YYYYMMDD-HHMMSS.csv` and are **never
+overwritten**. A sample (excerpt — the real header has one column per logged
+value, in display order):
+
+```
+timestamp,elapsed_s,Total Usage [%],RTX 3050 Laptop Usage [%],RAM [B],CPU [°C],APU Package (PPT) [W],Download [B/s]
+2026-10-22T14:30:05.123+05:30,0.000,42.6,77.6,10737418240,55.0,12.35,1048576
+2026-10-22T14:30:06.124+05:30,1.001,43.1,78.0,10743969280,55.1,12.41,1051033
+```
+
+- **Format** — RFC 4180, UTF-8 (no BOM), `\n` line endings, `.` as the
+  decimal point regardless of locale. Precision per unit: `%` and `°C` to one
+  decimal, `W` to two, `MHz` / `B` / `B/s` as integers.
+- **Missing is empty, never 0** — a sleeping GPU, a rate's first tick, or a
+  value that can't be read becomes an empty field.
+- **Header names are the names you see** (including GPU renames); on a
+  collision the panel title is prefixed, then a numeric suffix as a last
+  resort.
+- **Changing your selection while recording** — hiding a panel, toggling a
+  series, renaming a GPU, reordering panels — starts a new file
+  (`geth-…-2.csv`, `geth-…-3.csv`, …). Changing theme, graph mode, window or
+  sampling interval does **not**.
+- **Every row is flushed as it is written**, so a crash, `Ctrl-C` or the
+  terminal closing loses at most the row in flight.
+
+Set the destination and auto-start in the config's `[logging]` table (`dir`,
+`autostart`) — see [docs/CONFIG.md](docs/CONFIG.md) — or per run with `--log`
+and `--log-dir PATH`.
 
 ## CPU power permissions
 

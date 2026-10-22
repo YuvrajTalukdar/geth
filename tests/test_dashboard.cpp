@@ -7,6 +7,8 @@
 
 #include <doctest.h>
 
+#include <algorithm>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -516,6 +518,103 @@ TEST_CASE("no background color is ever emitted, manager + help open (160x48, all
       CHECK(!has_forbidden_style(out));
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// v1.5.0 CSV logging (the `l` key). XDG_DATA_HOME is pointed at a temp dir —
+// the logs never touch the real ~/.local/share.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("logging: l starts and stops (toasts, file, one row per tick)") {
+  DashFixture fx;
+  const std::filesystem::path xdg = fresh_tmp_dir("dash_log_toggle");
+  ScopedEnv env("XDG_DATA_HOME", xdg.string());
+  auto d = fx.make(no_save_cfg());
+  REQUIRE_FALSE(d->logging());
+  CHECK(d->rec_label().empty());
+
+  d->OnEvent(ftxui::Event::Character('l'));
+  CHECK(d->logging());
+  CHECK(d->toast().find("logging") != std::string::npos);
+  REQUIRE(!d->log_path().empty());
+  CHECK(d->log_path().find(xdg.string()) == 0);
+  CHECK(std::filesystem::exists(d->log_path()));
+
+  // The collector-side tick (not a render) writes a row: two ticks = 2 rows.
+  d->OnEvent(ftxui::Event::Custom);
+  d->OnEvent(ftxui::Event::Custom);
+  CHECK_EQ(d->log_rows(), 2u);
+
+  d->OnEvent(ftxui::Event::Character('l'));
+  CHECK_FALSE(d->logging());
+  CHECK(d->rec_label().empty());
+  CHECK(d->toast().find("log saved") != std::string::npos);
+  CHECK(d->toast().find("2 rows") != std::string::npos);
+  CHECK_EQ(lines_of_file(d->log_path()).size(), 3u);  // header + 2 rows
+}
+
+TEST_CASE("logging: a manager panel toggle rotates to the next file") {
+  DashFixture fx;
+  const std::filesystem::path xdg = fresh_tmp_dir("dash_log_rotate");
+  ScopedEnv env("XDG_DATA_HOME", xdg.string());
+  auto d = fx.make(no_save_cfg());
+  const std::string dn = ui::gpu_short_name(fx.hw.gpus[0]);
+  const std::string an = ui::gpu_short_name(fx.hw.gpus[1]);
+
+  d->OnEvent(ftxui::Event::Character('l'));
+  REQUIRE(d->logging());
+  const std::string first = d->log_path();
+  d->OnEvent(ftxui::Event::Custom);  // one row in file 1
+
+  // Hide the dGPU usage panel through the manager (row 1 in page order).
+  d->OnEvent(ftxui::Event::Character('e'));
+  REQUIRE(d->manager_open());
+  fx.select_row(*d, 1);
+  d->OnEvent(ftxui::Event::Character(' '));
+  d->OnEvent(ftxui::Event::Escape);
+
+  // The next tick re-fingerprints the (now changed) page and rotates.
+  d->OnEvent(ftxui::Event::Custom);
+  CHECK(d->logging());
+  const std::string second = d->log_path();
+  CHECK(second != first);
+  CHECK(second.find("-2.csv") != std::string::npos);
+  CHECK_EQ(d->log_rows(), 1u);  // rows restart with the new file
+  CHECK(std::filesystem::exists(first));
+  CHECK(std::filesystem::exists(second));
+
+  const auto l1 = lines_of_file(first);
+  const auto l2 = lines_of_file(second);
+  REQUIRE_EQ(l1.size(), 2u);  // header + 1 row
+  REQUIRE_EQ(l2.size(), 2u);  // header + 1 row
+  const auto hdr1 = split_csv_line(l1[0]);
+  const auto hdr2 = split_csv_line(l2[0]);
+  const std::string dn_usage = dn + " Usage [%]";
+  CHECK(std::find(hdr1.begin(), hdr1.end(), dn_usage) != hdr1.end());
+  CHECK(std::find(hdr2.begin(), hdr2.end(), dn_usage) == hdr2.end());
+  CHECK(std::find(hdr2.begin(), hdr2.end(), an + " Usage [%]") != hdr2.end());
+  CHECK_EQ(hdr1.size() - hdr2.size(), 2u);
+}
+
+TEST_CASE("logging: the header shows the REC indicator only while active") {
+  DashFixture fx;
+  const std::filesystem::path xdg = fresh_tmp_dir("dash_log_rec");
+  ScopedEnv env("XDG_DATA_HOME", xdg.string());
+  auto d = fx.make(no_save_cfg());
+  d->set_size(160, 48);
+  d->OnEvent(ftxui::Event::Character('l'));
+  REQUIRE(d->logging());
+  ftxui::Screen screen(160, 48);
+  screen.Clear();
+  ftxui::Render(screen, d->OnRender());
+  CHECK(screen.ToString().find("\xE2\x97\x8F REC ") != std::string::npos);
+
+  d->OnEvent(ftxui::Event::Character('l'));  // stop: the indicator goes away
+  REQUIRE_FALSE(d->logging());
+  ftxui::Screen screen2(160, 48);
+  screen2.Clear();
+  ftxui::Render(screen2, d->OnRender());
+  CHECK(screen2.ToString().find("\xE2\x97\x8F REC ") == std::string::npos);
 }
 
 }  // TEST_SUITE

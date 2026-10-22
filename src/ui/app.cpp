@@ -84,7 +84,7 @@ Dashboard::Dashboard(Collector& collector, Hardware hw, Config cfg,
                      std::vector<std::pair<std::string, Theme>> theme_cycle,
                      int theme_idx, ColorMode mode, long long interval_ms,
                      unsigned long long count, int window_idx, int columns,
-                     FrameStats& stats)
+                     FrameStats& stats, bool log_start, std::string log_dir)
     : _collector(collector),
       _hw(std::move(hw)),
       _cfg(std::move(cfg)),
@@ -95,7 +95,8 @@ Dashboard::Dashboard(Collector& collector, Hardware hw, Config cfg,
       _mode(mode),
       _interval_ms(interval_ms),
       _count(count),
-      _stats(stats) {
+      _stats(stats),
+      _log_dir(std::move(log_dir)) {
   _window_idx = std::clamp(window_idx, 0, kNumWindows - 1);
   _columns = (columns > 0) ? columns : -1;
 
@@ -126,6 +127,19 @@ Dashboard::Dashboard(Collector& collector, Hardware hw, Config cfg,
 
   _cache.page = &_page;
   if (_columns > 0) _cache.prefs.columns = _columns;
+
+  // v1.5.0: --log / [logging].autostart — start logging before the first
+  // frame. A failure is a startup warning, never fatal (logging stays off).
+  if (log_start) {
+    std::string err;
+    const std::string p = _log.start(_page, _log_dir, err);
+    if (!p.empty()) {
+      _toast = "logging \xE2\x86\x92 " + p;
+      _toast_until = Clock::now() + std::chrono::seconds(5);
+    } else {
+      note_warning("log: " + err);
+    }
+  }
 }
 
 const Theme& Dashboard::theme() const {
@@ -186,6 +200,18 @@ bool Dashboard::OnEvent(ftxui::Event event) {
     _collector.sample();
     _stats.note_sample(
         std::chrono::duration<double, std::micro>(Clock::now() - t0).count());
+    // v1.5.0: the CSV row is written by this tick (not a render), so logging
+    // keeps one row per sample independent of redraws — and continues while
+    // the display is paused. A page mutation since the last tick re-checks
+    // the column set (a change rotates to a new file).
+    if (_log.active()) {
+      const bool may_changed = _sel_dirty;
+      _sel_dirty = false;
+      std::string lerr;
+      if (!_log.tick(_page, _collector.latest(), may_changed, lerr) &&
+          !lerr.empty())
+        note_warning("log stopped: " + lerr);
+    }
     if (++_ticks >= _count && _count != 0 && event.screen_)
       event.screen_->Exit();
     return true;
@@ -258,6 +284,7 @@ bool Dashboard::OnEvent(ftxui::Event event) {
   if (event == ftxui::Event::Character('c')) return (cycle_columns(), true);
   if (event == ftxui::Event::Character('T')) return (cycle_theme(), true);
   if (event == ftxui::Event::Character('g')) return (cycle_graph_renderer(), true);
+  if (event == ftxui::Event::Character('l')) return (toggle_log(), true);
 
   // Scrolling (no-ops unless the page overflows).
   auto line_scroll = [&](int dir) {
@@ -322,6 +349,8 @@ ftxui::Element Dashboard::OnRender() {
   // false there.
   chrome.pixels = _pixels_layer && !_steps;
   chrome.steps = _steps;
+  // v1.5.0: the "● REC hh:mm:ss " header indicator ("" when not logging).
+  chrome.rec_label = _log.rec_label();
   // --render-png injects the cell size (no probe there); otherwise the probe.
   chrome.cell_w = _cell_w > 0 ? _cell_w : _probe.cell_w;
   chrome.cell_h = _cell_h > 0 ? _cell_h : _probe.cell_h;
@@ -375,6 +404,7 @@ ftxui::Element Dashboard::OnRender() {
         {"c", "cycle the columns (auto, 1 \xE2\x80\xA6 8)"},
         {"T", "cycle the theme (saves)"},
         {"g", "cycle the graph mode (text / pixels / steps, saves)"},
+        {"l", "log to CSV (start / stop)"},
         {"\xE2\x86\x91 / \xE2\x86\x93 \xC2\xB7 j / k", "scroll one row"},
         {"PgUp / PgDn", "scroll one page"},
         {"Home / End", "top / bottom"},
@@ -434,6 +464,7 @@ void Dashboard::hide_focused() {
   }
   _page[hidden].visible = false;
   _dirty = true;
+  _sel_dirty = true;  // the logged column set may have changed
   _cache.invalidate();
   // Advance to the NEXT visible panel after the one hidden, wrapping.
   _focus = -1;
@@ -807,6 +838,7 @@ bool Dashboard::manager_event(ftxui::Event ev) {
         auto& sr = _page[pi].series[_mg_sub_sel];
         sr.hidden = !sr.hidden;
         _dirty = true;
+        _sel_dirty = true;  // a hidden series drops its log column
         _cache.invalidate();
         save_now();
       }
@@ -908,6 +940,7 @@ void Dashboard::toggle_row(int i) {
       return;
     }
     _page[i].visible = !_page[i].visible;
+    _sel_dirty = true;  // the logged column set may have changed
     _cache.invalidate();
   } else {
     // Absent hardware: the setting lives on the config entry (for the day
@@ -927,6 +960,7 @@ void Dashboard::move_row(int i, int dir) {
   const int j = i + dir;
   if (j < 0 || j >= (int)_order.size()) return;
   std::swap(_order[i], _order[j]);
+  _sel_dirty = true;  // the column ORDER changed: rotate the log
   // Re-sync the page so the present panels follow the new order.
   std::map<std::string, PanelSpec> by_id;
   for (auto& p : _page) by_id[p.id] = std::move(p);
@@ -996,6 +1030,7 @@ void Dashboard::commit_rename() {
       }
   }
   _dirty = true;
+  _sel_dirty = true;  // a rename changes the log header names
   rebuild_manager_rows();
   save_now();
 }
@@ -1031,6 +1066,7 @@ void Dashboard::do_reset() {
   _cache.invalidate();
   rebuild_manager_rows();
   _dirty = true;
+  _sel_dirty = true;  // the reset page may log different columns
   save_now();
 }
 
@@ -1069,6 +1105,27 @@ void Dashboard::save_now() {
 void Dashboard::toast(const std::string& msg) {
   _toast = msg;
   _toast_until = Clock::now() + std::chrono::seconds(2);
+}
+
+// v1.5.0: the `l` key. Start: new file + header, "logging → <path>". Stop:
+// flush + close, "log saved: <path> (<N> rows)". A failed start (unwritable
+// directory, full disk, the GETH_TEST guard) is a warn toast with the reason.
+void Dashboard::toggle_log() {
+  if (_log.active()) {
+    _log.stop();
+    toast("log saved: " + _log.path() + " (" +
+          std::to_string(_log.row_count()) + " rows)");
+    return;
+  }
+  std::string err;
+  const std::string p = _log.start(_page, _log_dir, err);
+  if (!p.empty()) {
+    // A 5 s toast: the path is long and worth a glance.
+    _toast = "logging \xE2\x86\x92 " + p;
+    _toast_until = Clock::now() + std::chrono::seconds(5);
+  } else {
+    note_warning("log: " + err);
+  }
 }
 
 int Dashboard::count_visible() const {
@@ -1202,11 +1259,16 @@ int run_ui(Collector& collector, const Hardware& hw_in, const UiOptions& opts) {
   const bool had_graph_style = cfg.had_graph_style;
   // A legacy graph_renderer = "bars" migrated to "steps" at load (v1.3.0).
   const bool had_bars = cfg.had_bars;
+  // v1.5.0 CSV logging: --log overrides [logging].autostart, --log-dir
+  // overrides [logging].dir — read before cfg moves into the Dashboard.
+  const bool log_start = opts.log || cfg.log_autostart;
+  const std::string log_dir = !opts.log_dir.empty() ? opts.log_dir : cfg.log_dir;
 
   FrameStats stats;
   auto component = ftxui::Make<Dashboard>(
       collector, hw_in, std::move(cfg), std::move(themes), theme_idx, mode,
-      eff.interval_ms, opts.count, eff.window_idx, eff.columns, stats);
+      eff.interval_ms, opts.count, eff.window_idx, eff.columns, stats,
+      log_start, log_dir);
   if (!twarn.empty()) component->note_warning("theme: " + twarn.front());
   collector.set_interval_ms(eff.interval_ms);
 
@@ -1299,6 +1361,12 @@ int run_ui(Collector& collector, const Hardware& hw_in, const UiOptions& opts) {
       std::cout.flush();
     }
   }
+  // v1.5.0: flush + close the open CSV log (covers q, the tick count limit
+  // and SIGTERM/SIGINT — FTXUI's loop ends normally for all of them). A
+  // SIGHUP needs no work: the terminal-restore handler _exits, and the
+  // kernel then closes the fd — the file is already complete (every row is
+  // written as it is sampled).
+  component->stop_log();
   util::uninstall_sighup_restore();
 
   quit = true;

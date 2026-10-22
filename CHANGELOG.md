@@ -2,6 +2,51 @@
 
 All notable changes to GETH. The format follows the five-phase build plan.
 
+## 1.5.0 — CSV logging: record exactly what you view (2026-10-22)
+
+A new opt-in CSV data logger, toggled with **`l`** (or `--log` /
+`--log-dir` on the command line, or `[logging]` in the config). It records
+**only what you have chosen to view** — every visible panel in display order,
+each shown series and numeric info row, de-duplicated by metric so a value
+shown in two panels gets one column. While recording, the header shows a
+`● REC hh:mm:ss` indicator, and one row is written per sampling tick (rows
+keep coming while the display is paused).
+
+- **Columns** — `timestamp` (local ISO 8601 with ms and UTC offset),
+  `elapsed_s` (3 decimals, since this file started), then one column per
+  logged value. Header names are the names currently shown (including GPU
+  renames); on a collision the panel title is prefixed, then a numeric suffix
+  as a last resort. Precision per unit: `%` / `°C` one decimal, `W` two,
+  `MHz` / `B` / `B/s` integer.
+- **Format** — RFC 4180, UTF-8 (no BOM), `\n` line endings, `.` as the decimal
+  point regardless of locale. A missing value (a sleeping GPU, a rate's first
+  tick, a suspend gap) is an **empty** field, never 0. Fields containing
+  commas, quotes or newlines are quoted, with quotes doubled.
+- **Files** — `geth-YYYYMMDD-HHMMSS.csv` in `$XDG_DATA_HOME/geth/logs/`
+  (fallback `~/.local/share/geth/logs/`), never overwritten. Changing the
+  visible selection while recording (hiding a panel, toggling a series,
+  renaming or reordering) starts a new file (`…-2.csv`, `…-3.csv`, …);
+  changing theme, graph mode, window, columns, or the sampling interval does
+  not.
+- **Durability** — every row is written unbuffered (one `write()` per row), so
+  a crash, `Ctrl-C`, or the SIGHUP terminal-restore path loses at most the row
+  in flight; the file is always complete and parseable.
+- **Config** — a new `[logging]` table: `dir` (destination) and `autostart`
+  (start at launch; `--log` forces it on for a run).
+- **Performance** — zero heap allocations per row after warm-up (a reused row
+  buffer, manual `snprintf` formatting, no `%f`), and the column fingerprint is
+  recomputed only when the visible selection actually changes. A counting
+  allocator test proves the steady state is allocation-free.
+- **Tests** — column selection (default page, hide panel/series, de-dup, order,
+  GPU renames), exact values and precision, the de_DE locale, quoting,
+  rotation, start/stop sessions, unwritable-directory errors, the GETH_TEST
+  guard, and the zero-allocation steady state; plus dashboard-level
+  start/stop/rotate and the REC indicator (224 cases / 526,321 assertions;
+  Debug ASan/UBSan and Release both green).
+- **Docs** — a README "Logging to CSV" section, docs/CONFIG.md (`[logging]`),
+  the geth.1 man page (`-log`, `-log-dir`, the `l` key, FILES, ENVIRONMENT),
+  and the in-app help overlay and footer.
+
 ## 1.4.0 — blaze-orange: new built-in theme (2026-10-20)
 
 A fifth built-in theme, **blaze-orange** — a bright, saturated orange,
