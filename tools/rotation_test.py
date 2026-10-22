@@ -70,7 +70,10 @@ def main():
             os.close(slave)
         os.close(master)
         fcntl.ioctl(0, termios.TIOCSCTTY, 0)
-        os.execve(geth, [geth, "--demo", "--interval", "1000"], env)
+        # --count 12: geth exits on its own after 12 ticks (~12 s @ 1 Hz),
+        # which covers the whole key sequence below — no `q`, no SIGKILL.
+        os.execve(geth, [geth, "--demo", "--interval", "1000", "--count", "12"],
+                  env)
         os._exit(127)
     os.close(slave)
 
@@ -83,8 +86,9 @@ def main():
     pump(master, 0.6)
     os.write(master, b"\x1b")  # Escape: close manager
     pump(master, 3)          # ~3 rows into file 2
-    os.write(master, b"q")   # quit
-    pump(master, 3)
+    # No `q`: geth exits on its own after --count 12 ticks. Keep pumping
+    # until it does (the pty goes dead on exit, which pump() absorbs).
+    pump(master, 5)
 
     exit_status = None
     for _ in range(100):

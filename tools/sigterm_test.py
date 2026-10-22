@@ -80,7 +80,6 @@ def main():
     if exit_status is None:
         os.kill(pid, signal.SIGKILL)
         _, exit_status, _ = os.wait4(pid, 0)
-        exit_status = -9
     if os.WIFSIGNALED(exit_status):
         print(f"exit: signal {os.WTERMSIG(exit_status)}")
     elif os.WIFEXITED(exit_status):

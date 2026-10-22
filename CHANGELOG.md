@@ -2,6 +2,28 @@
 
 All notable changes to GETH. The format follows the five-phase build plan.
 
+## 1.5.1 — CSV column names that make sense outside the panel (2026-10-22)
+
+Every loggable metric now carries an **explicit column name** of the form
+`<device> <quantity> [unit]`, defined next to the series/info-row spec (a
+`log_name` field) and built from the device's *current display name* — never
+from a legend label or a panel title. So a column's name is stable no matter
+which other panels are visible (the old panel-title prefixing on collision is
+removed), a GPU rename flows through to exactly that GPU's columns, and two
+GPUs that end up with the same display name get ` #2` (then ` #3`, …) on the
+later one's name. Examples: `CPU Usage [%]`, `CPU Package Power (APU PPT) [W]`
+(`<source>` ∈ `RAPL` / `amd_energy` / `zenpower` / `APU PPT`),
+`RTX 3050 Laptop Core Clock [MHz]`, `RAM Used [B]`, `Network Download [B/s]`,
+`Disk Write [B/s]`. The full set is listed in the README's logging section.
+
+The dev pty harnesses are corrected too: they used to `break` on the pty EIO
+(child closed its end) *before* reaping the zombie, losing the real exit
+status and reporting a bogus "signal 119" (`-9` misread). They now reap
+properly and report the real status, and rely on `--count` for a clean exit
+instead of SIGTERM/SIGKILL timeouts. A new `tools/count_exit_test.py` drives
+`geth --demo --count N --log` in a pty and asserts it exits spontaneously
+(code 0) with a complete CSV.
+
 ## 1.5.0 — CSV logging: record exactly what you view (2026-10-22)
 
 A new opt-in CSV data logger, toggled with **`l`** (or `--log` /

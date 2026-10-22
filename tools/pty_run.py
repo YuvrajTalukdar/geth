@@ -74,17 +74,27 @@ def main():
     os.close(slave)
     start = time.time()
     exit_status = None
+    pty_dead = False
+    forced_kill = False
     while exit_status is None:
-        r, _, _ = select.select([master], [], [], 0.05)
+        r, _, _ = select.select([] if pty_dead else [master], [], [], 0.05)
         if master in r:
             try:
                 os.read(master, 1 << 20)
             except OSError:
-                break
+                # The child closed its end of the pty (it is exiting/exited).
+                # Do NOT break here: it is now a zombie we still have to reap.
+                # Breaking on this EIO (the old bug) abandoned the loop before
+                # wait4, so the real exit status was lost and a bogus "-9"
+                # (decoding as "signal 119") was reported instead.
+                pty_dead = True
         p, status, _ = os.wait4(pid, os.WNOHANG)
         if p == pid:
-            exit_status = status
+            exit_status = status  # the child exited on its own (e.g. --count)
         elif time.time() - start > timeout:
+            # A genuine hang (no --count, or geth stuck): ask it to quit, then
+            # give up. With --count geth exits on its own, so this is a safety
+            # net that is normally never taken.
             print("TIMEOUT: sending SIGTERM to the geth process")
             os.kill(pid, signal.SIGTERM)
             for _ in range(100):
@@ -93,16 +103,21 @@ def main():
                     exit_status = status
                     break
                 time.sleep(0.05)
+            if exit_status is None:
+                print("no exit after SIGTERM: sending SIGKILL")
+                os.kill(pid, signal.SIGKILL)
+                forced_kill = True
+                _, exit_status, _ = os.wait4(pid, 0)
             break
     os.close(master)
-    if exit_status is None:
-        os.kill(pid, signal.SIGKILL)
+    if exit_status is None:  # defensive; the loop sets it now
         _, exit_status, _ = os.wait4(pid, 0)
-        exit_status = -9
 
-    if os.WIFEXITED(exit_status):
+    if forced_kill:
+        print("exit: SIGKILL (forced after timeout)")
+    elif os.WIFEXITED(exit_status):
         code = os.WEXITSTATUS(exit_status)
-        print(f"exit: {code} (clean)")
+        print(f"exit: {code} (clean)" if code == 0 else f"exit: {code}")
     elif os.WIFSIGNALED(exit_status):
         print(f"exit: signal {os.WTERMSIG(exit_status)}")
     else:

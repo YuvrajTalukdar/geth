@@ -39,6 +39,9 @@ ui::Hardware demo_hw() {
   ui::Hardware h;
   h.cpu_name = "AMD Ryzen 5 5600H with Radeon Graphics";
   h.ram_total_bytes = 32.0 * 1073741824.0;
+  // Mirror hardware_from(): the APU package power source is what makes the
+  // Power panel carry the CPU line (and the log name's "<source>").
+  h.cpu_power_source = CpuPackagePowerSource::kApuPpt;
   h.cpu_power_label = "APU Package (PPT)";
   ui::GpuInfo d;
   d.bus_id = "0000:01:00.0";
@@ -148,85 +151,89 @@ TEST_CASE("columns: the default page logs every visible value, de-dup'd, unique 
       "disk.total.r",         "disk.total.w"};
   for (int i = 0; i < 23; ++i) CHECK_EQ(cols[i].metric, want_metrics[i]);
 
-  // The CPU usage series (no legend) folds into its "Total Usage" info row;
-  // the two "Core Frequency" and the two "Memory Clock" ties get the PANEL
-  // TITLE prefixed to BOTH sides.
+  // v1.5.1: every column carries an explicit log name ("<device>
+  // <quantity>"), so the names never depend on which other panels are
+  // visible — there is no panel-title prefixing. The CPU usage series (no
+  // legend) still folds into its "Total Usage" info row.
   const std::string want_headers[23] = {
-      "Total Usage [%]",
-      "Average CPU Frequency [MHz]",
-      "Maximum CPU Frequency [MHz]",
+      "CPU Usage [%]",
+      "CPU Avg Frequency [MHz]",
+      "CPU Max Frequency [MHz]",
       dn + " Usage [%]",
-      dn + " Core Frequency [MHz]",
+      dn + " Core Clock [MHz]",
       an + " Usage [%]",
-      an + " Core Frequency [MHz]",
-      "RAM [B]",
-      "Swap [B]",
-      dn + " [B]",
-      dn + " \xC2\xB7 Memory Memory Clock [MHz]",
-      "GTT [B]",
-      "VRAM [B]",
-      an + " \xC2\xB7 Memory Memory Clock [MHz]",
-      "CPU [°C]",
-      dn + " [°C]",
-      an + " [°C]",
-      "APU Package (PPT) [W]",
-      dn + " [W]",
-      "Download [B/s]",
-      "Upload [B/s]",
-      "Read [B/s]",
-      "Write [B/s]"};
+      an + " Core Clock [MHz]",
+      "RAM Used [B]",
+      "Swap Used [B]",
+      dn + " VRAM Used [B]",
+      dn + " Memory Clock [MHz]",
+      an + " GTT Used [B]",
+      an + " VRAM Used [B]",
+      an + " Memory Clock [MHz]",
+      "CPU Temperature [°C]",
+      dn + " Temperature [°C]",
+      an + " Temperature [°C]",
+      "CPU Package Power (APU PPT) [W]",
+      dn + " Power [W]",
+      "Network Download [B/s]",
+      "Network Upload [B/s]",
+      "Disk Read [B/s]",
+      "Disk Write [B/s]"};
   for (int i = 0; i < 23; ++i) CHECK_EQ(cols[i].header, want_headers[i]);
 }
 
-TEST_CASE("columns: hiding a panel or a series removes exactly its columns") {
+TEST_CASE("columns: hiding ANY panel removes exactly its columns and never renames the rest") {
   const auto hw = demo_hw();
-  const int full =
-      static_cast<int>(ui::log_columns(ui::build_default_page(hw)).size());
-  REQUIRE_EQ(full, 23);
+  const auto full_page = ui::build_default_page(hw);
+  const auto full = ui::log_columns(full_page);
+  REQUIRE_EQ(full.size(), 23u);
 
-  // Each subtest starts from a FRESH page so its mutation doesn't leak into
-  // the next (hiding is otherwise cumulative).
-  // Hide the Memory panel: its two series columns go, nothing else.
-  {
+  // Every panel, one at a time, each on a FRESH page (hiding is cumulative).
+  // Expected: the full header list minus exactly this panel's de-dup keys —
+  // same order, same names. v1.5.1 names are explicit ("<device>
+  // <quantity>"), so hiding a panel can never change a neighbour's column
+  // (the v1.5.0 panel-title prefix is gone).
+  for (const auto& hp : full_page) {
     auto page = ui::build_default_page(hw);
-    for (auto& p : page)
-      if (p.id == "mem") p.visible = false;
+    std::vector<std::string> owned;  // this panel's logged de-dup keys
+    for (auto& p : page) {
+      if (p.id != hp.id) continue;
+      p.visible = false;
+      for (const auto& s : p.series)
+        if (!s.hidden && s.numeric_fn)
+          owned.push_back(s.metric.empty() ? s.id : s.metric);
+      for (const auto& r : p.info_rows)
+        if (r.numeric_fn && !r.metric.empty()) owned.push_back(r.metric);
+    }
     const auto cols = ui::log_columns(page);
-    CHECK_EQ(static_cast<int>(cols.size()), full - 2);
-    CHECK(std::none_of(cols.begin(), cols.end(),
-                       [](const ui::LogColumn& c) {
-                         return c.header == "RAM [B]" || c.header == "Swap [B]";
-                       }));
+    std::vector<std::string> want;
+    for (const auto& c : full)
+      if (std::find(owned.begin(), owned.end(), c.metric) == owned.end())
+        want.push_back(c.header);
+    CHECK_EQ(cols.size(), want.size());
+    for (std::size_t i = 0; i < cols.size(); ++i)
+      CHECK_EQ(cols[i].header, want[i]);
   }
-  // Hide a single series (the CPU temperature line): one column goes, the
-  // rest of the panel stays.
+
+  // Hiding a single SERIES (the CPU temperature line): one column goes, the
+  // rest of the panel stays, and the survivors keep their names.
   {
     auto page = ui::build_default_page(hw);
     for (auto& p : page)
       if (p.id == "temps") p.series[0].hidden = true;  // cpu.temp
     const auto cols = ui::log_columns(page);
-    CHECK_EQ(static_cast<int>(cols.size()), full - 1);
+    CHECK_EQ(cols.size(), 22u);
     CHECK(std::none_of(cols.begin(), cols.end(), [](const ui::LogColumn& c) {
       return c.metric == "cpu.temp";
     }));
-    CHECK(std::any_of(cols.begin(), cols.end(), [](const ui::LogColumn& c) {
-      return c.metric == "gpu.0000:01:00.0.temp";
+    // Both GPU temperature columns survive, with their explicit names.
+    const std::string dn = ui::gpu_short_name(hw.gpus[0]);
+    const std::string an = ui::gpu_short_name(hw.gpus[1]);
+    CHECK(std::any_of(cols.begin(), cols.end(), [&](const ui::LogColumn& c) {
+      return c.header == dn + " Temperature [°C]";
     }));
-  }
-  // Hide the iGPU usage panel: its two columns go, and the dGPU's
-  // "Core Frequency" loses its tie (no more panel prefix).
-  {
-    auto page = ui::build_default_page(hw);
-    for (auto& p : page)
-      if (p.id == "gpu.0000:07:00.0.usage") p.visible = false;
-    const auto cols = ui::log_columns(page);
-    CHECK_EQ(static_cast<int>(cols.size()), full - 2);
-    CHECK(std::none_of(cols.begin(), cols.end(), [](const ui::LogColumn& c) {
-      return c.metric == "gpu.0000:07:00.0.usage" ||
-             c.metric == "gpu.0000:07:00.0.core_clock_mhz";
-    }));
-    CHECK(std::any_of(cols.begin(), cols.end(), [](const ui::LogColumn& c) {
-      return c.header == "Core Frequency [MHz]";
+    CHECK(std::any_of(cols.begin(), cols.end(), [&](const ui::LogColumn& c) {
+      return c.header == an + " Temperature [°C]";
     }));
   }
 }
@@ -242,16 +249,62 @@ TEST_CASE("columns: a GPU rename flows into the log headers") {
       return c.header == h;
     });
   };
+  // The rename touches EXACTLY the renamed GPU's columns: every GPU-derived
+  // header (usage, clocks, VRAM, temp, power) follows the rename ...
   CHECK(has("My Card Usage [%]"));
-  CHECK(has("My Card [B]"));
-  CHECK(has("My Card [°C]"));
-  CHECK(has("My Card [W]"));
-  CHECK(has("My Card Core Frequency [MHz]"));
-  CHECK(has("My Card \xC2\xB7 Memory Memory Clock [MHz]"));
-  // The iGPU headers are untouched by the dGPU rename.
+  CHECK(has("My Card Core Clock [MHz]"));
+  CHECK(has("My Card VRAM Used [B]"));
+  CHECK(has("My Card Memory Clock [MHz]"));
+  CHECK(has("My Card Temperature [°C]"));
+  CHECK(has("My Card Power [W]"));
+  // ... and no header left references the old detected name.
+  CHECK(std::none_of(cols.begin(), cols.end(), [](const ui::LogColumn& c) {
+    return c.header.find("RTX 3050") != std::string::npos;
+  }));
+  // The iGPU's columns are byte-for-byte what they were before the rename.
   const std::string an = ui::gpu_short_name(hw.gpus[1]);
-  CHECK(has(an + " Usage [%]"));
-  CHECK(has(an + " Core Frequency [MHz]"));
+  const std::string an_headers[6] = {
+      an + " Usage [%]",         an + " Core Clock [MHz]",
+      an + " GTT Used [B]",      an + " VRAM Used [B]",
+      an + " Memory Clock [MHz]", an + " Temperature [°C]"};
+  for (const auto& h : an_headers) CHECK(has(h));
+}
+
+TEST_CASE("columns: two GPUs with the same display name get ' #2' on the later one") {
+  auto hw = demo_hw();
+  hw.gpus[0].name = "Same Name";
+  hw.gpus[0].renamed = true;
+  hw.gpus[1].name = "Same Name";
+  hw.gpus[1].renamed = true;
+  const auto page = ui::build_default_page(hw);
+  const auto cols = ui::log_columns(page);
+  const auto has = [&](const std::string& h) {
+    return std::any_of(cols.begin(), cols.end(), [&](const ui::LogColumn& c) {
+      return c.header == h;
+    });
+  };
+  // The first GPU (PCI order) keeps the base name; the later occurrence of
+  // the SAME "<device> <quantity> [unit]" gets " #2".
+  CHECK(has("Same Name Usage [%]"));
+  CHECK(has("Same Name #2 Usage [%]"));
+  CHECK(has("Same Name Core Clock [MHz]"));
+  CHECK(has("Same Name #2 Core Clock [MHz]"));
+  CHECK(has("Same Name VRAM Used [B]"));
+  CHECK(has("Same Name #2 VRAM Used [B]"));
+  CHECK(has("Same Name Memory Clock [MHz]"));
+  CHECK(has("Same Name #2 Memory Clock [MHz]"));
+  CHECK(has("Same Name Temperature [°C]"));
+  CHECK(has("Same Name #2 Temperature [°C]"));
+  // Only the dGPU reports power — no tie there.
+  CHECK(has("Same Name Power [W]"));
+  CHECK_FALSE(has("Same Name #2 Power [W]"));
+  // The iGPU's GTT column has no twin (single GTT series).
+  CHECK(has("Same Name GTT Used [B]"));
+  CHECK_FALSE(has("Same Name #2 GTT Used [B]"));
+  // No header is duplicated.
+  for (std::size_t i = 0; i < cols.size(); ++i)
+    for (std::size_t j = i + 1; j < cols.size(); ++j)
+      CHECK(cols[i].header != cols[j].header);
 }
 
 TEST_CASE("values: exact precision, '.' decimal, empty for missing/NaN, monotonic elapsed") {
@@ -382,12 +435,16 @@ TEST_CASE("quoting: a GPU renamed to a name with quotes and commas") {
   const auto hdr = split_csv_line(lines[0]);
   CHECK(std::find(hdr.begin(), hdr.end(), std::string("Card \"A\", fast Usage [%]"))
         != hdr.end());
-  // The rename reaches every GPU-derived header (VRAM panel and its
-  // qualified Memory Clock column included).
-  CHECK(std::find(hdr.begin(), hdr.end(), std::string("Card \"A\", fast [B]"))
+  // The rename reaches every GPU-derived header (VRAM and Memory Clock
+  // included), each quoted when it must be.
+  CHECK(std::find(hdr.begin(), hdr.end(),
+                  std::string("Card \"A\", fast VRAM Used [B]"))
         != hdr.end());
   CHECK(std::find(hdr.begin(), hdr.end(),
-                  std::string("Card \"A\", fast \xC2\xB7 Memory Memory Clock [MHz]"))
+                  std::string("Card \"A\", fast Memory Clock [MHz]"))
+        != hdr.end());
+  CHECK(std::find(hdr.begin(), hdr.end(),
+                  std::string("Card \"A\", fast Temperature [°C]"))
         != hdr.end());
 }
 
@@ -426,15 +483,16 @@ TEST_CASE("rotation: a page change starts the next file; a same-page tick does n
   const auto l2 = lines_of_file(p2);
   REQUIRE_EQ(l1.size(), 3u);  // header + 2 rows
   REQUIRE_EQ(l2.size(), 2u);  // header + 1 row
-  // The hidden panel's columns are gone from file 2's header, and the
-  // "Core Frequency" tie is resolved (no more panel prefix).
+  // The hidden panel's columns are gone from file 2's header; the dGPU's own
+  // core clock column keeps its explicit name (nothing to re-qualify).
+  const std::string dn = ui::gpu_short_name(hw.gpus[0]);
   CHECK(l2[0].find(an + " Usage [%]") == std::string::npos);
-  CHECK(l2[0].find(an + " Core Frequency [MHz]") == std::string::npos);
+  CHECK(l2[0].find(an + " Core Clock [MHz]") == std::string::npos);
   const auto hdr2 = split_csv_line(l2[0]);
-  CHECK(std::find(hdr2.begin(), hdr2.end(), std::string("Core Frequency [MHz]"))
+  CHECK(std::find(hdr2.begin(), hdr2.end(), dn + " Core Clock [MHz]")
         != hdr2.end());
-  // File 1 keeps its (qualified) header and its rows.
-  CHECK(l1[0].find(an + " Core Frequency [MHz]") != std::string::npos);
+  // File 1 keeps its header (the iGPU's columns included) and its rows.
+  CHECK(l1[0].find(an + " Core Clock [MHz]") != std::string::npos);
   const auto hdr1 = split_csv_line(l1[0]);
   CHECK_EQ(hdr1.size() - hdr2.size(), 2u);
 }

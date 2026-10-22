@@ -30,12 +30,15 @@ const char* log_unit_name(LogUnit u) {
 
 namespace {
 
-// A column while it is still being assembled: the display name (a label as
-// shown in the UI) and the panel title, which header uniqueness needs.
+// A column while it is still being assembled: the explicit log name
+// ("<device> <quantity>", set next to the series/row in build_default_page —
+// the UI label is the fallback) and the unit, which the header suffix comes
+// from.
 struct Col {
   std::string metric;
-  std::string name;
-  std::string panel;
+  std::string name;      // the UI label (legend / row)
+  std::string log_name;  // "<device> <quantity>"; empty = use name
+  std::string device;    // the device's display name (leading part of log_name)
   bool from_legend = true;  // the owning series shows a legend line
   LogUnit unit = LogUnit::kNone;
   std::function<std::optional<double>(const Snapshot&)> value_fn;
@@ -159,7 +162,8 @@ std::vector<LogColumn> log_columns(const std::vector<PanelSpec>& page) {
       Col c;
       c.metric = metric;
       c.name = s.label;
-      c.panel = p.title;
+      c.log_name = s.log_name.empty() ? s.label : s.log_name;
+      c.device = s.device;
       c.from_legend = s.in_legend;
       c.unit = s.unit;
       c.value_fn = s.numeric_fn;
@@ -176,40 +180,47 @@ std::vector<LogColumn> log_columns(const std::vector<PanelSpec>& page) {
         Col c;
         c.metric = r.metric;
         c.name = r.label;
-        c.panel = p.title;
+        c.log_name = r.log_name.empty() ? r.label : r.log_name;
+        c.device = r.device;
         c.unit = r.unit;
         c.value_fn = r.numeric_fn;
         by_metric[r.metric] = cols.size();
         cols.push_back(std::move(c));
       } else if (!cols[it->second].from_legend) {
         cols[it->second].name = r.label;
+        cols[it->second].log_name =
+            r.log_name.empty() ? r.label : r.log_name;
       }
     }
   }
 
-  // Unique header names: "<display name> [<unit>]"; on a collision the panel
-  // title is prefixed to BOTH sides, and a numeric suffix breaks a
-  // still-unresolved tie (two GPUs renamed to the same name).
+  // Header names: "<log name> [<unit>]". The log name is explicit (the
+  // device's display name + quantity, set next to the series/row), so which
+  // other panels are visible never changes a column's name — there is no
+  // panel-title prefixing. A residual tie (two GPUs renamed to the same
+  // display name) gets " #2", " #3", ... on the later occurrence's name; the
+  // unit suffix stays last.
   const int n = static_cast<int>(cols.size());
   std::vector<std::string> header(n);
   for (int i = 0; i < n; ++i)
-    header[i] = cols[i].name + " [" + log_unit_name(cols[i].unit) + "]";
-  auto qualified = [&](int i) {
-    return cols[i].panel + " " + cols[i].name + " [" +
-           log_unit_name(cols[i].unit) + "]";
-  };
-  for (int i = 0; i < n; ++i)
-    for (int j = i + 1; j < n; ++j)
-      if (header[j] == header[i]) {
-        header[i] = qualified(i);
-        header[j] = qualified(j);
-      }
+    header[i] = cols[i].log_name + " [" + log_unit_name(cols[i].unit) + "]";
   for (int j = 1; j < n; ++j) {
     for (int i = 0; i < j; ++i) {
       if (header[j] != header[i]) continue;
       int k = 2;
       for (;;) {
-        const std::string cand = header[j] + " (" + std::to_string(k) + ")";
+        // Put the " #k" on the DEVICE (two same-named GPUs), not after the
+        // quantity: "Foo #2 Usage [%]", not "Foo Usage #2 [%]".
+        const std::string d = cols[j].device;
+        const std::string ln = cols[j].log_name;
+        std::string new_name;
+        if (!d.empty() && ln.size() > d.size() &&
+            ln.compare(0, d.size(), d) == 0 && ln[d.size()] == ' ')
+          new_name = d + " #" + std::to_string(k) + ln.substr(d.size());
+        else
+          new_name = ln + " #" + std::to_string(k);
+        const std::string cand =
+            new_name + " [" + log_unit_name(cols[j].unit) + "]";
         bool taken = false;
         for (int m = 0; m < n; ++m)
           if (m != j && header[m] == cand) {

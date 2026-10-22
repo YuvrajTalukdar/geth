@@ -47,9 +47,20 @@ struct SeriesSpec {
   // one column. (The explicit default keeps -Wmissing-field-initializers
   // quiet for initializers that skip it.)
   std::string metric = "";
+  // v1.5.1: the explicit CSV column name, "<device> <quantity>" (the logger
+  // appends " [unit]"). Built from the device's CURRENT display name (a GPU
+  // rename flows through), never from the legend label or the panel title,
+  // so it is stable no matter which other panels are visible. Empty = fall
+  // back to the legend label (should not happen for a logged series).
+  std::string log_name = "";
   // The unit (header suffix + precision). kNone = not logged. Always set
-  // explicitly in initializers (it is the last member).
+  // explicitly in initializers.
   LogUnit unit = LogUnit::kNone;
+  // v1.5.1: the device's display name — the leading part of log_name — so the
+  // " #2" tie-breaker (two GPUs renamed to the same name) lands on the DEVICE
+  // ("Foo #2 Usage [%]"), not after the quantity. Empty for series that can
+  // never tie (one CPU, one RAM, one Network, one Disk).
+  std::string device = "";
 };
 
 struct InfoRow {
@@ -67,6 +78,13 @@ struct InfoRow {
   std::function<std::optional<double>(const Snapshot&)> numeric_fn = nullptr;
   // The unit (header suffix + precision); kNone = not logged.
   LogUnit unit = LogUnit::kNone;
+  // v1.5.1: the explicit CSV column name, "<device> <quantity>" (the logger
+  // appends " [unit]"). Never derived from the row label or the panel title.
+  // Empty = fall back to the row label.
+  std::string log_name = "";
+  // v1.5.1: the device's display name (see SeriesSpec::device) so the " #2"
+  // tie-breaker lands on the device. Empty when it can never tie.
+  std::string device = "";
 };
 
 struct ScaleSpec {
@@ -135,6 +153,10 @@ struct Hardware {
   // amd_energy / zenpower), "APU Package (PPT)" (the APU lift), or empty when
   // no CPU power source exists (no CPU line in the Power panel).
   std::string cpu_power_label;
+  // v1.5.1: the active CPU package power source, for the log name
+  // "CPU Package Power (<source>)". Empty when no CPU power source exists
+  // (mirrors cpu_power_label being empty).
+  std::optional<CpuPackagePowerSource> cpu_power_source;
 };
 
 Hardware hardware_from(const Snapshot& s, const std::string& cpu_name);

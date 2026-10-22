@@ -83,10 +83,9 @@ def run_once(geth, rows, cols, ticks, renderer, log_dir):
                 exit_status, rusage = status, ru
                 break
             time.sleep(0.05)
-    if exit_status is None:  # it hung — kill and report
+    if exit_status is None:  # it hung — kill and report the real status
         os.kill(pid, signal.SIGKILL)
         _, exit_status, rusage = os.wait4(pid, 0)
-        exit_status = -9
     while True:  # drain
         r, _, _ = select.select([master], [], [], 0.05)
         if master not in r:

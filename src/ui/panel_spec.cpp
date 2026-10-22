@@ -92,6 +92,7 @@ Hardware hardware_from(const Snapshot& s, const std::string& cpu_name) {
     gi.reports_power = !g.is_integrated;
     h.gpus.push_back(std::move(gi));
   }
+  h.cpu_power_source = s.cpu.package_power_source;
   if (s.cpu.package_power_source)
     h.cpu_power_label = *s.cpu.package_power_source == CpuPackagePowerSource::kApuPpt
                             ? "APU Package (PPT)"
@@ -115,6 +116,7 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
                  .value_fn = [](const Snapshot& s) { return v_pct(s.cpu.usage_pct); },
                  .numeric_fn = [](const Snapshot& s) { return s.cpu.usage_pct; },
                  .metric = "cpu.usage",
+                 .log_name = "CPU Usage",
                  .unit = LogUnit::kPercent}};
     // The info rows carry the same de-dup keys as the series they show
     // (Total Usage = cpu.usage): the logger folds them into one column.
@@ -123,17 +125,20 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
          [](const Snapshot& s) { return v_pct(s.cpu.usage_pct); }, 0,
          "cpu.usage",
          [](const Snapshot& s) { return s.cpu.usage_pct; },
-         LogUnit::kPercent},
+         LogUnit::kPercent,
+         "CPU Usage"},
         {"Average CPU Frequency",
          [](const Snapshot& s) { return v_freq(s.cpu.freq_avg_mhz); }, -1,
          "cpu.freq_avg_mhz",
          [](const Snapshot& s) { return s.cpu.freq_avg_mhz; },
-         LogUnit::kMHz},
+         LogUnit::kMHz,
+         "CPU Avg Frequency"},
         {"Maximum CPU Frequency",
          [](const Snapshot& s) { return v_freq(s.cpu.freq_max_mhz); }, -1,
          "cpu.freq_max_mhz",
          [](const Snapshot& s) { return s.cpu.freq_max_mhz; },
-         LogUnit::kMHz},
+         LogUnit::kMHz,
+         "CPU Max Frequency"},
     };
     page.push_back(std::move(p));
   }
@@ -161,7 +166,9 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
                    return std::nullopt;
                  },
                  .metric = "gpu." + bus + ".usage",
-                 .unit = LogUnit::kPercent}};
+                 .log_name = title + " Usage",
+                 .unit = LogUnit::kPercent,
+                 .device = title}};
     p.info_rows = {
         {title + " Usage",
          [bus](const Snapshot& s) {
@@ -176,7 +183,8 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
              if (x.pci_bus_id == bus) return x.usage_pct;
            return std::nullopt;
          },
-         LogUnit::kPercent},
+         LogUnit::kPercent,
+         title + " Usage"},
         {"Core Frequency",
          [bus](const Snapshot& s) {
            for (const auto& x : s.gpus)
@@ -190,7 +198,9 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
              if (x.pci_bus_id == bus) return x.core_clock_mhz;
            return std::nullopt;
          },
-         LogUnit::kMHz},
+         LogUnit::kMHz,
+         title + " Core Clock",
+         title},
     };
     page.push_back(std::move(p));
   }
@@ -204,10 +214,12 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
         {.id = SeriesId("mem.ram_used"), .label = "RAM", .color_index = 0,
          .value_fn = [](const Snapshot& s) { return v_bytes(s.mem.ram_used_bytes); },
          .numeric_fn = [](const Snapshot& s) { return s.mem.ram_used_bytes; },
+         .log_name = "RAM Used",
          .unit = LogUnit::kBytes},
         {.id = SeriesId("mem.swap_used"), .label = "Swap", .color_index = 2,
          .value_fn = [](const Snapshot& s) { return v_bytes(s.mem.swap_used_bytes); },
          .numeric_fn = [](const Snapshot& s) { return s.mem.swap_used_bytes; },
+         .log_name = "Swap Used",
          .unit = LogUnit::kBytes},
     };
     p.y_scale.kind = ScaleSpec::Kind::kAbsolute;
@@ -245,7 +257,9 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
                if (x.pci_bus_id == bus) return x.gtt_used_bytes;
              return std::nullopt;
            },
-           .unit = LogUnit::kBytes},
+           .log_name = title + " GTT Used",
+           .unit = LogUnit::kBytes,
+           .device = title},
           {.id = SeriesId("gpu." + bus + ".vram"), .label = "VRAM", .color_index = vram_ci,
            .value_fn = [bus](const Snapshot& s) {
              for (const auto& x : s.gpus)
@@ -257,7 +271,9 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
                if (x.pci_bus_id == bus) return x.vram_used_bytes;
              return std::nullopt;
            },
-           .unit = LogUnit::kBytes},
+           .log_name = title + " VRAM Used",
+           .unit = LogUnit::kBytes,
+           .device = title},
       };
       // The scale is the {1, 1.5} x 2^k ceiling (nice_bytes_max, in
       // frame.cpp) of the LARGER of the two totals, so both lines fit.
@@ -278,7 +294,9 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
                        if (x.pci_bus_id == bus) return x.vram_used_bytes;
                      return std::nullopt;
                    },
-                   .unit = LogUnit::kBytes}};
+                   .log_name = title + " VRAM Used",
+                   .unit = LogUnit::kBytes,
+                   .device = title}};
       p.y_scale.kind = ScaleSpec::Kind::kAbsolute;
       p.y_scale.absolute_max = g.vram_total_bytes;
     }
@@ -296,7 +314,9 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
              if (x.pci_bus_id == bus) return x.mem_clock_mhz;
            return std::nullopt;
          },
-         LogUnit::kMHz},
+         LogUnit::kMHz,
+         title + " Memory Clock",
+         title},
     };
     page.push_back(std::move(p));
   }
@@ -309,6 +329,7 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
     p.series = {{.id = SeriesId("cpu.temp"), .label = "CPU",
                  .value_fn = [](const Snapshot& s) { return v_celsius(s.cpu.temp_c); },
                  .numeric_fn = [](const Snapshot& s) { return s.cpu.temp_c; },
+                 .log_name = "CPU Temperature",
                  .unit = LogUnit::kCelsius}};
     for (std::size_t k = 0; k < order.size(); ++k) {
       const auto& g = hw.gpus[order[k]];
@@ -327,7 +348,9 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
                               if (x.pci_bus_id == bus) return x.temp_c;
                             return std::nullopt;
                           },
-                          .unit = LogUnit::kCelsius});
+                          .log_name = gpu_title(g) + " Temperature",
+                          .unit = LogUnit::kCelsius,
+                          .device = gpu_title(g)});
     }
     p.y_scale.kind = ScaleSpec::Kind::kTemperature;
     page.push_back(std::move(p));
@@ -338,7 +361,7 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
     PanelSpec p;
     p.id = "power";
     p.title = "Power";
-    if (!hw.cpu_power_label.empty())
+    if (hw.cpu_power_source.has_value())
       p.series.push_back({.id = SeriesId("cpu.power"), .label = hw.cpu_power_label,
                           .value_fn = [](const Snapshot& s) {
                             return v_watts(s.cpu.package_power_w);
@@ -346,6 +369,8 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
                           .numeric_fn = [](const Snapshot& s) {
                             return s.cpu.package_power_w;
                           },
+                          .log_name = std::string("CPU Package Power (") +
+                                      to_string(*hw.cpu_power_source) + ")",
                           .unit = LogUnit::kWatts});
     for (std::size_t k = 0; k < order.size(); ++k) {
       const auto& g = hw.gpus[order[k]];
@@ -365,7 +390,9 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
                               if (x.pci_bus_id == bus) return x.power_w;
                             return std::nullopt;
                           },
-                          .unit = LogUnit::kWatts});
+                          .log_name = gpu_title(g) + " Power",
+                          .unit = LogUnit::kWatts,
+                          .device = gpu_title(g)});
     }
     p.y_scale.kind = ScaleSpec::Kind::kWatts;
     p.y_scale.floor_ = 20.0;  // minimum ceiling: 20 W (nice_watts' floor)
@@ -381,10 +408,12 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
         {.id = SeriesId("net.total.rx"), .label = "Download",
          .value_fn = [](const Snapshot& s) { return v_rate(s.net.total_rx_bytes_per_s); },
          .numeric_fn = [](const Snapshot& s) { return s.net.total_rx_bytes_per_s; },
+         .log_name = "Network Download",
          .unit = LogUnit::kBytesPerSec},
         {.id = SeriesId("net.total.tx"), .label = "Upload", .color_index = 2,
          .value_fn = [](const Snapshot& s) { return v_rate(s.net.total_tx_bytes_per_s); },
          .numeric_fn = [](const Snapshot& s) { return s.net.total_tx_bytes_per_s; },
+         .log_name = "Network Upload",
          .unit = LogUnit::kBytesPerSec},
     };
     p.y_scale.kind = ScaleSpec::Kind::kBytesPerSec;
@@ -403,12 +432,14 @@ std::vector<PanelSpec> build_default_page(const Hardware& hw) {
          .numeric_fn = [](const Snapshot& s) {
            return s.disk.total_read_bytes_per_s;
          },
+         .log_name = "Disk Read",
          .unit = LogUnit::kBytesPerSec},
         {.id = SeriesId("disk.total.w"), .label = "Write", .color_index = 2,
          .value_fn = [](const Snapshot& s) { return v_rate(s.disk.total_write_bytes_per_s); },
          .numeric_fn = [](const Snapshot& s) {
            return s.disk.total_write_bytes_per_s;
          },
+         .log_name = "Disk Write",
          .unit = LogUnit::kBytesPerSec},
     };
     p.y_scale.kind = ScaleSpec::Kind::kBytesPerSec;

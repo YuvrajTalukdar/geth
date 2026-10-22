@@ -158,7 +158,7 @@ and the RAPL/powercap details: [docs/HARDWARE.md](docs/HARDWARE.md).
 Build the package first (next section), then:
 
 ```sh
-sudo pacman -U dist/geth-1.5.0-1-x86_64.pkg.tar.zst   # install
+sudo pacman -U dist/geth-1.5.1-1-x86_64.pkg.tar.zst   # install
 sudo pacman -R geth                                   # uninstall
 rm -r ~/.config/geth                                  # remove your config (optional)
 ```
@@ -221,7 +221,7 @@ cached), and runs `makepkg -f --cleanbuild` — with **no network access in
 `build()`**. Output:
 
 ```
-dist/geth-1.5.0-1-x86_64.pkg.tar.zst
+dist/geth-1.5.1-1-x86_64.pkg.tar.zst
 dist/SHA256SUMS
 ```
 
@@ -306,7 +306,7 @@ overwritten**. A sample (excerpt — the real header has one column per logged
 value, in display order):
 
 ```
-timestamp,elapsed_s,Total Usage [%],RTX 3050 Laptop Usage [%],RAM [B],CPU [°C],APU Package (PPT) [W],Download [B/s]
+timestamp,elapsed_s,CPU Usage [%],RTX 3050 Laptop Usage [%],RAM Used [B],CPU Temperature [°C],CPU Package Power (APU PPT) [W],Network Download [B/s]
 2026-10-22T14:30:05.123+05:30,0.000,42.6,77.6,10737418240,55.0,12.35,1048576
 2026-10-22T14:30:06.124+05:30,1.001,43.1,78.0,10743969280,55.1,12.41,1051033
 ```
@@ -316,9 +316,25 @@ timestamp,elapsed_s,Total Usage [%],RTX 3050 Laptop Usage [%],RAM [B],CPU [°C],
   decimal, `W` to two, `MHz` / `B` / `B/s` as integers.
 - **Missing is empty, never 0** — a sleeping GPU, a rate's first tick, or a
   value that can't be read becomes an empty field.
-- **Header names are the names you see** (including GPU renames); on a
-  collision the panel title is prefixed, then a numeric suffix as a last
-  resort.
+- **Column names make sense outside the app** — every loggable metric has an
+  explicit `<device> <quantity>` name (the header appends the unit in
+  brackets), built from the device's *current display name* (a GPU rename
+  flows through to its columns) and never from a legend label or a panel
+  title, so which other panels are visible can never change a column's name.
+  The full set (`<GPU>` is the GPU's display name):
+    - `CPU Usage [%]`, `CPU Avg Frequency [MHz]`, `CPU Max Frequency [MHz]`,
+      `CPU Temperature [°C]`, `CPU Package Power (<source>) [W]` —
+      `<source>` is `RAPL`, `amd_energy`, `zenpower` or `APU PPT`
+    - per GPU: `<GPU> Usage [%]`, `<GPU> Core Clock [MHz]`,
+      `<GPU> Memory Clock [MHz]`, `<GPU> VRAM Used [B]`,
+      `<GPU> Temperature [°C]`; integrated GPUs also log `<GPU> GTT Used [B]`,
+      discrete GPUs also log `<GPU> Power [W]`
+    - `RAM Used [B]`, `Swap Used [B]`
+    - `Network Download [B/s]`, `Network Upload [B/s]`
+    - `Disk Read [B/s]`, `Disk Write [B/s]`
+  If two GPUs end up with the *same* display name, the later one's columns
+  get ` #2` (then ` #3`, …) after the name — `Foo Usage [%]` alongside
+  `Foo #2 Usage [%]`.
 - **Changing your selection while recording** — hiding a panel, toggling a
   series, renaming a GPU, reordering panels — starts a new file
   (`geth-…-2.csv`, `geth-…-3.csv`, …). Changing theme, graph mode, window or
