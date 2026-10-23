@@ -2,6 +2,51 @@
 
 All notable changes to GETH. The format follows the five-phase build plan.
 
+## 1.5.3 — Data-race audit, timer rework, min/max decimation, safe hotplug removal (2026-10-23)
+
+- **Data-race audit (TSan): no race exists; the "known limitation" note is
+  withdrawn.** The v1.5.2 audit had documented a possible sample↔reader race
+  as a known limitation. A thread-by-thread audit of the shipped thread model
+  shows the
+  Collector, Snapshot, SeriesStore and CSV logger are touched only by the UI
+  thread; the single other thread (the timer) reads only `std::atomic` state
+  (`tick_quit`, `tick_wake`, `_interval_ms`) and calls FTXUI's thread-safe
+  `PostEvent`, coordinating through a `condition_variable` + mutex. A new
+  TSan build (`-DGETH_TSAN=ON`, separate `build-tsan/` dir) ran the full
+  suite and a 5-minute pty soak, before and after the changes below:
+  **zero TSan reports in either run**. All three configs (Debug ASan+UBSan,
+  Release, TSan) pass 239/239 cases, 526,960 assertions. New:
+  `tools/tsan_check.sh` (build + suite + soak; fails on any report) and
+  `tools/tsan_soak.py`.
+- **The timer thread no longer sleeps the whole interval.** It used to
+  `sleep_for(interval)` per tick, so `q` at a 5000 ms interval could take up
+  to 5 s to exit, and an interval change (`+`/`-`) applied only after the
+  current sleep finished. The timer now waits on a `condition_variable`
+  against `steady_clock` deadlines (`next += interval`; re-anchors if it is
+  more than an interval behind), is notified on quit and on interval change,
+  and an interval change resets the collector's gap reference (so shortening
+  the interval can't look like a suspend and blank the rates). Four new pty
+  measurements (`tools/timer_test.py`): `q` at 5000 ms exits in < 200 ms;
+  after each of `+`/`-`, the next tick lands within the new interval ± 50
+  ms; 5000 → 250 ms (four `+`) blanks no rates; 60 ticks at 1000 ms drift
+  < 50 ms cumulative.
+- **Decimation keeps both the min and the max per column.** v1.5.2 kept only
+  the max, so a one-sample dip vanished from a dense column. `decimate` now
+  keeps the column's min and max finite values, emitted in time order (a
+  flat column emits once), so a one-sample dip survives as strongly as a
+  one-sample spike — in text and pixel mode (steps mode averages per slice
+  and is unchanged). New test: a one-sample dip and a one-sample spike both
+  survive a dense 10 m window (checked at the decimated core, via `value_at`
+  in text, and as rasterized rows in pixel mode).
+- **Hotplug removal is safe: a gap, never stale or a crash.** The sampled
+  device set is fixed at probe time — a *new* device appears only after a
+  restart (documented as a limitation in `docs/HARDWARE.md`). A *removed*
+  device never crashes and never repeats stale values: every source resets
+  each interface/disk to absent every tick, the store keeps the gap (NaN),
+  and the CSV writes an empty cell; survivors are unaffected. New test
+  removes an interface and a disk from a fake sysfs mid-run and asserts the
+  gaps (and finite survivors) in both sources' stores.
+
 ## 1.5.2 — Graph accuracy audit: short-history placement, first-tick and rate handling (2026-10-23)
 
 A systematic audit of the graph data path (source → store → window → decimate

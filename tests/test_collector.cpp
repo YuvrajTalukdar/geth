@@ -8,10 +8,16 @@
 #include <doctest.h>
 
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <memory>
+#include <string>
 #include <thread>
 
+#include <unistd.h>
+
 #include "core/collector.hpp"
+#include "core/ring_buffer.hpp"
 #include "sources/cpu.hpp"
 #include "sources/disk.hpp"
 #include "sources/memory.hpp"
@@ -208,6 +214,156 @@ TEST_CASE("finding 7: the first live tick's startup-work rate sample is NaN") {
   const Snapshot& second = c.sample();  // a clean delta: finite
   REQUIRE(second.cpu.usage_pct.has_value());
   CHECK(std::isfinite(*second.cpu.usage_pct));
+}
+
+}  // TEST_SUITE
+
+// v1.5.3 — hotplug REMOVAL must never crash or repeat a stale value: an
+// interface or disk that vanishes from the kernel's counters mid-run shows up
+// as a gap (nullopt in the snapshot, NaN in the graph store — which is also
+// what makes the CSV cell empty). The survivor is unaffected. The removal is
+// simulated with the sources' test seams (set_test_netdev / set_test_diskstats),
+// which stand in for the kernel updating /proc/net/dev and /proc/diskstats.
+TEST_SUITE("v153_hotplug_removal") {
+
+namespace {
+// A throwaway <root>/class/net stand-in: <root>/<if>/device + <if>/type so the
+// NetSource filter includes the named interfaces. remove_all'd on destruction.
+struct FakeNetSysfs {
+  std::filesystem::path root;
+  FakeNetSysfs() {
+    static int next = 0;
+    root = std::filesystem::temp_directory_path() /
+           ("geth_fakenet_" + std::to_string(::getpid()) + "_" +
+            std::to_string(++next));
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root);
+  }
+  ~FakeNetSysfs() { std::filesystem::remove_all(root); }
+  void add_iface(const std::string& name) {
+    const auto d = root / name;
+    std::filesystem::create_directories(d);
+    std::ofstream(d / "device") << "0000:00:00.0";  // a backing PCI device
+    std::ofstream(d / "type") << "1\n";              // ARPHRD_ETHER
+  }
+};
+}  // namespace
+
+TEST_CASE("removing an interface and a disk mid-run is a gap, never stale/crash") {
+  FakeNetSysfs sysfs;
+  sysfs.add_iface("eth0");
+  sysfs.add_iface("eth1");
+
+  // /proc/net/dev text: <if>: RX …(7 fields)… TX …; field 0 = rx bytes,
+  // field 8 = tx bytes (parse_netdev / netdev_counters).
+  auto netdev = [](unsigned long long e0rx, unsigned long long e0tx,
+                   bool have_eth1, unsigned long long e1rx = 0,
+                   unsigned long long e1tx = 0) {
+    std::string s = "Inter-|   Receive   |  Transmit\n"
+                    " face |bytes  packets|bytes  packets\n";
+    s += "  eth0: " + std::to_string(e0rx) + " 10 0 0 0 0 0 0 " +
+         std::to_string(e0tx) + " 10 0 0 0 0 0 0\n";
+    if (have_eth1)
+      s += "  eth1: " + std::to_string(e1rx) + " 20 0 0 0 0 0 0 " +
+           std::to_string(e1tx) + " 20 0 0 0 0 0 0\n";
+    return s;
+  };
+  // /proc/diskstats text: maj min NAME reads merges_r SECTORS_READ ms_r
+  // writes merges_w SECTORS_WRITTEN …; field 2 = name, 5 = sectors read,
+  // 9 = sectors written (parse_diskstats / diskstat_row).
+  auto diskstats = [](unsigned long long sda_r, unsigned long long sda_w,
+                      bool have_sdb, unsigned long long sdb_r = 0,
+                      unsigned long long sdb_w = 0) {
+    std::string s = "   8       0 sda 100 0 " + std::to_string(sda_r) +
+                    " 100 50 0 " + std::to_string(sda_w) + " 0 0 0 0\n";
+    if (have_sdb)
+      s += "   8       1 sdb 200 0 " + std::to_string(sdb_r) +
+           " 200 70 0 " + std::to_string(sdb_w) + " 0 0 0 0\n";
+    return s;
+  };
+
+  auto net = std::make_unique<NetSource>(sysfs.root.string());
+  NetSource* netp = net.get();
+  auto disk = std::make_unique<DiskSource>();
+  DiskSource* diskp = disk.get();
+  netp->set_test_netdev(netdev(1000, 500, /*have_eth1=*/true, 2000, 1000));
+  diskp->set_test_diskstats(diskstats(100, 50, /*have_sdb=*/true, 200, 70));
+
+  Collector c;
+  c.add(std::move(net));
+  c.add(std::move(disk));
+  c.set_interval_ms(10);        // short-dt guard = 5 ms; the 20 ms ticks clear it
+  c.set_gap_threshold_ms(1000); // a 20 ms tick is never a suspend gap
+  c.probe_all(/*warm_up=*/true);
+  REQUIRE(c.any_available());
+
+  // The probed set is fixed: eth0+eth1 and sda+sdb each got a slot.
+  REQUIRE_EQ(c.latest().net.interfaces.size(), 2u);
+  REQUIRE_EQ(c.latest().disk.devices.size(), 2u);
+
+  const auto present = [](const std::optional<double>& v) {
+    return v.has_value() && std::isfinite(*v);
+  };
+  const auto gap = [](const std::optional<double>& v) {
+    return !v.has_value() || std::isnan(*v);
+  };
+
+  // Tick 1 (first live): rates are blanked (the baseline predates init).
+  netp->set_test_netdev(netdev(100000, 50000, true, 200000, 100000));
+  diskp->set_test_diskstats(diskstats(10000, 5000, true, 20000, 7000));
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  const Snapshot& t1 = c.sample();
+  (void)t1;
+
+  // Tick 2: both interfaces and both disks are present and finite.
+  netp->set_test_netdev(netdev(200000, 100000, true, 400000, 200000));
+  diskp->set_test_diskstats(diskstats(20000, 10000, true, 40000, 14000));
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  const Snapshot& t2 = c.sample();
+  REQUIRE_EQ(t2.net.interfaces[0].name, "eth0");
+  REQUIRE_EQ(t2.net.interfaces[1].name, "eth1");
+  REQUIRE_EQ(t2.disk.devices[0].name, "sda");
+  REQUIRE_EQ(t2.disk.devices[1].name, "sdb");
+  CHECK(present(t2.net.interfaces[0].rx_bytes_per_s));
+  CHECK(present(t2.net.interfaces[1].rx_bytes_per_s));
+  CHECK(present(t2.disk.devices[0].read_bytes_per_s));
+  CHECK(present(t2.disk.devices[1].read_bytes_per_s));
+  const double eth1_rx_before = *t2.net.interfaces[1].rx_bytes_per_s;
+  const double sdb_r_before = *t2.disk.devices[1].read_bytes_per_s;
+
+  // The removal: eth1 and sdb vanish from the (fake) kernel's counters.
+  netp->set_test_netdev(netdev(300000, 150000, /*have_eth1=*/false));
+  diskp->set_test_diskstats(diskstats(30000, 15000, /*have_sdb=*/false));
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  const Snapshot& t3 = c.sample();
+
+  // eth0 and sda survive, still finite.
+  CHECK(present(t3.net.interfaces[0].rx_bytes_per_s));
+  CHECK(present(t3.disk.devices[0].read_bytes_per_s));
+  // eth1 and sdb are a GAP — nullopt/NaN, never a repeat of the previous value.
+  CHECK(gap(t3.net.interfaces[1].rx_bytes_per_s));
+  CHECK(gap(t3.net.interfaces[1].tx_bytes_per_s));
+  CHECK(gap(t3.disk.devices[1].read_bytes_per_s));
+  CHECK(gap(t3.disk.devices[1].write_bytes_per_s));
+  if (t3.net.interfaces[1].rx_bytes_per_s)
+    CHECK(*t3.net.interfaces[1].rx_bytes_per_s != eth1_rx_before);
+  if (t3.disk.devices[1].read_bytes_per_s)
+    CHECK(*t3.disk.devices[1].read_bytes_per_s != sdb_r_before);
+
+  // The graph store agrees: the removed series' newest sample is NaN (a gap),
+  // the survivor's is finite.
+  const RingBuffer<float>* eth1_rx = c.store().values("net.eth1.rx");
+  const RingBuffer<float>* eth0_rx = c.store().values("net.eth0.rx");
+  const RingBuffer<float>* sdb_r = c.store().values("disk.sdb.r");
+  const RingBuffer<float>* sda_r = c.store().values("disk.sda.r");
+  REQUIRE(eth1_rx);
+  REQUIRE(eth0_rx);
+  REQUIRE(sdb_r);
+  REQUIRE(sda_r);
+  CHECK(std::isnan(eth1_rx->at(eth1_rx->size() - 1)));
+  CHECK(std::isnan(sdb_r->at(sdb_r->size() - 1)));
+  CHECK(std::isfinite(eth0_rx->at(eth0_rx->size() - 1)));
+  CHECK(std::isfinite(sda_r->at(sda_r->size() - 1)));
 }
 
 }  // TEST_SUITE

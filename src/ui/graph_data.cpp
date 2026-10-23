@@ -54,35 +54,70 @@ Decimated decimate(const RawWindow& w, int dot_cols) {
     return static_cast<int>(static_cast<double>(ti - w.t_start) / w.span_ns *
                             (dot_cols - 1));
   };
-  d.t.reserve(w.n + 1);
-  d.v.reserve(w.n + 1);
-  // Keep the strongest (max finite) value in each dot column, not just the
-  // first: a single-sample spike inside a dense column must survive to the
-  // line (a NaN never wins the column). The newest sample is always the
-  // line's endpoint (the window's right edge), so it is appended explicitly.
+  // Up to two points per dot column (its min and its max), so reserve for the
+  // densest case: every column holding a distinct min and a distinct max.
+  d.t.reserve(2 * std::min<std::size_t>(w.n, dot_cols) + 1);
+  d.v.reserve(2 * std::min<std::size_t>(w.n, dot_cols) + 1);
+  // Keep BOTH the min and the max of the finite samples in each dot column,
+  // emitted in time order (the earlier extreme first): a one-sample dip must
+  // survive to the line as strongly as a one-sample spike (v1.5.3 — the old
+  // max-only rule made brief drops vanish). A NaN is a gap and never
+  // participates; a flat column (min == max) emits its single value once.
+  // The newest sample is always the line's endpoint (the window's right edge),
+  // so it is appended explicitly if the last column did not already end on it.
   int cur = -1;
-  bool have = false;
-  int64_t best_t = 0;
-  float best_v = 0;
+  bool col_have = false;  // the current column has >= 1 finite sample
+  bool col_any = false;   // the current column has >= 1 sample at all
+  int64_t col_first_t = 0;  // the column's first sample time (an all-NaN column)
+  int64_t min_t = 0, max_t = 0;
+  float min_v = 0, max_v = 0;
   auto flush = [&]() {
-    if (have) {
-      d.t.push_back(best_t);
-      d.v.push_back(best_v);
-      have = false;
+    if (col_have) {
+      if (min_v == max_v) {  // flat column (one value): emit it once
+        d.t.push_back(min_t);
+        d.v.push_back(min_v);
+      } else if (min_t < max_t) {
+        d.t.push_back(min_t);
+        d.v.push_back(min_v);
+        d.t.push_back(max_t);
+        d.v.push_back(max_v);
+      } else {
+        d.t.push_back(max_t);
+        d.v.push_back(max_v);
+        d.t.push_back(min_t);
+        d.v.push_back(min_v);
+      }
+    } else if (col_any) {  // an all-NaN column: a gap the line must not cross
+      d.t.push_back(col_first_t);
+      d.v.push_back(std::nan(""));
     }
+    col_have = false;
+    col_any = false;
   };
   for (std::size_t i = 0; i < w.n; ++i) {
     const int c = col(w.t[i]);
     if (c != cur) {
       flush();
       cur = c;
-      have = false;
     }
+    if (!col_any) col_any = true, col_first_t = w.t[i];
     const float v = w.v[i];
-    if (!have || (!std::isnan(v) && (std::isnan(best_v) || v > best_v))) {
-      best_t = w.t[i];
-      best_v = v;
-      have = true;
+    if (std::isnan(v)) continue;  // a gap: marks the column, never a min/max
+    const int64_t ti = w.t[i];
+    if (!col_have) {
+      // First finite sample in the column: it is both the min and the max.
+      col_have = true;
+      min_t = max_t = ti;
+      min_v = max_v = v;
+    } else {
+      if (v < min_v) {
+        min_v = v;
+        min_t = ti;
+      }
+      if (v > max_v) {
+        max_v = v;
+        max_t = ti;
+      }
     }
   }
   flush();

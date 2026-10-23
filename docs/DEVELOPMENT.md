@@ -129,6 +129,19 @@ parsing/inheritance/fallback, the suspend-gap NaN blanking, config
 round-trip, the `GETH_TEST=1` save guard, and the UI's rename/title/footer
 behavior.
 
+## ThreadSanitizer
+
+All data (sampling, store, rendering, CSV) is touched by the UI thread only;
+the single other thread is the tick timer, which reads only atomics and posts
+FTXUI events. `tools/tsan_check.sh` keeps it that way: it builds a TSan
+binary (`-DGETH_TSAN=ON` in a separate `build-tsan/` dir — TSan cannot be
+combined with the Debug build's ASan), runs the full suite, and runs a 5-min
+pty soak; it fails on any TSan report.
+
+```sh
+sh tools/tsan_check.sh [soak_seconds]   # default soak: 300 s
+```
+
 ## Rendering a frame without a terminal
 
 `--render-frame COLSxROWS` renders a single frame and exits — ideal for CI,

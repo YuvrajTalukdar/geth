@@ -38,6 +38,16 @@ class DiskSource : public Source {
   SourceStatus probe() override;
   void sample(Snapshot& out) override;
 
+  // Test seam (mirrors CpuSource::set_test_stat): make probe() and sample()
+  // parse THIS /proc/diskstats text instead of reading the real file. A
+  // removal test "unplugs" a disk mid-run by setting new text without it —
+  // something that can't happen for real in a test. Call before probe_all()
+  // so the warm-up baseline uses it too; it stays on for the source's life.
+  void set_test_diskstats(std::string text) {
+    _test_diskstats = std::move(text);
+    _test_diskstats_on = true;
+  }
+
  private:
   struct DiskDev {
     std::string name;
@@ -46,11 +56,22 @@ class DiskSource : public Source {
     bool have_prev = false;
   };
 
+  // The /proc/diskstats text for this tick: the test seam when set, else the
+  // live file. probe() fixes the whole-disk set from it and sample() computes
+  // rates — so a seam change removes a disk mid-run. The live read aliases
+  // SysfsFile's reused buffer; the seam is a stable member string.
+  const std::string& diskstats_text() {
+    if (_test_diskstats_on) return _test_diskstats;
+    return _diskstats.read();
+  }
+
   SysfsFile _diskstats;         // /proc/diskstats
   std::vector<DiskDev> _devs;   // whole disks, fixed at probe
   TimePoint _prev_tp;
   bool _have_prev = false;
   bool _sized = false;  // snapshot's device slots sized once
+  std::string _test_diskstats;  // test seam (see set_test_diskstats)
+  bool _test_diskstats_on = false;
 };
 
 }  // namespace geth

@@ -4,7 +4,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(geth
-  VERSION 1.5.2
+  VERSION 1.5.3
   DESCRIPTION "GETH — Geth Engine for Tracking Hardware"
   LANGUAGES CXX)
 
@@ -22,6 +22,18 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(GETH_BUILD_TESTS "Build the unit tests (fetches doctest)" ON)
+
+# ThreadSanitizer build: a SEPARATE build dir, because TSan cannot be combined
+# with ASan (the Debug build type). The global flags below instrument geth AND
+# every dependency (FTXUI, doctest) before add_subdirectory runs, so there are
+# no false negatives from uninstrumented code. Configure a separate dir with:
+#   cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=Release -DGETH_TSAN=ON
+# (Release keeps the Debug ASan genexes below off.)
+option(GETH_TSAN "Build with ThreadSanitizer (separate build dir; not with ASan)" OFF)
+if(GETH_TSAN)
+  add_compile_options(-fsanitize=thread -g)
+  add_link_options(-fsanitize=thread)
+endif()
 
 # The installed binary name. Go Ethereum also installs a `geth` binary, so on
 # a machine where both are wanted build with -DGETH_BINARY_NAME=geth-engine.
@@ -119,9 +131,9 @@ target_compile_definitions(geth PRIVATE GETH_VERSION="${PROJECT_VERSION}")
 
 target_compile_options(geth PRIVATE
   -Wall -Wextra -Wpedantic -Werror
-  $<$<CONFIG:Debug>:-fsanitize=address,undefined -g -O1>
+  $<$<AND:$<CONFIG:Debug>,$<NOT:$<BOOL:${GETH_TSAN}>>>:-fsanitize=address,undefined -g -O1>
   $<$<CONFIG:Release>:-O2>)
-target_link_options(geth PRIVATE $<$<CONFIG:Debug>:-fsanitize=address,undefined>)
+target_link_options(geth PRIVATE $<$<AND:$<CONFIG:Debug>,$<NOT:$<BOOL:${GETH_TSAN}>>>:-fsanitize=address,undefined>)
 
 # dlopen()/dlsym(): on glibc >= 2.34 these live in libc, on older distros in -ldl.
 # Threads is linked for the UI's timer thread (it only posts an event; all
@@ -270,9 +282,9 @@ if(GETH_BUILD_TESTS)
   target_link_libraries(geth_tests PRIVATE doctest ftxui::component tomlplusplus Threads::Threads ZLIB::ZLIB ${CMAKE_DL_LIBS})
   target_compile_options(geth_tests PRIVATE
     -Wall -Wextra -Wpedantic -Werror
-    $<$<CONFIG:Debug>:-fsanitize=address,undefined -g -O1>
+    $<$<AND:$<CONFIG:Debug>,$<NOT:$<BOOL:${GETH_TSAN}>>>:-fsanitize=address,undefined -g -O1>
     $<$<CONFIG:Release>:-O2>)
-  target_link_options(geth_tests PRIVATE $<$<CONFIG:Debug>:-fsanitize=address,undefined>)
+  target_link_options(geth_tests PRIVATE $<$<AND:$<CONFIG:Debug>,$<NOT:$<BOOL:${GETH_TSAN}>>>:-fsanitize=address,undefined>)
 
   enable_testing()
   add_test(NAME unit COMMAND geth_tests)

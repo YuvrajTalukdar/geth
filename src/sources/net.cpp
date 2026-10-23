@@ -107,19 +107,22 @@ bool netdev_counters(std::string_view s, unsigned long long& rx,
 SourceStatus NetSource::probe() {
   SourceStatus st;
   st.description = name();
-  int err = 0;
-  if (!SysfsFile::open("/proc/net/dev", _netdev, err)) {
-    st.detail = "cannot open /proc/net/dev (errno " + std::to_string(err) + ")";
-    return st;
+  if (!_test_netdev_on) {
+    int err = 0;
+    if (!SysfsFile::open("/proc/net/dev", _netdev, err)) {
+      st.detail = "cannot open /proc/net/dev (errno " + std::to_string(err) + ")";
+      return st;
+    }
+    st.paths.push_back("/proc/net/dev");
   }
-  st.paths.push_back("/proc/net/dev");
 
   // Report the filter decision for every interface the kernel knows, and
   // fix the sampled set: the per-tick path only fills values for these.
-  // (An interface hot-plugged after probe shows up on the next geth run.)
+  // (An interface hot-plugged after probe shows up on the next geth run —
+  // the same is true of the test seam, which is fixed at probe time.)
   std::string inc, exc;
   _ifs.clear();
-  for (const auto& row : parse_netdev(_netdev.read())) {
+  for (const auto& row : parse_netdev(netdev_text())) {
     const auto res = net_iface_included(_sysfs_root, row.name);
     if (res.included) {
       if (!inc.empty()) inc += ", ";
@@ -163,7 +166,7 @@ void NetSource::sample(Snapshot& out) {
 
   double tot_rx = 0.0, tot_tx = 0.0;
   bool any = false;
-  const std::string& text = _netdev.read();
+  const std::string& text = netdev_text();
   parse::for_each_line(text, [&](std::string_view line) {
     const auto colon = line.find(':');
     if (colon == std::string_view::npos) return true;  // the two header lines

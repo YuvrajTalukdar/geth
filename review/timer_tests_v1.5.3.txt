@@ -1,0 +1,43 @@
+### final timer tests — Debug (ASan+UBSan) binary: build/geth
+=== 1. quit latency (q at 5000 ms exits < 200 ms) ===
+args: --demo --interval 5000 --trace cpu.usage
+  -> PASS: q->exit 35.8 ms (limit 200)
+=== 2. interval change (next tick within new interval +/- 50 ms) ===
+args: --demo --interval 1000 --trace cpu.usage
+  -> PASS: 3 changes (+, -, -): each next tick within the new interval +/- 50 ms
+=== 3. no rate blanking on 5000 -> 250 ms change ===
+args: --demo --interval 5000 --trace cpu.usage
+  -> PASS: next 1 tick(s) after 5000->250 all finite (values: 58.730)
+=== 4. drift over 60 ticks at 1000 ms (< 50 ms) ===
+args: --demo --interval 1000 --trace cpu.usage --count 60
+  -> PASS: 60 ticks spanned 59000.0 ms (want 59000 +/- 50); drift 0.0 ms
+
+============================================================
+TIMER TESTS: 4/4 passed
+  PASS  1. quit latency
+  PASS  2. interval change
+  PASS  3. no blanking on change
+  PASS  4. drift over 60 ticks
+debug_exit=0
+
+### final timer tests — Release binary: build-rel/geth
+=== 1. quit latency (q at 5000 ms exits < 200 ms) ===
+args: --demo --interval 5000 --trace cpu.usage
+  -> PASS: q->exit 20.9 ms (limit 200)
+=== 2. interval change (next tick within new interval +/- 50 ms) ===
+args: --demo --interval 1000 --trace cpu.usage
+  -> PASS: 3 changes (+, -, -): each next tick within the new interval +/- 50 ms
+=== 3. no rate blanking on 5000 -> 250 ms change ===
+args: --demo --interval 5000 --trace cpu.usage
+  -> PASS: next 1 tick(s) after 5000->250 all finite (values: 58.727)
+=== 4. drift over 60 ticks at 1000 ms (< 50 ms) ===
+args: --demo --interval 1000 --trace cpu.usage --count 60
+  -> PASS: 60 ticks spanned 58999.7 ms (want 59000 +/- 50); drift 0.3 ms
+
+============================================================
+TIMER TESTS: 4/4 passed
+  PASS  1. quit latency
+  PASS  2. interval change
+  PASS  3. no blanking on change
+  PASS  4. drift over 60 ticks
+rel_exit=0

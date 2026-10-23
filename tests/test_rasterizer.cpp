@@ -286,3 +286,59 @@ TEST_CASE("rasterizer: gridlines land on the text tick-label rows") {
   // A non-tick row is empty.
   CHECK_EQ(alpha(img, x, 30), 0);
 }
+
+// v1.5.3: decimate keeps BOTH a column's min and max (emitted in time order),
+// so a one-sample dip survives as strongly as a one-sample spike. The old
+// max-only rule dropped the dip. A 10 m window of 1-s samples at 40 dot
+// columns is ~15 samples per column — dense enough that a single-sample dip or
+// spike sits wholly inside one column.
+TEST_CASE("decimate: a one-sample dip and a one-sample spike both survive a dense 10m column") {
+  const int64_t step = 1000000000LL;  // 1 s
+  const int N = 601;                   // 0..600 s = a 10 m window
+  std::vector<int64_t> t(N);
+  std::vector<float> v(N, 64.0f);      // a constant baseline on 0..128
+  for (int i = 0; i < N; ++i) t[i] = (int64_t)i * step;
+  const int dip_i = 200, spike_i = 400;  // each wholly inside a dense column
+  v[dip_i] = 16.0f;     // the one-sample dip
+  v[spike_i] = 112.0f;  // the one-sample spike
+  const int64_t span_ns = (int64_t)(N - 1) * step;
+  const RawWindow w{t.data(), v.data(), (std::size_t)N, 0, span_ns,
+                    (double)span_ns};
+  const int Wg = 20;  // dot_cols = 2 * Wg = 40
+  const Decimated d = decimate(w, 2 * Wg);
+
+  // (core) both extremes survive the decimation (max-only would drop the dip).
+  float lo = 1e9f, hi = -1e9f;
+  for (const float x : d.v)
+    if (std::isfinite(x)) lo = std::min(lo, x), hi = std::max(hi, x);
+  CHECK(lo <= 16.0f + 1e-3f);
+  CHECK(hi >= 112.0f - 1e-3f);
+
+  // (text) value_at at the dip's and the spike's times returns the extreme,
+  // not the baseline — the text line passes through both.
+  CHECK(value_at(d, (double)t[dip_i]) < 40.0);
+  CHECK(value_at(d, (double)t[spike_i]) > 80.0);
+
+  // (pixel) raster_panel draws both: the line reaches the spike's row (near the
+  // top) and the dip's row (near the bottom), which the baseline (row ~63)
+  // never does. value_y_px(y) = cell_h/2 + (1 - y/vmax)*(Hg-1)*cell_h, Hg=7,
+  // cell_h=18, vmax=128: baseline 64 -> ~63, spike 112 -> ~22, dip 16 -> ~104.
+  const GraphGeom g = geom_basic(Wg, 7, 128.0);
+  const int W = Wg * kCellW, H = 7 * kCellH;
+  std::vector<RawWindow> raws = {w};
+  std::vector<Decimated> decs = {d};
+  std::vector<SeriesSpec> series = {series0()};
+  const RasterImage img = raster_panel(
+      {g, kCellW, kCellH, test_theme(), false, raws, decs, series});
+  REQUIRE_EQ(img.w, W);
+  REQUIRE_EQ(img.h, H);
+  auto row_max = [&](int r0, int r1) {
+    int m = 0;
+    for (int x = 0; x < W; ++x)
+      for (int y = r0; y < r1 && y < H; ++y) m = std::max(m, alpha(img, x, y));
+    return m;
+  };
+  CHECK(row_max(16, 28) > 15);    // the spike line reaches near the top
+  CHECK(row_max(99, 110) > 15);   // the dip line reaches near the bottom
+  CHECK(row_max(58, 68) > 15);    // the baseline line (sanity: it is present)
+}

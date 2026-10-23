@@ -1,0 +1,92 @@
+geth: config: line 3:: unknown key 'logging.foo' — ignored
+geth: config:: 'logging' must be a table — ignored
+geth: config: line 3:: general.graph_renderer must be "auto", "pixels", "text" or "steps" — ignored
+geth: config: line 2:: general.graph_renderer must be a string — ignored
+geth: config: line 2:: general.graph_style is no longer used (graph_renderer replaces it) and this value is invalid — ignored
+geth: config: line 1:: unknown key 'bogus_root' — ignored
+geth: config: line 4:: unknown key 'general.not_a_key' — ignored
+geth: config: line 5:: general.window must be 30s/1m/2m/5m/10m — ignored
+geth: config: line 8:: unknown key 'panels[0].extra' — ignored
+geth: config: line 12:: unknown key 'gpus."0000:01:00.0".wat' — ignored
+geth: GETH_TEST=1: refusing to save config under your real ~/.config (set XDG_CONFIG_HOME to a temp dir)
+[doctest] doctest version is "2.4.11"
+[doctest] run with "--help" for options
+
+=== cyberpunk-blue ===
+  pair   norm   protan  deutan
+  S1xS2  25.38  24.61  25.48
+  S1xS3  34.06  29.13  22.75
+  S1xS4  27.60  26.69  21.83
+  S2xS3  34.88  29.48  17.37
+  S2xS4  47.79  45.04  43.43
+  S3xS4  31.38  27.89  32.29
+  S1 contrast vs #0B0F14: 12.49:1
+  S2 contrast vs #0B0F14: 15.37:1
+  S3 contrast vs #0B0F14: 7.43:1
+  S4 contrast vs #0B0F14: 5.90:1
+  S5 contrast vs #0B0F14: 14.05:1
+  S6 contrast vs #0B0F14: 16.48:1
+
+=== matrix-green ===
+  pair   norm   protan  deutan
+  S1xS2  33.18  29.78  30.50
+  S1xS3  38.67  28.32  13.91
+  S1xS4  21.47   7.90   7.12
+  S2xS3  32.52  26.32  25.19
+  S2xS4  26.92  22.27  27.78
+  S3xS4  24.36  25.95  18.12
+  S1 contrast vs #0B0F14: 14.17:1
+  S2 contrast vs #0B0F14: 9.65:1
+  S3 contrast vs #0B0F14: 7.42:1
+  S4 contrast vs #0B0F14: 15.01:1
+  S5 contrast vs #0B0F14: 15.19:1
+  S6 contrast vs #0B0F14: 12.47:1
+
+=== crimson-red ===
+  pair   norm   protan  deutan
+  S1xS2  29.41  31.11  19.95
+  S1xS3  39.94  35.72  23.55
+  S1xS4  26.92  26.03  23.82
+  S2xS3  26.82  23.51  25.24
+  S2xS4  33.20  32.56  33.17
+  S3xS4  22.00  18.21  11.57
+  S1 contrast vs #0B0F14: 5.36:1
+  S2 contrast vs #0B0F14: 11.91:1
+  S3 contrast vs #0B0F14: 11.80:1
+  S4 contrast vs #0B0F14: 7.56:1
+  S5 contrast vs #0B0F14: 8.30:1
+  S6 contrast vs #0B0F14: 14.29:1
+
+=== amber ===
+  pair   norm   protan  deutan
+  S1xS2  19.82  20.54  13.49
+  S1xS3  28.48  24.61  26.82
+  S1xS4  18.63  18.08  13.03
+  S2xS3  35.72  32.43  25.09
+  S2xS4  37.69  38.03  25.52
+  S3xS4  27.30  24.68  27.81
+  S1 contrast vs #0B0F14: 10.49:1
+  S2 contrast vs #0B0F14: 6.04:1
+  S3 contrast vs #0B0F14: 10.91:1
+  S4 contrast vs #0B0F14: 17.25:1
+  S5 contrast vs #0B0F14: 13.24:1
+  S6 contrast vs #0B0F14: 9.29:1
+
+=== blaze-orange ===
+  pair   norm   protan  deutan
+  S1xS2  33.05  29.96  25.21
+  S1xS3  27.67  29.01  20.82
+  S1xS4  30.57  29.10  30.83
+  S2xS3  27.03  23.16  27.20
+  S2xS4  20.63  18.96  14.27
+  S3xS4  40.17  38.50  39.60
+  S1 contrast vs #0B0F14: 7.37:1
+  S2 contrast vs #0B0F14: 11.61:1
+  S3 contrast vs #0B0F14: 16.73:1
+  S4 contrast vs #0B0F14: 6.98:1
+  S5 contrast vs #0B0F14: 10.66:1
+  S6 contrast vs #0B0F14: 13.95:1
+===============================================================================
+[doctest] test cases:    236 |    236 passed | 0 failed | 0 skipped
+[doctest] assertions: 526919 | 526919 passed | 0 failed |
+[doctest] Status: SUCCESS!

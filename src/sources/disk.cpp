@@ -81,17 +81,19 @@ bool diskstat_row(std::string_view line, std::string_view& name,
 SourceStatus DiskSource::probe() {
   SourceStatus st;
   st.description = name();
-  int err = 0;
-  if (!SysfsFile::open("/proc/diskstats", _diskstats, err)) {
-    st.detail = "cannot open /proc/diskstats (errno " + std::to_string(err) + ")";
-    return st;
+  if (!_test_diskstats_on) {
+    int err = 0;
+    if (!SysfsFile::open("/proc/diskstats", _diskstats, err)) {
+      st.detail = "cannot open /proc/diskstats (errno " + std::to_string(err) + ")";
+      return st;
+    }
+    st.paths.push_back("/proc/diskstats");
   }
-  st.paths.push_back("/proc/diskstats");
   st.detail = "per-device read/write rates from sector counters (x512)";
 
   // Fix the whole-disk set (cold path): partitions, loop/ram/zram/dm-*/sr*/
   // md* are noise and would double-count the data.
-  const auto rows = parse_diskstats(_diskstats.read());
+  const auto rows = parse_diskstats(diskstats_text());
   std::vector<std::string> names;
   names.reserve(rows.size());
   for (const auto& r : rows) names.push_back(r.name);
@@ -130,7 +132,7 @@ void DiskSource::sample(Snapshot& out) {
 
   double tot_r = 0.0, tot_w = 0.0;
   bool any_r = false, any_w = false;
-  const std::string& text = _diskstats.read();
+  const std::string& text = diskstats_text();
   parse::for_each_line(text, [&](std::string_view line) {
     std::string_view name;
     unsigned long long sr = 0, sw = 0;

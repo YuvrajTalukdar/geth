@@ -1,6 +1,8 @@
 build/
 build-debug/
 build-rel/
+build-tsan/
+tools/__pycache__/
 CMakeUserPresets.json
 geth_test.bin
 dist/

@@ -5,7 +5,9 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -97,9 +99,23 @@ class Dashboard : public ftxui::ComponentBase {
   int window_idx() const { return _window_idx; }
   int columns_setting() const { return _columns; }  // -1 = auto
   long long interval_ms() const { return _interval_ms.load(); }
-  // The atomic itself (the timer thread sleeps on the CURRENT value, so a
-  // `+`/`-` change takes effect on the next tick).
+  // The atomic itself (the timer thread re-reads the CURRENT value each tick,
+  // so a `+`/`-` change takes effect on the next tick).
   std::atomic<long long>& interval() { return _interval_ms; }
+  // The tick timer's synchronization (the std::thread lives in run_ui). The
+  // timer waits on _tick_cv until its steady-clock deadline OR a wake — a wake
+  // is quit (run_ui) or an interval change (cycle_interval), which must apply
+  // within the new interval instead of after the old sleep finishes.
+  std::mutex& tick_mutex() { return _tick_mutex; }
+  std::condition_variable& tick_cv() { return _tick_cv; }
+  std::atomic<bool>& tick_quit() { return _tick_quit; }
+  unsigned tick_wake() const { return _tick_wake.load(); }
+  // Wake the timer so it re-reads _interval_ms and re-anchors its deadline.
+  void request_tick_reschedule() {
+    _tick_wake.fetch_add(1);
+    std::lock_guard<std::mutex> lk(_tick_mutex);
+    _tick_cv.notify_all();
+  }
   const std::string& toast() const { return _toast; }
   bool panel_visible(const std::string& id) const;
   int page_index(const std::string& id) const;  // -1 when not on the page
@@ -229,6 +245,14 @@ class Dashboard : public ftxui::ComponentBase {
   std::map<std::string, GpuOrig> _gpu_orig;
   ColorMode _mode;
   std::atomic<long long> _interval_ms;
+  // Tick-timer synchronization (the std::thread lives in run_ui). cycle_interval
+  // wakes it on an interval change; run_ui wakes it on quit. _tick_wake is a
+  // generation counter the timer's wait predicate watches; the timer re-reads
+  // the interval on a wake, so no other state crosses the thread boundary.
+  std::mutex _tick_mutex;
+  std::condition_variable _tick_cv;
+  std::atomic<bool> _tick_quit{false};
+  std::atomic<unsigned> _tick_wake{0};
   unsigned long long _count;
   FrameStats& _stats;
 

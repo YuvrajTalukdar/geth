@@ -1167,7 +1167,20 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
       // next tick).
       double change = 0.0;
       int nan_count = 0;
-      for (const auto& d : decs) {
+      for (std::size_t si = 0; si < decs.size(); ++si) {
+        const auto& d = decs[si];
+        // v1.5.3: decimation now keeps a column's min AND max (a one-sample dip
+        // must survive, not just a spike). The gate measures the SLIDE between
+        // adjacent columns, so it scores only CROSS-column pairs; a pair whose
+        // two points fall in the same column is that column's within-column
+        // min<->max swing (a value range, not a slide) and is excluded. Flat
+        // columns emit one point, so their cross-column pairs are unchanged.
+        const RawWindow& raw = raws[si];
+        const auto col_of = [&](int64_t t) {
+          return static_cast<int>(
+              static_cast<double>(t - raw.t_start) / raw.span_ns *
+              (gg.dot_cols - 1));
+        };
         std::size_t moved = 0, total = 0;
         for (std::size_t i = 0; i < d.v.size(); ++i) {
           const float v = d.v[i];
@@ -1175,7 +1188,8 @@ void render_frame(ftxui::Screen& screen, const Hardware& hw,
             ++nan_count;
             continue;
           }
-          if (i > 0 && !std::isnan(d.v[i - 1])) {
+          if (i > 0 && !std::isnan(d.v[i - 1]) &&
+              col_of(d.t[i]) != col_of(d.t[i - 1])) {
             ++total;
             if (vmax > 0 &&
                 std::fabs((double)v - d.v[i - 1]) / vmax > kColMoveEps)

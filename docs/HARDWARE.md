@@ -102,3 +102,29 @@ GETH handles this without any user action:
 - A suspended card shows its last known values (dimmed) rather than zeroes,
   so the panel does not flicker to 0% while the dGPU is asleep.
 - NVML enumeration happens only in `--probe` mode, never at UI startup.
+
+## Hotplugging
+
+The set of devices GETH samples is fixed at **probe time** (the first tick of
+the run): which network interfaces pass the filter, which whole disks exist,
+and which GPUs are present. GETH does not re-enumerate devices at runtime —
+the per-tick path stays allocation-free and the graph's history lines stay
+aligned. So:
+
+- **A device that appears after startup is not sampled until the next geth
+  run** (a network interface coming up, a USB disk plugged in, a dGPU
+  detected). This is a documented limitation, not a bug.
+- **A device that disappears while GETH is running is safe.** It never
+  crashes GETH and never repeats a stale value. On the next tick, an
+  interface or disk that is no longer in the kernel's counters
+  (`/proc/net/dev`, `/proc/diskstats`) is reported as *absent* — not zero,
+  not the previous value. Absent is drawn as a **gap** in the graph (a NaN in
+  the history ring) and an **empty cell** in a CSV log. The surviving devices
+  keep sampling normally.
+- **A GPU that stops reporting** (a sysfs-backed amdgpu whose files vanish, a
+  powered-off card) likewise drops to a gap; a *suspended* NVIDIA dGPU keeps
+  its last known values dimmed instead (see [Hybrid laptops](#hybrid-laptops)).
+
+"A device is gone" and "a device is idle" are different, and GETH keeps them
+apart: a removed device is a **gap**, a present-but-idle device is a
+(correct) **0**.

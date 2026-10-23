@@ -63,6 +63,11 @@ class Collector {
   void set_interval_ms(long long ms) { _interval_ms = ms; }
   // Test hook: override the gap threshold (default: 5 x the interval).
   void set_gap_threshold_ms(long long ms) { _gap_threshold_ms = ms; }
+  // Re-stamp the suspend-gap reference. Call on every interval change: without
+  // it, the tick that follows the change would be compared against the last
+  // sample (up to one OLD interval away), so e.g. 5000 -> 250 ms would look
+  // like a >5x-interval suspend and blank the rates.
+  void reset_gap_reference() { _last_suspend = SuspendClock::now(); }
 
  private:
   // Derive the series-id set from one sample (GPU bus ids, interface and

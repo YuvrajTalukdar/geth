@@ -53,6 +53,16 @@ class NetSource : public Source {
   SourceStatus probe() override;
   void sample(Snapshot& out) override;
 
+  // Test seam (mirrors CpuSource::set_test_stat): make probe() and sample()
+  // parse THIS /proc/net/dev text instead of reading the real file. A removal
+  // test "unplugs" an interface mid-run by setting new text without it —
+  // something that can't happen for real in a test. Call before probe_all()
+  // so the warm-up baseline uses it too; it stays on for the source's life.
+  void set_test_netdev(std::string text) {
+    _test_netdev = std::move(text);
+    _test_netdev_on = true;
+  }
+
  private:
   struct NetIf {
     std::string name;
@@ -61,12 +71,23 @@ class NetSource : public Source {
     bool have_prev = false;
   };
 
+  // The /proc/net/dev text for this tick: the test seam when set, else the
+  // live file. probe() fixes the sampled set from it and sample() computes
+  // rates — so a seam change removes an interface mid-run. The live read
+  // aliases SysfsFile's reused buffer; the seam is a stable member string.
+  const std::string& netdev_text() {
+    if (_test_netdev_on) return _test_netdev;
+    return _netdev.read();
+  }
+
   SysfsFile _netdev;                 // /proc/net/dev
   std::string _sysfs_root = "/sys/class/net";
   std::vector<NetIf> _ifs;           // included interfaces, fixed at probe
   TimePoint _prev_tp;
   bool _have_prev = false;
   bool _sized = false;  // snapshot's interface slots sized once
+  std::string _test_netdev;          // test seam (see set_test_netdev)
+  bool _test_netdev_on = false;
 };
 
 }  // namespace geth

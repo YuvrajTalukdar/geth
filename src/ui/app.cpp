@@ -545,6 +545,11 @@ void Dashboard::cycle_interval(int dir) {
   }
   _interval_ms.store(kIntervalsMs[new_idx]);
   _collector.set_interval_ms(kIntervalsMs[new_idx]);  // sizes the gap threshold
+  // Re-anchor the suspend-gap reference (the transition tick would otherwise
+  // look like a >5x-interval gap) and wake the timer so the new cadence
+  // applies within the new interval instead of after the old sleep finishes.
+  _collector.reset_gap_reference();
+  request_tick_reschedule();
   _dirty = true;
   save_now();
 }
@@ -1309,20 +1314,43 @@ int run_ui(Collector& collector, const Hardware& hw_in, const UiOptions& opts) {
   // is still the user's normal one) it restores the terminal and exits.
   util::install_sighup_restore();
 
-  // The small timer thread: posts Event::Custom at each tick and nothing
-  // else. All sampling and rendering happen on the UI thread. It reads the
-  // CURRENT interval every loop, so a `+`/`-` change takes effect on the
-  // next tick.
-  std::atomic<bool> quit{false};
-  std::thread timer(
-      [&screen, &quit, iv = &component->interval()] {
-        while (!quit) {
-          std::this_thread::sleep_for(
-              std::chrono::milliseconds(iv->load()));
-          if (quit) break;
-          screen.PostEvent(ftxui::Event::Custom);
-        }
-      });
+  // The tick timer: posts Event::Custom at each deadline and nothing else. All
+  // sampling, store writes, rendering and CSV run on the UI thread, so the only
+  // shared state is the atomics (interval, tick_quit, tick_wake) and FTXUI's
+  // thread-safe PostEvent. It waits on a condition_variable until its
+  // steady_clock deadline OR a wake (quit, or an interval change via
+  // request_tick_reschedule), so a `+`/`-` applies within the new interval and
+  // `q` returns without sleeping out the old one. Deadlines advance by exactly
+  // one interval per tick (re-anchoring if a full interval slipped), so the
+  // cadence does not drift.
+  std::thread timer([&screen, &component] {
+    std::unique_lock<std::mutex> lk(component->tick_mutex());
+    using namespace std::chrono;
+    auto next = steady_clock::now() + milliseconds(component->interval_ms());
+    unsigned wake_seen = component->tick_wake();
+    while (true) {
+      const bool woken = component->tick_cv().wait_until(
+          lk, next, [&] {
+            return component->tick_quit().load() ||
+                   component->tick_wake() != wake_seen;
+          });
+      if (component->tick_quit().load()) break;
+      if (woken) {
+        // Interval changed (or spurious): the new cadence starts now.
+        wake_seen = component->tick_wake();
+        next = steady_clock::now() + milliseconds(component->interval_ms());
+        continue;
+      }
+      // Deadline reached: fire a tick, advance by one interval.
+      const long long iv = component->interval_ms();
+      const auto now = steady_clock::now();
+      next = (now - next >= milliseconds(iv)) ? now + milliseconds(iv)
+                                             : next + milliseconds(iv);
+      lk.unlock();
+      screen.PostEvent(ftxui::Event::Custom);
+      lk.lock();
+    }
+  });
 
   // First frame at row 0 regardless of where the shell prompt sat (v1.0.1).
   // FTXUI enters the alternate screen inside Loop() and then draws frame 1
@@ -1369,7 +1397,8 @@ int run_ui(Collector& collector, const Hardware& hw_in, const UiOptions& opts) {
   component->stop_log();
   util::uninstall_sighup_restore();
 
-  quit = true;
+  component->tick_quit().store(true);
+  component->tick_cv().notify_all();
   timer.join();
 
   if (opts.stats) stats.print();

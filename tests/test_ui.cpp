@@ -545,6 +545,41 @@ TEST_CASE("steps: step_column_values is the mean of the in-slice samples") {
   CHECK_EQ(vals[1], 60.0);  // mean(50, 70)
 }
 
+TEST_CASE("steps: a one-sample dip/spike in a dense column is averaged out (v1.5.3)") {
+  // v1.5.3: min/max decimation now keeps a brief dip AND spike for the LINE
+  // modes (text + pixels). Steps mode is the MEAN per slice and must be
+  // unaffected: a one-sample dip or spike inside a dense column barely moves
+  // the slice mean, so it is NOT drawn as the sharp feature the line modes
+  // show. This locks that in — the fix must not leak into steps mode.
+  const int64_t S = 1000000000LL;
+  // 12 samples, 1 s apart, over a 12 s window at Wg = 4 (3 s per column ->
+  // exactly 3 samples per column, a dense column).
+  std::vector<int64_t> t;
+  std::vector<float> v;
+  for (int i = 0; i < 12; ++i) {
+    t.push_back((int64_t)i * S);  // 0 s .. 11 s
+    v.push_back(50.0f);           // a constant baseline
+  }
+  v[1] = 10.0f;  // a one-sample dip in column 0 = [0, 3 s)
+  v[7] = 90.0f;  // a one-sample spike in column 2 = [6, 9 s)
+  ui::RawWindow w = make_raw(t, v, 0, 12 * S);
+  ui::Decimated d;  // empty: every slice holds a sample, value_at is unused
+  const auto vals = ui::step_column_values(w, d, 4, 12 * S, 12 * S);
+  CHECK_EQ(vals.size(), 4u);
+  // Column 0 = mean(50, 10, 50) = 36.67: the dip is averaged IN, not shown as
+  // the line modes' sharp drop to 10.
+  CHECK(std::abs(vals[0] - (50.0 + 10.0 + 50.0) / 3.0) < 1e-9);
+  // Column 2 = mean(50, 90, 50) = 63.33: the spike averaged in, not 90.
+  CHECK(std::abs(vals[2] - (50.0 + 90.0 + 50.0) / 3.0) < 1e-9);
+  // The untouched columns stay exactly at the baseline.
+  CHECK_EQ(vals[1], 50.0);
+  CHECK_EQ(vals[3], 50.0);
+  // And neither reaches the line-mode extreme: the dip never reads as 10, the
+  // spike never as 90.
+  CHECK(vals[0] > 30.0);
+  CHECK(vals[2] < 70.0);
+}
+
 TEST_CASE("steps: an empty slice falls back to value_at at its midpoint") {
   const int64_t S = 1000000000LL;
   // Column 0 = [0,10 s) holds one sample; column 1 = [10,20 s) holds none, so
