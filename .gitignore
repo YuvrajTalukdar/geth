@@ -3,6 +3,11 @@ build-debug/
 build-rel/
 build-tsan/
 tools/__pycache__/
+# Local review scratch: per-version work dirs (large pty screen captures,
+# build logs) and tools/tsan_check.sh's output dir. Small per-version outputs
+# are committed as top-level review/*.txt files instead.
+review/v[0-9]*/
+review/tsan_check/
 CMakeUserPresets.json
 geth_test.bin
 dist/
