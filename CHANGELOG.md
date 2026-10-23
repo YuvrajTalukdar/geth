@@ -2,6 +2,38 @@
 
 All notable changes to GETH. The format follows the five-phase build plan.
 
+## 1.5.4 — Locale-independent test suite (clean-machine safe) (2026-10-23)
+
+On a clean Arch machine the package's `check()` failed in one test —
+"values: a de_DE locale changes nothing" — because
+`std::setlocale(LC_ALL, "de_DE.UTF-8")` returns null when the locale isn't
+generated (Arch only builds what `/etc/locale.gen` enables), and the test
+`CHECK`ed the locale was available. Tests must never depend on optional
+system configuration, so:
+
+- **The C-locale half now tries several comma-decimal locales in order** —
+  `de_DE.UTF-8`, `de_DE.utf8`, `fr_FR.UTF-8`, `fr_FR.utf8`, `nl_NL.UTF-8`,
+  `ru_RU.UTF-8` — and runs under the first one that exists. If none is
+  generated on the machine it **skips that half with a doctest `MESSAGE`**
+  naming every locale it tried. A skip is not a failure.
+- **A second half now runs on every machine** (no system locale needed): it
+  installs a C++ *global* locale with a custom `std::numpunct<char>` (`,`
+  decimal point, `.` thousands separator, `"\3"` grouping), logs a row under
+  it, restores the previous global locale (RAII, even on a failed
+  assertion), and checks the row is byte-identical to the classic-locale
+  row. Half 1 catches a regression to C `%f` formatting (LC_NUMERIC);
+  half 2 catches a regression to C++ stream formatting (numpunct).
+- **The whole test suite was audited for other machine-environment
+  dependencies** — specific locales, `$HOME` contents, fonts,
+  `/usr/share/hwdata/pci.ids` presence, GPU/NVML presence, terminal type,
+  timezone, network. None remain: `TERM`/`TMUX` are set and restored by the
+  tests themselves; the CSV offset check computes the machine's *own* UTC
+  offset and compares it against what was written (self-consistent in any
+  timezone, including a bare container); a missing `pci.ids` degrades
+  gracefully (no lookup, name fallback); no test ever constructs a real
+  GPU/net/disk source (fixtures and test seams only); no test opens a
+  network connection.
+
 ## 1.5.3 — Data-race audit, timer rework, min/max decimation, safe hotplug removal (2026-10-23)
 
 - **Data-race audit (TSan): no race exists; the "known limitation" note is

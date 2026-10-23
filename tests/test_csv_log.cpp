@@ -15,6 +15,7 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <locale>
 #include <string>
 #include <vector>
 
@@ -120,6 +121,34 @@ long long machine_offset_min() {
   const std::time_t as_utc = ::timegm(&lt);
   return static_cast<long long>(as_local - as_utc) / 60;
 }
+
+// A C++ locale that uses ',' as the decimal point and '.' as the thousands
+// separator (the German convention). It needs NO generated system locale, so
+// the locale test below can always exercise a comma-decimal environment —
+// even on a clean build machine where setlocale(LC_ALL, "de_DE.UTF-8") fails
+// because the locale is not in /etc/locale.gen.
+struct CommaPunct : std::numpunct<char> {
+  char do_decimal_point() const override { return ','; }
+  char do_thousands_sep() const override { return '.'; }
+  std::string do_grouping() const override { return "\3"; }
+};
+
+// Restore the C (LC_ALL) locale on scope exit, even on a REQUIRE failure.
+struct CLocaleGuard {
+  std::string saved;
+  CLocaleGuard() : saved(std::setlocale(LC_ALL, nullptr)) {}
+  ~CLocaleGuard() { std::setlocale(LC_ALL, saved.c_str()); }
+};
+
+// Install `next` as the C++ global locale, restoring the previous one on
+// scope exit, even on a REQUIRE failure.
+struct GlobalLocaleGuard {
+  std::locale prev;
+  explicit GlobalLocaleGuard(const std::locale& next) : prev(std::locale()) {
+    std::locale::global(next);
+  }
+  ~GlobalLocaleGuard() { std::locale::global(prev); }
+};
 
 }  // namespace
 
@@ -379,40 +408,81 @@ TEST_CASE("values: exact precision, '.' decimal, empty for missing/NaN, monotoni
   for (int i = 0; i < 23; ++i) CHECK_EQ(row0[2 + i], want[i]);
 }
 
-TEST_CASE("values: a de_DE locale changes nothing (manual formatting, never %f)") {
+TEST_CASE("values: a comma-decimal locale changes nothing (manual formatting, never %f)") {
   const auto hw = demo_hw();
   const auto page = ui::build_default_page(hw);
   const std::filesystem::path dir = fresh_tmp_dir("locale");
 
+  // Baseline row under the current locale (C or en_US on a clean machine).
   ui::CsvLogger logA;
   std::string err;
   const std::string pA = logA.start(page, dir.string(), err);
   REQUIRE(!pA.empty());
   REQUIRE(logA.tick(page, mk_snap(Clock::now()), false, err));
   logA.stop();
-
-  // Switch to a locale that uses ',' as the decimal point, log one more row,
-  // switch back. (If the locale is absent the comparison still holds — the
-  // formatter is locale-proof by construction.)
-  const std::string saved = std::setlocale(LC_ALL, nullptr);
-  const bool de = std::setlocale(LC_ALL, "de_DE.UTF-8") != nullptr;
-  CHECK(de);
-  ui::CsvLogger logB;
-  const std::string pB = logB.start(page, dir.string(), err);
-  REQUIRE(!pB.empty());
-  REQUIRE(logB.tick(page, mk_snap(Clock::now()), false, err));
-  logB.stop();
-  std::setlocale(LC_ALL, saved.c_str());
-
   const auto a = lines_of_file(pA);
-  const auto b = lines_of_file(pB);
   REQUIRE_EQ(a.size(), 2u);
-  REQUIRE_EQ(b.size(), 2u);
-  CHECK_EQ(a[0], b[0]);  // identical header
   const auto fa = split_csv_line(a[1]);
-  const auto fb = split_csv_line(b[1]);
-  REQUIRE_EQ(fa.size(), fb.size());
-  for (std::size_t i = 2; i < fa.size(); ++i) CHECK_EQ(fa[i], fb[i]);
+
+  // One row from a comma-decimal environment must be byte-identical (header
+  // + value columns) to the baseline; column 0 is wall time, column 1 the
+  // per-file elapsed time, so both are compared separately by construction
+  // (a fresh file always starts at 0.000).
+  const auto expect_same_row = [&](const std::string& path) {
+    const auto l = lines_of_file(path);
+    REQUIRE_EQ(l.size(), 2u);
+    CHECK_EQ(a[0], l[0]);  // identical header
+    const auto f = split_csv_line(l[1]);
+    REQUIRE_EQ(fa.size(), f.size());
+    CHECK_EQ(f[1], fa[1]);
+    for (std::size_t i = 2; i < f.size(); ++i) CHECK_EQ(f[i], fa[i]);
+  };
+
+  // Half 1: a comma-decimal SYSTEM (C) locale. Arch generates only the
+  // locales enabled in /etc/locale.gen, so a clean build machine may have
+  // none of them: try several in order, and if none is available skip this
+  // half — that is not a failure (half 2 below runs on every machine).
+  {
+    CLocaleGuard guard;
+    const char* const comma_locales[] = {
+        "de_DE.UTF-8", "de_DE.utf8", "fr_FR.UTF-8", "fr_FR.utf8",
+        "nl_NL.UTF-8", "ru_RU.UTF-8"};
+    const char* used = nullptr;
+    for (const char* l : comma_locales)
+      if (std::setlocale(LC_ALL, l) != nullptr) {
+        used = l;
+        break;
+      }
+    if (used) {
+      // std::string(used): doctest's stream binds a bare const char* to its
+      // const void* overload and would print the pointer, not the name.
+      MESSAGE("C-locale half running under: " << std::string(used));
+      ui::CsvLogger logB;
+      const std::string pB = logB.start(page, dir.string(), err);
+      REQUIRE(!pB.empty());
+      REQUIRE(logB.tick(page, mk_snap(Clock::now()), false, err));
+      logB.stop();
+      expect_same_row(pB);
+    } else {
+      MESSAGE("skipping the C-locale half: none of de_DE.UTF-8, de_DE.utf8, "
+              "fr_FR.UTF-8, fr_FR.utf8, nl_NL.UTF-8, ru_RU.UTF-8 is "
+              "generated on this machine; the C++ global-locale half below "
+              "still covers the comma-decimal case");
+    }
+  }
+
+  // Half 2: a C++ GLOBAL locale with a comma-decimal numpunct. This needs no
+  // generated system locale at all, so it runs on every machine.
+  {
+    GlobalLocaleGuard guard(
+        std::locale(std::locale::classic(), new CommaPunct));
+    ui::CsvLogger logC;
+    const std::string pC = logC.start(page, dir.string(), err);
+    REQUIRE(!pC.empty());
+    REQUIRE(logC.tick(page, mk_snap(Clock::now()), false, err));
+    logC.stop();
+    expect_same_row(pC);
+  }
 }
 
 TEST_CASE("quoting: a GPU renamed to a name with quotes and commas") {
