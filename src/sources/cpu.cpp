@@ -175,8 +175,9 @@ std::size_t CpuSource::read_frequency() {
 }
 
 void CpuSource::sample(Snapshot& out) {
-  parse_proc_stat(_stat.read(), _cur);
-  if (_cur.empty()) return;  // unreadable this tick: keep the previous values
+  const std::string& stat_text = _test_stat_on ? _test_stat : _stat.read();
+  parse_proc_stat(stat_text, _cur);
+  if (_cur.empty()) return;  // unreadable this tick: the (reset) values stay absent
   if (!_sized) {
     // One-time: baseline counters, per-core slots in the reused Snapshot.
     _prev = _cur;
@@ -192,6 +193,15 @@ void CpuSource::sample(Snapshot& out) {
         out.cpu.per_core_pct[i - 1] = pct;
     }
     std::swap(_prev, _cur);
+  } else {
+    // Core count changed (hotplug): the old baseline is meaningless across
+    // the change. Re-baseline to the new core set and emit NaN for this tick
+    // (usage/per-core stay absent) so the value does NOT freeze at the last
+    // pre-change reading; the next tick diffs the new baseline normally.
+    _prev = _cur;
+    out.cpu.usage_pct.reset();
+    out.cpu.per_core_pct.resize(_cur.size() - 1);
+    for (auto& pc : out.cpu.per_core_pct) pc.reset();
   }
 
   // Frequency: prefer per-core scaling_cur_freq (kHz); fall back to cpuinfo.

@@ -69,8 +69,10 @@ class Collector {
   // device names) and initialize the store. Runs once, after warm-up.
   void init_series();
   void record(const Snapshot& s);
-  // Replace the RATE-based fields of a post-suspend tick with NaN (a gap in
-  // the graph), keeping their nullopt-ness when the source reported nothing.
+  // Replace the RATE-based fields of a tick with NaN (a gap in the graph),
+  // keeping their nullopt-ness when the source reported nothing. Used after a
+  // suspend/clock jump AND for the first live tick / a sub-half-interval dt
+  // (see sample()), whose rate deltas are not a steady-state measurement.
   void blank_gap_rates(Snapshot& s);
   // Lift an active integrated AMD GPU's PPT into CPU package power when no
   // counter-based source won (see collector.cpp for why).
@@ -94,6 +96,13 @@ class Collector {
   long long _interval_ms = 1000;
   long long _gap_threshold_ms = -1;  // -1 = 5 x the interval
   std::optional<std::chrono::time_point<SuspendClock>> _last_suspend;
+  // First LIVE tick: its counter baselines were taken at probe_all(), BEFORE
+  // the UI finished initializing, so its rate deltas include GETH's own
+  // startup work. Blank that one tick's rates, then clear the flag.
+  bool _first_real = false;
+  // Steady-clock time of the last sample; the dt since it guards against a
+  // rate computed over a window shorter than half an interval.
+  std::optional<TimePoint> _last_sample_time;
 };
 
 }  // namespace geth

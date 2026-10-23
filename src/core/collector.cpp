@@ -29,6 +29,12 @@ void Collector::probe_all(bool warm_up) {
   // machine where RAPL is unreadable and only the integrated GPU's PPT exists.
   apply_apu_package_power(_snap);
   init_series();
+  // The next sample() is the first LIVE tick. Its counter baselines are this
+  // warm-up's, taken BEFORE the caller finished initializing (the UI, the
+  // hardware page, ...), so its rate deltas would include GETH's own startup
+  // work: blank that one tick's rates, then clear the flag.
+  _first_real = true;
+  _last_sample_time = _snap.time;
 }
 
 bool Collector::any_available() const {
@@ -43,6 +49,15 @@ const Snapshot& Collector::sample() {
   // otherwise sample at the real steady clock.
   const TimePoint now = _fixed_time ? *_fixed_time : Clock::now();
   _fixed_time.reset();
+  // dt since the last sample: on the first live tick this is the init window
+  // (probe_all's baseline -> now), which includes GETH's own startup work.
+  // Capture whether a previous sample existed BEFORE overwriting the pointer
+  // below: the short-dt guard needs it (the very first sample has no dt).
+  const bool had_prev = _last_sample_time.has_value();
+  const double dt_s = _last_sample_time
+      ? std::chrono::duration<double>(now - *_last_sample_time).count()
+      : 0.0;
+  _last_sample_time = now;
   _snap.time = now;
 
   // Suspend/clock jump: CLOCK_BOOTTIME keeps counting while the machine is
@@ -57,18 +72,29 @@ const Snapshot& Collector::sample() {
                    (susp - *_last_suspend) > std::chrono::milliseconds(thr);
   _last_suspend = susp;
 
-  // The reused snapshot still holds the previous tick's CPU package power
-  // (or, on the first live tick, the warm-up sample's). CpuPowerSource
-  // writes the field only when its backend produced a value — on an APU PPT
-  // machine it never does — so clear it here, every tick, before the sources
-  // run. Without this, apply_apu_package_power's "a counter source already
-  // won" guard below would see the stale value and freeze package power at
-  // the first sample forever (the GPU side does this via GpuSample::reset()).
-  _snap.cpu.package_power_w.reset();
-  _snap.cpu.package_power_source.reset();
+  // Reset every per-tick value BEFORE the sources run, so a source that
+  // fails to read a metric this tick leaves it ABSENT (a NaN gap in the
+  // graph, an empty CSV cell) instead of repeating the previous tick's
+  // value. This covers the sources that don't self-reset (CPU, memory) and
+  // makes the guarantee uniform (GPU/disk/net already self-reset, now
+  // redundantly). It also clears the package-power field that
+  // apply_apu_package_power's "a counter source already won" guard relies on.
+  _snap.reset_values();
 
   for (auto& src : _sources) src->sample(_snap);
   apply_apu_package_power(_snap);
+  // The first live tick's baseline was taken at probe_all(), before the UI
+  // finished initializing, so its rate deltas include GETH's startup work;
+  // and any rate computed over a window shorter than half an interval is not
+  // a steady-state measurement. Blank both — the sources still advanced
+  // their baselines, so the next tick is clean.
+  // short_dt only applies when there WAS a previous sample (had_prev, captured
+  // before _last_sample_time is overwritten above): a Collector that never
+  // warm-up (the APU-PPT/RAPL tests) has no dt to measure on its very first
+  // sample(), so that one is not blanked.
+  const bool short_dt = had_prev && dt_s < 0.5 * _interval_ms / 1000.0;
+  if (_first_real || short_dt) blank_gap_rates(_snap);
+  _first_real = false;
   if (gap) blank_gap_rates(_snap);
   _store.begin_tick(_snap.time);
   record(_snap);

@@ -1,0 +1,88 @@
+CPU      usage n/a       freq 4.04 GHz / max 4.28 GHz   temp 60.6 °C   power 3.0 W (APU PPT)
+Memory   used 5.36 GiB / 22.80 GiB   swap 14.75 MiB / 22.35 GiB
+GPU gpu0 NVIDIA GeForce RTX 3050 Laptop GPU   active   [0000:01:00.0]
+         usage 0.0 %   VRAM 312.81 MiB/4.00 GiB   clocks 210 MHz / 405 MHz   6.4 W   48.0 °C
+GPU gpu1 Cezanne [Radeon Vega Series / Radeon Vega Mobile Series]   active   [0000:07:00.0, gpu_metrics format 2 (APU)]
+         usage 0.0 %   VRAM 421.05 MiB/512.00 MiB  GTT 99.02 MiB/11.40 GiB  clocks 400 MHz / 1.60 GHz   n/a   54.0 °C
+Disk     nvme1n1  R n/a  W n/a    nvme0n1  R n/a  W n/a     | total R n/a         W n/a
+Network  eno1  rx n/a  tx n/a    wlo1  rx n/a  tx n/a     | total rx n/a        tx n/a
+CPU      usage 1.7 %     freq 3.80 GHz / max 4.28 GHz   temp 60.2 °C   power 2.0 W (APU PPT)
+Memory   used 5.36 GiB / 22.80 GiB   swap 14.75 MiB / 22.35 GiB
+GPU gpu0 NVIDIA GeForce RTX 3050 Laptop GPU   active   [0000:01:00.0]
+         usage 0.0 %   VRAM 312.81 MiB/4.00 GiB   clocks 210 MHz / 405 MHz   6.4 W   48.0 °C
+GPU gpu1 Cezanne [Radeon Vega Series / Radeon Vega Mobile Series]   active   [0000:07:00.0, gpu_metrics format 2 (APU)]
+         usage 0.0 %   VRAM 421.05 MiB/512.00 MiB  GTT 99.02 MiB/11.40 GiB  clocks 400 MHz / 1.60 GHz   n/a   54.0 °C
+Disk     nvme1n1  R 0 B/s  W 0 B/s    nvme0n1  R 0 B/s  W 0 B/s     | total R 0 B/s       W 0 B/s
+Network  eno1  rx 25.21 KiB/s  tx 312.59 KiB/s    wlo1  rx 3.37 KiB/s  tx 78.52 KiB/s     | total rx 28.58 KiB/s tx 391.11 KiB/s
+CPU      usage 1.2 %     freq 3.94 GHz / max 4.28 GHz   temp 59.9 °C   power 2.0 W (APU PPT)
+Memory   used 5.36 GiB / 22.80 GiB   swap 14.75 MiB / 22.35 GiB
+GPU gpu0 NVIDIA GeForce RTX 3050 Laptop GPU   active   [0000:01:00.0]
+         usage 0.0 %   VRAM 312.81 MiB/4.00 GiB   clocks 210 MHz / 405 MHz   6.4 W   48.0 °C
+GPU gpu1 Cezanne [Radeon Vega Series / Radeon Vega Mobile Series]   active   [0000:07:00.0, gpu_metrics format 2 (APU)]
+         usage 0.0 %   VRAM 421.05 MiB/512.00 MiB  GTT 99.02 MiB/11.40 GiB  clocks 400 MHz / 1.60 GHz   n/a   53.0 °C
+Disk     nvme1n1  R 0 B/s  W 0 B/s    nvme0n1  R 0 B/s  W 0 B/s     | total R 0 B/s       W 0 B/s
+Network  eno1  rx 16.63 KiB/s  tx 2.03 KiB/s    wlo1  rx 2.09 KiB/s  tx 32.19 KiB/s     | total rx 18.72 KiB/s tx 34.22 KiB/s
+CPU      usage 1.5 %     freq 3.91 GHz / max 4.28 GHz   temp 59.5 °C   power 2.0 W (APU PPT)
+Memory   used 5.36 GiB / 22.80 GiB   swap 14.75 MiB / 22.35 GiB
+GPU gpu0 NVIDIA GeForce RTX 3050 Laptop GPU   active   [0000:01:00.0]
+         usage 0.0 %   VRAM 312.81 MiB/4.00 GiB   clocks 210 MHz / 405 MHz   6.4 W   48.0 °C
+GPU gpu1 Cezanne [Radeon Vega Series / Radeon Vega Mobile Series]   active   [0000:07:00.0, gpu_metrics format 2 (APU)]
+         usage 0.0 %   VRAM 421.05 MiB/512.00 MiB  GTT 99.02 MiB/11.40 GiB  clocks 400 MHz / 1.60 GHz   n/a   53.0 °C
+Disk     nvme1n1  R 0 B/s  W 0 B/s    nvme0n1  R 0 B/s  W 0 B/s     | total R 0 B/s       W 0 B/s
+Network  eno1  rx 9.56 KiB/s  tx 1.89 KiB/s    wlo1  rx 1.87 KiB/s  tx 23.79 KiB/s     | total rx 11.44 KiB/s tx 25.68 KiB/s
+CPU      usage 1.3 %     freq 3.87 GHz / max 4.28 GHz   temp 59.0 °C   power 4.0 W (APU PPT)
+Memory   used 5.36 GiB / 22.80 GiB   swap 14.75 MiB / 22.35 GiB
+GPU gpu0 NVIDIA GeForce RTX 3050 Laptop GPU   active   [0000:01:00.0]
+         usage 0.0 %   VRAM 312.81 MiB/4.00 GiB   clocks 210 MHz / 405 MHz   6.4 W   48.0 °C
+GPU gpu1 Cezanne [Radeon Vega Series / Radeon Vega Mobile Series]   active   [0000:07:00.0, gpu_metrics format 2 (APU)]
+         usage 0.0 %   VRAM 421.05 MiB/512.00 MiB  GTT 99.02 MiB/11.40 GiB  clocks 400 MHz / 1.60 GHz   n/a   53.0 °C
+Disk     nvme1n1  R 0 B/s  W 0 B/s    nvme0n1  R 0 B/s  W 0 B/s     | total R 0 B/s       W 0 B/s
+Network  eno1  rx 12.99 KiB/s  tx 2.30 KiB/s    wlo1  rx 1.14 KiB/s  tx 28.00 KiB/s     | total rx 14.13 KiB/s tx 30.30 KiB/s
+CPU      usage 1.4 %     freq 4.03 GHz / max 4.28 GHz   temp 58.8 °C   power 3.0 W (APU PPT)
+Memory   used 5.37 GiB / 22.80 GiB   swap 14.75 MiB / 22.35 GiB
+GPU gpu0 NVIDIA GeForce RTX 3050 Laptop GPU   active   [0000:01:00.0]
+         usage 0.0 %   VRAM 312.81 MiB/4.00 GiB   clocks 210 MHz / 405 MHz   6.4 W   48.0 °C
+GPU gpu1 Cezanne [Radeon Vega Series / Radeon Vega Mobile Series]   active   [0000:07:00.0, gpu_metrics format 2 (APU)]
+         usage 0.0 %   VRAM 421.05 MiB/512.00 MiB  GTT 99.02 MiB/11.40 GiB  clocks 400 MHz / 1.60 GHz   n/a   53.0 °C
+Disk     nvme1n1  R 0 B/s  W 15.98 KiB/s    nvme0n1  R 0 B/s  W 0 B/s     | total R 0 B/s       W 15.98 KiB/s
+Network  eno1  rx 10.08 KiB/s  tx 2.07 KiB/s    wlo1  rx 1.71 KiB/s  tx 21.83 KiB/s     | total rx 11.79 KiB/s tx 23.90 KiB/s
+CPU      usage 1.5 %     freq 3.62 GHz / max 4.28 GHz   temp 58.5 °C   power 2.0 W (APU PPT)
+Memory   used 5.37 GiB / 22.80 GiB   swap 14.75 MiB / 22.35 GiB
+GPU gpu0 NVIDIA GeForce RTX 3050 Laptop GPU   active   [0000:01:00.0]
+         usage 0.0 %   VRAM 312.81 MiB/4.00 GiB   clocks 210 MHz / 405 MHz   6.4 W   48.0 °C
+GPU gpu1 Cezanne [Radeon Vega Series / Radeon Vega Mobile Series]   active   [0000:07:00.0, gpu_metrics format 2 (APU)]
+         usage 0.0 %   VRAM 421.05 MiB/512.00 MiB  GTT 99.02 MiB/11.40 GiB  clocks 400 MHz / 1.60 GHz   n/a   53.0 °C
+Disk     nvme1n1  R 0 B/s  W 0 B/s    nvme0n1  R 0 B/s  W 0 B/s     | total R 0 B/s       W 0 B/s
+Network  eno1  rx 14.02 KiB/s  tx 5.49 KiB/s    wlo1  rx 5.04 KiB/s  tx 31.07 KiB/s     | total rx 19.06 KiB/s tx 36.56 KiB/s
+CPU      usage 1.2 %     freq 3.96 GHz / max 4.28 GHz   temp 58.2 °C   power 3.0 W (APU PPT)
+Memory   used 5.37 GiB / 22.80 GiB   swap 14.75 MiB / 22.35 GiB
+GPU gpu0 NVIDIA GeForce RTX 3050 Laptop GPU   active   [0000:01:00.0]
+         usage 0.0 %   VRAM 312.81 MiB/4.00 GiB   clocks 210 MHz / 405 MHz   6.4 W   48.0 °C
+GPU gpu1 Cezanne [Radeon Vega Series / Radeon Vega Mobile Series]   active   [0000:07:00.0, gpu_metrics format 2 (APU)]
+         usage 0.0 %   VRAM 421.05 MiB/512.00 MiB  GTT 99.02 MiB/11.40 GiB  clocks 400 MHz / 1.60 GHz   n/a   53.0 °C
+Disk     nvme1n1  R 0 B/s  W 0 B/s    nvme0n1  R 0 B/s  W 0 B/s     | total R 0 B/s       W 0 B/s
+Network  eno1  rx 18.38 KiB/s  tx 2.56 KiB/s    wlo1  rx 2.01 KiB/s  tx 35.44 KiB/s     | total rx 20.40 KiB/s tx 38.00 KiB/s
+CPU      usage 1.4 %     freq 3.84 GHz / max 4.28 GHz   temp 58.0 °C   power 3.0 W (APU PPT)
+Memory   used 5.37 GiB / 22.80 GiB   swap 14.75 MiB / 22.35 GiB
+GPU gpu0 NVIDIA GeForce RTX 3050 Laptop GPU   active   [0000:01:00.0]
+         usage 0.0 %   VRAM 312.81 MiB/4.00 GiB   clocks 210 MHz / 405 MHz   6.4 W   48.0 °C
+GPU gpu1 Cezanne [Radeon Vega Series / Radeon Vega Mobile Series]   active   [0000:07:00.0, gpu_metrics format 2 (APU)]
+         usage 0.0 %   VRAM 421.05 MiB/512.00 MiB  GTT 99.02 MiB/11.40 GiB  clocks 400 MHz / 1.60 GHz   n/a   53.0 °C
+Disk     nvme1n1  R 0 B/s  W 31.96 KiB/s    nvme0n1  R 0 B/s  W 0 B/s     | total R 0 B/s       W 31.96 KiB/s
+Network  eno1  rx 9.71 KiB/s  tx 1.93 KiB/s    wlo1  rx 1.93 KiB/s  tx 21.92 KiB/s     | total rx 11.64 KiB/s tx 23.85 KiB/s
+CPU      usage 1.4 %     freq 3.87 GHz / max 4.28 GHz   temp 57.9 °C   power 2.0 W (APU PPT)
+Memory   used 5.37 GiB / 22.80 GiB   swap 14.75 MiB / 22.35 GiB
+GPU gpu0 NVIDIA GeForce RTX 3050 Laptop GPU   active   [0000:01:00.0]
+         usage 0.0 %   VRAM 312.81 MiB/4.00 GiB   clocks 210 MHz / 405 MHz   6.4 W   48.0 °C
+GPU gpu1 Cezanne [Radeon Vega Series / Radeon Vega Mobile Series]   active   [0000:07:00.0, gpu_metrics format 2 (APU)]
+         usage 0.0 %   VRAM 421.05 MiB/512.00 MiB  GTT 99.02 MiB/11.40 GiB  clocks 400 MHz / 1.60 GHz   n/a   54.0 °C
+Disk     nvme1n1  R 0 B/s  W 0 B/s    nvme0n1  R 0 B/s  W 0 B/s     | total R 0 B/s       W 0 B/s
+Network  eno1  rx 12.37 KiB/s  tx 2.00 KiB/s    wlo1  rx 1.62 KiB/s  tx 29.94 KiB/s     | total rx 13.99 KiB/s tx 31.95 KiB/s
+CPU      usage 1.6 %     freq 4.03 GHz / max 4.28 GHz   temp 57.6 °C   power 3.0 W (APU PPT)
+Memory   used 5.37 GiB / 22.80 GiB   swap 14.75 MiB / 22.35 GiB
+GPU gpu0 NVIDIA GeForce RTX 3050 Laptop GPU   active   [0000:01:00.0]
+         usage 0.0 %   VRAM 312.81 MiB/4.00 GiB   clocks 210 MHz / 405 MHz   6.3 W   48.0 °C
+GPU gpu1 Cezanne [Radeon Vega Series / Radeon Vega Mobile Series]   active   [0000:07:00.0, gpu_metrics format 2 (APU)]
+         usage 0.0 %   VRAM 421.05 MiB/512.00 MiB  GTT 99.02 MiB/11.40 GiB  clocks 400 MHz / 400 MHz   n/a   53.0 °C
+Disk     nvme1n1  R 0 B/s  W 0 B/s    nvme0n1  R 0 B/s  W 0 B/s     | total R 0 B/s       W 0 B/s
+Network  eno1  rx 123.10 KiB/s  tx 3.63 KiB/s    wlo1  rx 3.28 KiB/s  tx 136.34 KiB/s     | total rx 126.37 KiB/s tx 139.97 KiB/s

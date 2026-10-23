@@ -2,6 +2,36 @@
 
 All notable changes to GETH. The format follows the five-phase build plan.
 
+## 1.5.2 — Graph accuracy audit: short-history placement, first-tick and rate handling (2026-10-23)
+
+A systematic audit of the graph data path (source → store → window → decimate
+→ render); each fix is confirmed by a failing-then-passing test:
+
+- **A short history no longer stretches across the whole window.** The text
+  and pixel renderers clamped the x-axis to the data's span, so a few seconds
+  of history after startup filled the full width. The window is now fixed
+  (the user's `graph_window`), newest sample rightmost, and the empty
+  pre-history sits at the left edge in all three renderers (area, steps,
+  pixels). This was the reported bug: a `steps` chart on an idle machine
+  showed a full width of descending steps right after startup.
+- **The first live tick of every rate-based metric is blanked** (its baseline
+  predates init, so the rate would spike) — CPU usage, network, disk, power
+  and every counter now start as a gap, not a false spike.
+- **No sample is taken over a dt < 0.5× the interval** (a duplicate tick), so
+  a rate over a near-zero dt can't blow up.
+- **`value_at` never extrapolates** before the first sample (a bounded
+  half-cell resolve, then a gap) — no startup staircase.
+- **Steps bucketing is newest-inclusive** (the newest sample lands in the
+  rightmost column, not interpolated), and `decimate` keeps the max finite
+  value per column (a single-sample spike survives).
+- **Suspend / clock-jump gaps** break the line in all modes; steps restarts
+  with a flat `─`, never a corner from nothing.
+
+New: `--demo=pattern`, a deterministic synthetic source (CPU square wave, GPU
+ramp, two equal-temperature series, a periodic 5 s NaN gap) used by the tests
+for exact column/row assertions in all three renderers, including right after
+startup.
+
 ## 1.5.1 — CSV column names that make sense outside the panel (2026-10-22)
 
 Every loggable metric now carries an **explicit column name** of the form

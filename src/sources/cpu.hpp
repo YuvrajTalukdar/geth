@@ -68,6 +68,15 @@ class CpuSource : public Source {
   SourceStatus probe() override;
   void sample(Snapshot& out) override;
 
+  // Test seam: make sample() parse this /proc/stat text instead of reading
+  // the real file. Lets the core-count-change test simulate hotplug (a
+  // changing number of cpuN lines), which can't happen for real in a test.
+  // Call before probe_all() so the warm-up baseline uses it too.
+  void set_test_stat(std::string text) {
+    _test_stat = std::move(text);
+    _test_stat_on = true;
+  }
+
  private:
   std::size_t read_frequency();  // fills _mhz, returns count
 
@@ -78,6 +87,8 @@ class CpuSource : public Source {
   std::vector<CpuTimes> _cur;      // this tick's parse target (capacity kept)
   std::vector<double> _mhz;        // frequency scratch (capacity kept)
   bool _sized = false;             // first sample done: containers sized once
+  std::string _test_stat;          // test seam (see set_test_stat)
+  bool _test_stat_on = false;
 };
 
 }  // namespace geth

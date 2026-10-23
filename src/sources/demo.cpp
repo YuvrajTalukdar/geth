@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace geth {
 
@@ -151,6 +152,58 @@ void DemoSource::sample(Snapshot& out) {
   wlo1.tx_bytes_per_s = (0.3 + 0.4 * std::abs(wave(t, 41, 0.9))) * 1048576.0;
   out.net.total_rx_bytes_per_s = *eno1.rx_bytes_per_s + *wlo1.rx_bytes_per_s;
   out.net.total_tx_bytes_per_s = *eno1.tx_bytes_per_s + *wlo1.tx_bytes_per_s;
+}
+
+SourceStatus PatternSource::probe() {
+  SourceStatus st;
+  st.description = name();
+  st.available = true;
+  st.detail = "deterministic pattern; no hardware is read";
+  return st;
+}
+
+void PatternSource::sample(Snapshot& out) {
+  // Follow the collector's virtual clock, like DemoSource (the --render-frame
+  // demo warm-up stamps back-to-back samples interval_ms apart; the pattern
+  // below must advance with that clock). A direct sample() (tests) falls back
+  // to real time.
+  const TimePoint now = out.time.time_since_epoch().count() != 0
+                            ? out.time
+                            : Clock::now();
+  if (!_started) {
+    _t0 = now;
+    _started = true;
+  }
+  const double t = std::chrono::duration<double>(now - _t0).count();
+  out.time = now;
+
+  // One-time sizing of the reused Snapshot: a single discrete GPU. No PPT, no
+  // integrated flag, so the APU-PPT package-power lift never fires here.
+  if (out.gpus.size() != 1) {
+    out.gpus.resize(1);
+    GpuSample& g = out.gpus[0];
+    g.vendor = GpuVendor::kNvidia;
+    g.name = "Pattern GPU";
+    g.pci_bus_id = "0000:01:00.0";
+    g.boot_vga = false;
+    g.is_integrated = false;
+    g.vram_total_bytes = 8.0 * kGiB;
+  }
+
+  // CPU usage: 0% on [0,10), 100% on [10,20), period 20 s — with a 5 s NaN gap
+  // on [40,45) of every 45 s cycle (the suspend-gap line-break case).
+  double cpu = (std::fmod(t, 20.0) >= 10.0) ? 100.0 : 0.0;
+  if (std::fmod(t, 45.0) >= 40.0)
+    cpu = std::numeric_limits<double>::quiet_NaN();
+  out.cpu.usage_pct = cpu;
+
+  // GPU usage: linear ramp 0->100% over 60 s (sawtooth).
+  out.gpus[0].reset();
+  out.gpus[0].usage_pct = (std::fmod(t, 60.0) / 60.0) * 100.0;
+
+  // Two temperature series at EQUAL values (overlap test): CPU and GPU both 50 C.
+  out.cpu.temp_c = 50.0;
+  out.gpus[0].temp_c = 50.0;
 }
 
 }  // namespace geth

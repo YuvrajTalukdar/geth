@@ -158,6 +158,41 @@ struct Snapshot {
   std::vector<GpuSample> gpus;
   DiskSample disk;
   NetSample net;
+
+  // Clears every per-tick VALUE field to nullopt, keeping container sizes and
+  // string identity (id/name/bus ids, vram_total) — allocation-free, so the
+  // reused Snapshot never regrows. Called once at the start of every live
+  // tick: a source that FAILS to read a metric this tick (e.g. /proc/stat
+  // momentarily unreadable) then leaves it ABSENT (a NaN gap in the graph, an
+  // empty CSV cell) instead of silently repeating the previous tick's value.
+  // The per-source resets that already exist (GPU, disk, net) become
+  // redundant but harmless; this makes the guarantee uniform across all.
+  void reset_values() {
+    cpu.usage_pct.reset();
+    for (auto& pc : cpu.per_core_pct) pc.reset();
+    cpu.freq_avg_mhz.reset();
+    cpu.freq_max_mhz.reset();
+    cpu.temp_c.reset();
+    cpu.package_power_w.reset();
+    cpu.package_power_source.reset();
+    mem.ram_total_bytes.reset();
+    mem.ram_used_bytes.reset();
+    mem.swap_total_bytes.reset();
+    mem.swap_used_bytes.reset();
+    for (auto& g : gpus) g.reset();
+    for (auto& d : disk.devices) {
+      d.read_bytes_per_s.reset();
+      d.write_bytes_per_s.reset();
+    }
+    disk.total_read_bytes_per_s.reset();
+    disk.total_write_bytes_per_s.reset();
+    for (auto& n : net.interfaces) {
+      n.rx_bytes_per_s.reset();
+      n.tx_bytes_per_s.reset();
+    }
+    net.total_rx_bytes_per_s.reset();
+    net.total_tx_bytes_per_s.reset();
+  }
 };
 
 constexpr const char* to_string(GpuVendor v) {

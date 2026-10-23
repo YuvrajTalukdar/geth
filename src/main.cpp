@@ -54,6 +54,7 @@ struct Options {
   bool dump = false;  // text samples; the UI is the default when nothing is set
   bool json = false;
   bool demo = false;
+  bool demo_pattern = false;  // --demo=pattern: the deterministic pattern source
   long long interval_ms = 1000;  // sampling interval in milliseconds
   bool interval_explicit = false;  // --interval was passed; beats the config
   unsigned long long count = 0;  // 0 = until Ctrl-C
@@ -93,6 +94,8 @@ void print_help() {
       "  --dump            Print human-readable samples\n"
       "  --json            Print samples as JSON (one object per sample)\n"
       "  --demo            Use synthetic data; no hardware is accessed\n"
+      "  --demo=pattern    Use the deterministic pattern (CPU 0/100 square wave,\n"
+      "                    GPU 0->100 ramp, equal CPU/GPU temps, periodic NaN gap)\n"
       "  --interval <ms>   Sampling interval in milliseconds (default 1000, min 10)\n"
       "  --count <n>       Stop after n samples (default: run until Ctrl-C)\n"
       "  --trace <id>      Per-tick stage trace of one series (raw/parse/lift/\n"
@@ -167,7 +170,10 @@ int parse_args(int argc, char** argv, Options& o) {
     } else if (a == "--json") {
       o.json = true;
     } else if (a == "--demo") {
+      // The parser splits on '=' above, so --demo=pattern arrives as
+      // a == "--demo" with val == "pattern" (a plain --demo leaves val empty).
       o.demo = true;
+      o.demo_pattern = (val == "pattern");
     } else if (a == "--interval") {
       // Milliseconds (spec): default 1000. --interval 10 == 10 ms.
       unsigned long long ms = 0;
@@ -855,7 +861,10 @@ int main(int argc, char** argv) {
   std::unique_ptr<GpuRegistrySource> gpu_registry;
   GpuRegistrySource* registry = nullptr;
   if (opts.demo) {
-    collector.add(std::make_unique<DemoSource>());
+    std::unique_ptr<Source> src = opts.demo_pattern
+        ? std::unique_ptr<Source>(std::make_unique<PatternSource>())
+        : std::unique_ptr<Source>(std::make_unique<DemoSource>());
+    collector.add(std::move(src));
   } else {
     collector.add(std::make_unique<CpuSource>());
     collector.add(std::make_unique<CpuTempSource>());

@@ -1,0 +1,29 @@
+GETH v1.5.2 — /proc/stat delta+dt comparison vs an independent 1 Hz sampler
+============================================================================
+Method: an independent Python 1 Hz sampler (busy-jiffies / total-jiffies over
+the measured dt, the same formula GETH's CpuSource uses) ran in parallel with
+`geth --dump --count 11` on the real, idle machine (load avg 0.25). Row k is
+the k-th second. GETH's tick 1 is its first LIVE tick (its baseline predates
+init) and is blanked per finding 7, so it prints "n/a".
+
+ s | indep% | dtotal | didle |  geth
+----------------------------------------------
+ 1 |   2.64 |  1214 |  1182 |  n/a     <- GETH tick 1: blanked (finding 7)
+ 2 |   1.33 |  1200 |  1184 |  1.7 %
+ 3 |   1.33 |  1199 |  1183 |  1.2 %
+ 4 |   1.42 |  1197 |  1180 |  1.5 %
+ 5 |   1.57 |  1213 |  1194 |  1.3 %
+ 6 |   1.42 |  1201 |  1184 |  1.4 %
+ 7 |   1.09 |  1195 |  1182 |  1.5 %
+ 8 |   1.42 |  1199 |  1182 |  1.2 %
+ 9 |   1.41 |  1202 |  1185 |  1.4 %
+10 |   1.41 |  1204 |  1187 |  1.4 %
+    |        |      |       |  1.6 %    (geth tick 11, sampler stopped)
+
+Per-second |geth - indep| (ticks 2..10): 0.37 0.13 0.08 0.27 0.02 0.41 0.22
+0.01 0.01 -> MAX 0.41 points.
+
+Conclusion: GETH's per-tick CPU usage matches an independent 1 Hz /proc/stat
+sampler to within 0.41 points on an idle machine (tolerance was +/-3 points),
+and its first live tick is correctly blanked (n/a) rather than reporting a
+startup-work spike. Raw geth --dump output: review/geth_procstat_dump.txt.

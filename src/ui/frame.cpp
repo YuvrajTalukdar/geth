@@ -550,12 +550,17 @@ std::vector<double> step_column_values(const RawWindow& w, const Decimated& d,
   std::size_t si = 0;
   for (int c = 0; c < Wg; ++c) {
     const int64_t start = t0 + static_cast<int64_t>(c * col_dt);
-    const int64_t end = t0 + static_cast<int64_t>((c + 1) * col_dt);
+    const bool last = (c == Wg - 1);
+    // The last slice is INCLUSIVE at the window's right edge (t_end), so the
+    // newest sample — which sits exactly at t_end — lands in the rightmost
+    // column instead of falling out of an exclusive `t < end`.
+    const int64_t end =
+        last ? t_end : t0 + static_cast<int64_t>((c + 1) * col_dt);
     while (si < n && t[si] < start) ++si;  // skip samples before this slice
     std::size_t sj = si;
     double sum = 0.0;
     std::size_t cnt = 0;
-    while (sj < n && t[sj] < end) {
+    while (sj < n && (last ? t[sj] <= end : t[sj] < end)) {
       if (std::isfinite(v[sj])) { sum += v[sj]; ++cnt; }
       ++sj;
     }

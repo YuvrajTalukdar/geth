@@ -23,9 +23,14 @@ void load_live(RawWindow& w, std::vector<int64_t>& t, std::vector<float>& v,
   const std::size_t n = times->size();
   if (n == 0 || vals->size() != n) return;
   const int64_t t_end = times->at(n - 1);
-  const int64_t span = std::min<int64_t>(window_ns, t_end - times->at(0));
-  if (span <= 0) return;
-  const int64_t t_start = t_end - span;
+  // A FIXED window anchored at "now" (the newest sample): [t_end - window_ns,
+  // t_end]. Deliberately NOT clamped to the available data span — when the
+  // history is shorter than the window, the pre-history columns are EMPTY
+  // (the history hugs the right edge) rather than stretched across the full
+  // width. The renderers map columns over [t_start, t_start + span_ns], so
+  // this is what keeps the x-axis anchored at "now".
+  if (window_ns <= 0) return;
+  const int64_t t_start = t_end - window_ns;
   t.reserve(n);
   v.reserve(n);
   for (std::size_t i = 0; i < n; ++i) {
@@ -39,7 +44,7 @@ void load_live(RawWindow& w, std::vector<int64_t>& t, std::vector<float>& v,
   w.n = t.size();
   w.t_start = t_start;
   w.t_end = t_end;
-  w.span_ns = static_cast<double>(span);
+  w.span_ns = static_cast<double>(window_ns);
 }
 
 Decimated decimate(const RawWindow& w, int dot_cols) {
@@ -49,16 +54,41 @@ Decimated decimate(const RawWindow& w, int dot_cols) {
     return static_cast<int>(static_cast<double>(ti - w.t_start) / w.span_ns *
                             (dot_cols - 1));
   };
-  d.t.reserve(w.n);
-  d.v.reserve(w.n);
-  int prev = -1;
+  d.t.reserve(w.n + 1);
+  d.v.reserve(w.n + 1);
+  // Keep the strongest (max finite) value in each dot column, not just the
+  // first: a single-sample spike inside a dense column must survive to the
+  // line (a NaN never wins the column). The newest sample is always the
+  // line's endpoint (the window's right edge), so it is appended explicitly.
+  int cur = -1;
+  bool have = false;
+  int64_t best_t = 0;
+  float best_v = 0;
+  auto flush = [&]() {
+    if (have) {
+      d.t.push_back(best_t);
+      d.v.push_back(best_v);
+      have = false;
+    }
+  };
   for (std::size_t i = 0; i < w.n; ++i) {
     const int c = col(w.t[i]);
-    if (i == w.n - 1 || c != prev) {
-      d.t.push_back(w.t[i]);
-      d.v.push_back(w.v[i]);
-      prev = c;
+    if (c != cur) {
+      flush();
+      cur = c;
+      have = false;
     }
+    const float v = w.v[i];
+    if (!have || (!std::isnan(v) && (std::isnan(best_v) || v > best_v))) {
+      best_t = w.t[i];
+      best_v = v;
+      have = true;
+    }
+  }
+  flush();
+  if (d.t.empty() || d.t.back() != w.t[w.n - 1]) {
+    d.t.push_back(w.t[w.n - 1]);
+    d.v.push_back(w.v[w.n - 1]);
   }
   return d;
 }
@@ -66,11 +96,21 @@ Decimated decimate(const RawWindow& w, int dot_cols) {
 double value_at(const Decimated& d, double t) {
   const std::size_t n = d.t.size();
   if (n == 0) return std::nan("");
-  if (n == 1) return std::abs(t - (double)d.t[0]) < 1e3 ? d.v[0] : std::nan("");
+  // Tolerance = half the first sample interval (a lone sample has no interval
+  // to measure, so half a typical tick). A query inside the first sample's
+  // own half-cell clamps to that sample; anything further left is a GAP —
+  // this replaces the backward extrapolation that drew the startup staircase
+  // across every pre-history column. Symmetric with the right-edge guard.
+  const double tol =
+      (n >= 2) ? 0.5 * (static_cast<double>(d.t[1]) - static_cast<double>(d.t[0]))
+               : 0.5e9;
+  if (t < static_cast<double>(d.t[0]) - tol) return std::nan("");
+  if (t < static_cast<double>(d.t[0])) return d.v[0];  // left half-cell: clamp
+  if (n == 1) return d.v[0];
   std::size_t p = 0;
   while (p + 1 < n && t >= (double)d.t[p + 1]) ++p;
   if (p + 1 >= n)
-    return std::abs(t - (double)d.t[n - 1]) < 1e3 ? d.v[n - 1] : std::nan("");
+    return std::abs(t - (double)d.t[n - 1]) < tol ? d.v[n - 1] : std::nan("");
   const double t0 = d.t[p], t1 = d.t[p + 1];
   if (!std::isfinite(d.v[p]) || !std::isfinite(d.v[p + 1])) return std::nan("");
   if (t1 <= t0) return d.v[p + 1];

@@ -74,23 +74,32 @@ LineSamples sample_line(const Decimated& d, const RawWindow& w, int wpx,
   // Running index: the sampled times advance monotonically, so the
   // decimated pointer only moves forward (one pass, like value_at).
   std::size_t p = 0;
+  const double tol = (n >= 2) ? 0.5 * ((double)tt[1] - (double)tt[0]) : 0.5e9;
   for (int k = 0; k < n2; ++k) {
     const double t =
         w.t_start + w.span_ns * (n2 > 1 ? k / (double)(n2 - 1) : 1.0);
-    while (p + 1 < n && t >= (double)tt[p + 1]) ++p;
+    // Left edge: a gap beyond the first sample's half-cell, a clamp inside
+    // it — never the backward extrapolation (symmetric with value_at() and
+    // with the right edge below).
+    if (t < (double)tt[0] - tol) continue;
     double v;
-    if (n == 1)
-      v = std::abs(t - (double)tt[0]) < 1e3 ? vv[0] : std::nan("");
-    else if (p + 1 >= n)
-      v = std::abs(t - (double)tt[n - 1]) < 1e3 ? vv[n - 1] : std::nan("");
+    if (t < (double)tt[0])
+      v = vv[0];  // left half-cell: clamp to the first sample
+    else if (n == 1)
+      v = std::abs(t - (double)tt[0]) < tol ? vv[0] : std::nan("");
     else {
-      const double t0 = tt[p], t1 = tt[p + 1];
-      if (!std::isfinite(vv[p]) || !std::isfinite(vv[p + 1]))
-        v = std::nan("");
-      else if (t1 <= t0)
-        v = vv[p + 1];
-      else
-        v = vv[p] + ((t - t0) / (t1 - t0)) * (vv[p + 1] - vv[p]);
+      while (p + 1 < n && t >= (double)tt[p + 1]) ++p;
+      if (p + 1 >= n)
+        v = std::abs(t - (double)tt[n - 1]) < tol ? vv[n - 1] : std::nan("");
+      else {
+        const double t0 = tt[p], t1 = tt[p + 1];
+        if (!std::isfinite(vv[p]) || !std::isfinite(vv[p + 1]))
+          v = std::nan("");
+        else if (t1 <= t0)
+          v = vv[p + 1];
+        else
+          v = vv[p] + ((t - t0) / (t1 - t0)) * (vv[p + 1] - vv[p]);
+      }
     }
     if (!std::isfinite(v)) continue;
     out.has_data = true;

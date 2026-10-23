@@ -52,6 +52,13 @@ ForceTrueColorSupport kForceTrueColorSupport;
 // fixed 60 s window keeps their data geometry identical to before.
 constexpr int64_t kWinNs = 60LL * 1000000000LL;
 
+// The helpers below each record 60 one-second samples (t0+1s .. t0+60s), a
+// 59 s span. A window EQUAL to that span makes the fixed window
+// [t_end - 59s, t_end] exactly cover the data, so the graph is fully filled
+// with no pre-history gap and these tests exercise the RENDERER (not the
+// window anchoring, which the v152 load_live test covers on its own).
+constexpr int64_t kFillWinNs = 59LL * 1000000000LL;
+
 // A LayoutCache pointed at `page` (what the app does). render_frame takes the
 // cache by non-const reference, so each call site builds its own.
 ui::LayoutCache cache_for(const std::vector<ui::PanelSpec>& page) {
@@ -134,7 +141,13 @@ void render_ramp(bool gap, ftxui::Screen& screen, int color_index = 0,
   // Virtual clock, like the --render-frame demo warm-up: 60 samples, one
   // per second. The probe's throw-away sample stamps t0 at el = 0.
   TimePoint vnow = c.latest().time;
-  for (int i = 0; i < 60; ++i) {
+  // Discard the first live tick: the collector blanks it (its baseline
+  // predates init), so the rendered history starts at el = 2 and the window
+  // [t0+2s, t0+61s] is fully filled.
+  vnow += std::chrono::seconds(1);
+  c.set_sample_time(vnow);
+  c.sample();
+  for (int i = 1; i <= 60; ++i) {
     vnow += std::chrono::seconds(1);
     c.set_sample_time(vnow);
     c.sample();
@@ -156,7 +169,7 @@ void render_ramp(bool gap, ftxui::Screen& screen, int color_index = 0,
   chrome.pixels = pixels;
   ui::render_frame(screen, hw, page, c.store(), c.latest(), nullptr, state,
                    ui::Theme::cyberpunk_blue(), ui::ColorMode::TrueColor,
-                   /*paused=*/false, 1000, cache, 0, kWinNs, chrome);
+                   /*paused=*/false, 1000, cache, 0, kFillWinNs, chrome);
 }
 
 // A source that holds CPU usage at 0 % and spikes to 100 % for ONE sample in
@@ -199,11 +212,12 @@ void render_spike(ftxui::Screen& screen) {
   Collector c;
   c.add(std::make_unique<SpikeSource>());
   c.probe_all(/*warm_up=*/true);
-  // The probe stamped t0. Sixty one-second samples: t0+1s .. t0+60s. The
-  // window spans the whole history (load_live clamps the span to the
-  // available history, so the window must be FILLED — a few samples alone
-  // would be stretched across the graph). The spike samples land at t0+58s
-  // (0), t0+59s (100), t0+60s (0): dot columns ~247, ~252, 257.
+  // The probe stamped t0. Sixty one-second samples: t0+1s .. t0+60s, a 59 s
+  // span. The window is set to that same span (kFillWinNs), so the fixed
+  // window [t_end - 59s, t_end] exactly covers the data — the graph is fully
+  // filled with no pre-history gap, and the column geometry these
+  // assertions use is well-defined. The spike samples land at t0+58s (0),
+  // t0+59s (100), t0+60s (0): dot columns ~247, ~252, 257.
   TimePoint vnow = c.latest().time;
   for (int i = 1; i <= 60; ++i) {
     vnow += std::chrono::seconds(1);
@@ -235,7 +249,7 @@ void render_spike(ftxui::Screen& screen) {
   ui::LayoutCache cache = cache_for(page);
   ui::render_frame(screen, hw, page, c.store(), c.latest(), nullptr, state,
                    ui::Theme::cyberpunk_blue(), ui::ColorMode::TrueColor,
-                   /*paused=*/false, 1000, cache, 0, kWinNs);
+                   /*paused=*/false, 1000, cache, 0, kFillWinNs);
 }
 
 // A source that holds CPU usage at a constant 45 % of the 128-unit scale
@@ -269,6 +283,12 @@ void render_two_const(ftxui::Screen& screen) {
   c.add(std::make_unique<ConstSource>());
   c.probe_all(/*warm_up=*/true);
   TimePoint vnow = c.latest().time;
+  // Discard the first live tick: the collector blanks its rate values (the
+  // baseline predates init), so CPU (rate-based) would be NaN at the window's
+  // left edge. The window [t0+2s, t0+61s] then starts on the first clean tick.
+  vnow += std::chrono::seconds(1);
+  c.set_sample_time(vnow);
+  c.sample();
   for (int i = 1; i <= 60; ++i) {
     vnow += std::chrono::seconds(1);
     c.set_sample_time(vnow);
@@ -296,7 +316,7 @@ void render_two_const(ftxui::Screen& screen) {
   ui::LayoutCache cache = cache_for(page);
   ui::render_frame(screen, hw, page, c.store(), c.latest(), nullptr, state,
                    ui::Theme::cyberpunk_blue(), ui::ColorMode::TrueColor,
-                   /*paused=*/false, 1000, cache, 0, kWinNs);
+                   /*paused=*/false, 1000, cache, 0, kFillWinNs);
 }
 
 // The braille dot mask of the cell at dot-column cc, dot-row cy/4 (graph
@@ -870,12 +890,13 @@ TEST_CASE("braille: all eight dots is U+28FF, each single dot is distinct") {
 }
 
 TEST_CASE("area chart: a 0->100% ramp fills exact eighth heights, monotonic, gradient") {
-  // Single-series panel -> the area chart. The stored samples run el = 1..60 s
-  // (the probe sample is NOT recorded) with v(el) = min(100, 100el/59); the
-  // window spans the whole history (t0+1s .. t0+60s, span 59 s), so character
-  // column cc sits at el = 1 + 59cc/(Wg-1) and v(cc) = min(100,
-  // 100(128+59cc)/7552). The decimated line is EXACTLY that ramp (linear
-  // interpolation on a straight line), so the per-column heights are known.
+  // Single-series panel -> the area chart. The first live tick (el = 1) is
+  // discarded by the collector (its baseline predates init), so the stored
+  // samples run el = 2..61 s with v(el) = min(100, 100el/59); the window
+  // spans the whole history (t0+2s .. t0+61s, span 59 s), so character column
+  // cc sits at el = 2 + 59cc/(Wg-1) and v(cc) = min(100, 100(256+59cc)/7552).
+  // The decimated line is EXACTLY that ramp (linear interpolation on a
+  // straight line), so the per-column heights are known.
   const ui::Theme theme = ui::Theme::cyberpunk_blue();
   for (int i = 0; i < 6; ++i) {
     ftxui::Screen screen(138, 12);
@@ -883,7 +904,7 @@ TEST_CASE("area chart: a 0->100% ramp fills exact eighth heights, monotonic, gra
     const int gx = 8, gy = 2, Wg = 129, Hg = 7;
     int prev_top_b = -1;
     for (int cc = 0; cc < Wg; ++cc) {
-      const double v = std::min(100.0, 100.0 * (128 + 59 * cc) / 7552.0);
+      const double v = std::min(100.0, 100.0 * (256 + 59 * cc) / 7552.0);
       int h8 = std::lround(v / 100.0 * Hg * 8.0);
       h8 = std::clamp(h8, 0, Hg * 8);
       const int eighth = h8 % 8;
@@ -917,10 +938,10 @@ TEST_CASE("area chart: a NaN gap renders as empty columns, never 0") {
   ftxui::Screen screen(138, 12);
   render_ramp(/*gap=*/true, screen);
   const int gx = 8, gy = 2, Hg = 7;
-  // Gap el 25..35 s of the 59 s span; column cc sits at el = 1 + 59cc/128, so
-  // every column whose interpolation touches a NaN sample (cc 52..75) is
-  // empty. The interior 55..72 is asserted; data stands on both sides.
-  for (int cc = 55; cc <= 72; ++cc)
+  // Gap el 25..35 s of the 59 s span; column cc sits at el = 2 + 59cc/128, so
+  // every column whose interpolation touches a NaN sample (cc 50..73) is
+  // empty. The interior 55..71 is asserted; data stands on both sides.
+  for (int cc = 55; cc <= 71; ++cc)
     for (int cy = 0; cy < Hg; ++cy)
       CHECK_FALSE(is_area_glyph(screen.at(gx + cc, gy + cy)));
   for (int cc : {40, 90}) {
@@ -1612,3 +1633,231 @@ TEST_SUITE("apu_power_render") {
     CHECK(render_frame_text(fx).find("35.0 W") != std::string::npos);
   }
 }
+
+// ---------------------------------------------------------------------------
+// v1.5.2 — graph accuracy: the fixed window anchored at "now", no
+// extrapolation before the first sample, spike preservation in decimation,
+// and the newest sample landing in the rightmost column.
+// ---------------------------------------------------------------------------
+
+TEST_SUITE("v152_graph_accuracy") {
+
+TEST_CASE("value_at: no extrapolation before the first sample (a gap)") {
+  const int64_t S = 1000000000LL;
+  ui::Decimated d;
+  d.t = {10 * S, 20 * S};
+  d.v = {40.0f, 10.0f};  // descending: naive extrapolation climbs above 40
+  CHECK_EQ(ui::value_at(d, 10 * S), 40.0);  // the first sample, exact
+  CHECK_EQ(ui::value_at(d, 15 * S), 25.0);  // interpolated inside
+  // tol = half the first sample interval = (20-10)/2 = 5 s. Left of t = 5 s
+  // is beyond the first sample's own half-cell: a gap, not a staircase.
+  CHECK(std::isnan(ui::value_at(d, 0.0)));
+  CHECK(std::isnan(ui::value_at(d, 3.0 * S)));
+  // Within the left half-cell: finite (a bounded resolve), never a far run.
+  CHECK(std::isfinite(ui::value_at(d, 7.0 * S)));
+  // After the last sample: still a gap (the right edge, unchanged).
+  CHECK(std::isnan(ui::value_at(d, 30 * S)));
+}
+
+TEST_CASE("load_live: short history hugs the right edge, not the full width") {
+  const int64_t S = 1000000000LL;
+  SeriesStore store;
+  store.init({"cpu.usage"});
+  const TimePoint t0 = Clock::now();
+  for (int i = 0; i < 10; ++i) {  // 10 samples, a 9 s span (t0 .. t0+9s)
+    store.begin_tick(t0 + std::chrono::nanoseconds(i * S));
+    store.put("cpu.usage", 5.0);
+  }
+  ui::RawWindow w;
+  std::vector<int64_t> t;
+  std::vector<float> v;
+  load_live(w, t, v, store, "cpu.usage", 120 * S);  // a 2 m window
+  REQUIRE(w.valid());
+  REQUIRE(w.n == 10);
+  // The window is FIXED at 120 s — not clamped to the 9 s data span.
+  CHECK_EQ(w.span_ns, 120.0 * S);
+  CHECK_EQ(w.t_end - w.t_start, 120 * S);
+  // t_end = t0+9s, so t_start = t0+9s-120s = t0-111s: the first sample sits
+  // 111 s right of the window's left edge, the pre-history columns empty, the
+  // history hugging the right edge.
+  CHECK(w.t_start < w.t[0]);
+  CHECK_EQ(w.t[0] - w.t_start, 111 * S);
+}
+
+TEST_CASE("decimate: a single-sample spike inside a dense column survives") {
+  const int64_t S = 1000000000LL;
+  // 6 samples in the first of 3 dot columns [0, 300 s); one is a 100 spike
+  // amid 10s. Keeping only the first sample per column drops the spike.
+  std::vector<int64_t> t = {10 * S, 60 * S, 110 * S, 160 * S, 210 * S, 260 * S,
+                            400 * S, 500 * S};
+  std::vector<float> v = {10.0f, 10.0f, 100.0f, 10.0f, 10.0f, 10.0f, 20.0f, 30.0f};
+  ui::RawWindow w;
+  w.t = t.data(); w.v = v.data(); w.n = t.size();
+  w.t_start = 0; w.t_end = 600 * S; w.span_ns = 600.0 * S;
+  const auto d = ui::decimate(w, 3);
+  bool spike_kept = false;
+  for (std::size_t i = 0; i < d.t.size(); ++i)
+    if (d.t[i] < 300 * S && d.v[i] > 90.0f) spike_kept = true;
+  CHECK(spike_kept);
+}
+
+TEST_CASE("steps: the newest sample (at t_end) lands in the rightmost column") {
+  const int64_t S = 1000000000LL;
+  // Wg = 2, a 20 s window: column 1 = [10 s, 20 s]. The newest sample sits
+  // exactly at t_end = 20 s; an exclusive `t[sj] < end` drops it out of the
+  // last slice, leaving the rightmost column an interpolation.
+  std::vector<int64_t> t = {5 * S, 20 * S};
+  std::vector<float> v = {10.0f, 90.0f};
+  ui::RawWindow w;
+  w.t = t.data(); w.v = v.data(); w.n = t.size();
+  w.t_start = 0; w.t_end = 20 * S; w.span_ns = 20.0 * S;
+  ui::Decimated d;  // empty: the in-slice mean is used, value_at is not
+  const auto vals = ui::step_column_values(w, d, 2, 20 * S, 20 * S);
+  CHECK_EQ(vals[0], 10.0);  // the 5 s sample in column 0
+  CHECK_EQ(vals[1], 90.0);  // the newest sample in the rightmost column
+}
+
+}  // TEST_SUITE
+
+// v1.5.2 — the --demo=pattern source: a DETERMINISTIC signal (CPU square
+// wave, GPU ramp, two equal temps, a periodic 5 s NaN gap) for exact
+// column/row assertions through the full source -> store -> decimate ->
+// render path, in every mode, including right after startup (the reported
+// bug: a short history stretched across the whole window).
+
+// The row (0..Hg-1) where a box-drawing LINE glyph sits in column cc, or -1
+// if the column has no line (a gap or pre-history). Gridlines (U+2508) are
+// not lines. Reuses glyph_at (a cell draw_step_chart did not touch is "").
+int step_line_row(const ftxui::Screen& s, int gx, int gy, int cc, int Hg) {
+  for (int rr = 0; rr < Hg; ++rr) {
+    const std::string& ch = s.PixelAt(gx + cc, gy + rr).character;
+    if (ch == "\xE2\x94\x80" || ch == "\xE2\x94\x82" || ch == "\xE2\x94\x8C" ||
+        ch == "\xE2\x94\x90" || ch == "\xE2\x94\x94" || ch == "\xE2\x94\x98" ||
+        ch == "\xE2\x94\xBC" || ch == "\xE2\x94\xAC" || ch == "\xE2\x94\xB4")
+      return rr;
+  }
+  return -1;
+}
+
+// Renders the pattern's CPU square wave on a 138x12 screen. The probe stamps
+// el = 0; the first live tick (el = 1) is blanked (finding 7), so the recorded
+// history starts at el = 2. `warmup` live ticks are sampled at 1 s; the window
+// is FIXED at 59 s (kFillWinNs). The square wave (0 % on [0,10), 100 % on
+// [10,20), period 20 s; a 5 s NaN gap at [40,45) mod 45) as a function of el:
+//   warmup = 60: history el = 2..61 fills the whole window.
+//     0 % el 2..9 | 100 % el 10..19 | 0 % el 20..29 | 100 % el 30..39
+//     GAP el 40..44 | 0 % el 45..49 | 100 % el 50..59 | 0 % el 60..61 (newest)
+//   warmup = 10: history el = 2..11 hugs the right edge; the left ~5/6 of the
+//     window is pre-history (empty) — the reported bug.
+void render_pattern(bool steps, int warmup, ftxui::Screen& screen) {
+  Collector c;
+  c.add(std::make_unique<PatternSource>());
+  c.probe_all(/*warm_up=*/true);
+  TimePoint vnow = c.latest().time;  // the probe stamp, el = 0
+  vnow += std::chrono::seconds(1);
+  c.set_sample_time(vnow);
+  c.sample();  // el = 1: the first live tick, blanked (finding 7)
+  for (int i = 1; i <= warmup; ++i) {
+    vnow += std::chrono::seconds(1);
+    c.set_sample_time(vnow);
+    c.sample();  // el = 2 .. warmup+1
+  }
+  ui::Hardware hw;
+  hw.cpu_name = "Pattern CPU";
+  ui::PanelSpec p;
+  p.id = "cpu";
+  p.title = "CPU";
+  ui::SeriesSpec sr;
+  sr.id = "cpu.usage";
+  sr.label = "CPU";
+  sr.color_index = 0;
+  p.series.push_back(sr);
+  std::vector<ui::PanelSpec> page{p};
+  ui::FrameState state;
+  ui::LayoutCache cache = cache_for(page);
+  ui::FrameChrome chrome;
+  chrome.steps = steps;
+  ui::render_frame(screen, hw, page, c.store(), c.latest(), nullptr, state,
+                   ui::Theme::cyberpunk_blue(), ui::ColorMode::TrueColor,
+                   /*paused=*/false, 1000, cache, 0, kFillWinNs, chrome);
+}
+
+// A single CPU panel in a 138x12 frame: gx = 8, gy = 2, Wg = 129, Hg = 7
+// (the same rect every renderer uses — the mode changes the drawing, not it).
+constexpr int kPatGx = 8, kPatGy = 2, kPatWg = 129, kPatHg = 7;
+
+TEST_SUITE("v152_pattern") {
+
+TEST_CASE("pattern (steps): the CPU square wave sits at exact rows across the full width") {
+  ftxui::Screen screen(138, 12);
+  render_pattern(/*steps=*/true, /*warmup=*/60, screen);
+  // 100 % -> the top row (0); 0 % -> the bottom row (kPatHg-1 = 6). Each pick
+  // is safely inside a flat phase, far from a transition column (which would
+  // be a vertical segment, not a single row).
+  CHECK_EQ(step_line_row(screen, kPatGx, kPatGy, 5, kPatHg), kPatHg - 1);   // el ~4 :  0 %
+  CHECK_EQ(step_line_row(screen, kPatGx, kPatGy, 25, kPatHg), 0);           // el ~13: 100 %
+  CHECK_EQ(step_line_row(screen, kPatGx, kPatGy, 50, kPatHg), kPatHg - 1);  // el ~25: 0 %
+  CHECK_EQ(step_line_row(screen, kPatGx, kPatGy, 70, kPatHg), 0);           // el ~34: 100 %
+  CHECK_EQ(step_line_row(screen, kPatGx, kPatGy, 98, kPatHg), kPatHg - 1);  // el ~47: 0 % (after the gap)
+  CHECK_EQ(step_line_row(screen, kPatGx, kPatGy, 115, kPatHg), 0);          // el ~55: 100 %
+  CHECK_EQ(step_line_row(screen, kPatGx, kPatGy, 128, kPatHg), kPatHg - 1); // newest (right edge): 0 %
+}
+
+TEST_CASE("pattern (steps): the 5 s NaN gap breaks the line (empty columns)") {
+  ftxui::Screen screen(138, 12);
+  render_pattern(/*steps=*/true, /*warmup=*/60, screen);
+  // The gap (el 40..44) maps to columns ~83..92 — a run of EMPTY columns
+  // (no line), ~10 wide. Find a run of >=3 empty columns in 80..95, with a
+  // line somewhere to the left and somewhere to the right of the run.
+  bool found = false;
+  for (int cc = 80; cc + 3 <= 95; ++cc) {
+    const bool run = step_line_row(screen, kPatGx, kPatGy, cc, kPatHg) < 0 &&
+                     step_line_row(screen, kPatGx, kPatGy, cc + 1, kPatHg) < 0 &&
+                     step_line_row(screen, kPatGx, kPatGy, cc + 2, kPatHg) < 0;
+    if (!run) continue;
+    bool left = false, right = false;
+    for (int c = cc - 1; c >= 75; --c)
+      if (step_line_row(screen, kPatGx, kPatGy, c, kPatHg) >= 0) { left = true; break; }
+    for (int c = cc + 3; c <= 100; ++c)
+      if (step_line_row(screen, kPatGx, kPatGy, c, kPatHg) >= 0) { right = true; break; }
+    if (left && right) { found = true; break; }
+  }
+  CHECK(found);
+  // The chart is not uniformly empty: the far left (el ~2, a real 0 % phase)
+  // has a line.
+  CHECK(step_line_row(screen, kPatGx, kPatGy, 1, kPatHg) >= 0);
+}
+
+TEST_CASE("pattern (steps): right after startup the history hugs the right edge") {
+  ftxui::Screen screen(138, 12);
+  render_pattern(/*steps=*/true, /*warmup=*/10, screen);
+  // 10 s of history (el 2..11; el 1 blanked) in a fixed 59 s window: the left
+  // ~5/6 is pre-history (EMPTY), the line only in the rightmost ~1/6. The old
+  // (buggy) code stretched the short history across the FULL width.
+  int left = 0, right = 0;
+  for (int cc = 0; cc < kPatWg / 2; ++cc)
+    if (step_line_row(screen, kPatGx, kPatGy, cc, kPatHg) >= 0) ++left;
+  for (int cc = kPatWg / 2; cc < kPatWg; ++cc)
+    if (step_line_row(screen, kPatGx, kPatGy, cc, kPatHg) >= 0) ++right;
+  CHECK_EQ(left, 0);  // the reported bug: no line in the pre-history half
+  CHECK(right > 0);   // the line is at the right edge
+}
+
+TEST_CASE("pattern (text/area): 100 % fills to the top, 0 % does not, the gap is empty") {
+  ftxui::Screen screen(138, 12);
+  render_pattern(/*steps=*/false, /*warmup=*/60, screen);
+  // Single-series text panel -> the area chart (colored eighths, is_area_glyph).
+  // 100 % (column 25): the fill reaches the top row. 0 % (column 5): zero
+  // height, no fill. The gap (column 88): empty in every row.
+  CHECK(is_area_glyph(screen.at(kPatGx + 25, kPatGy)));  // 100 %: top row filled
+  bool any5 = false;
+  for (int cy = 0; cy < kPatHg; ++cy)
+    if (is_area_glyph(screen.at(kPatGx + 5, kPatGy + cy))) any5 = true;
+  CHECK_FALSE(any5);  // 0 %: no area glyph anywhere
+  bool gap_empty = true;
+  for (int cy = 0; cy < kPatHg; ++cy)
+    if (is_area_glyph(screen.at(kPatGx + 88, kPatGy + cy))) gap_empty = false;
+  CHECK(gap_empty);
+}
+
+}  // TEST_SUITE

@@ -1139,10 +1139,19 @@ TEST_SUITE("apu_package_power") {
     c.add(std::make_unique<CpuPowerSource>(root.string()));
     c.add(std::make_unique<FakeApuGpuSource>());  // 47 W PPT — must lose
     c.probe_all(/*warm_up=*/true);  // RAPL baseline set here
+    // The first live tick's RAPL sample is blanked (its baseline predates
+    // init, finding 7), and a 100 ms dt is under the default 0.5 s short-dt
+    // guard; keep the guard well below the 100 ms tick so clean ticks aren't
+    // blanked either.
+    c.set_interval_ms(100);
 
-    // Advance the RAPL counter by 1 mJ, ~100 ms later => ~10 W.
+    // Advance the RAPL counter by 1 mJ each tick. The first live tick is
+    // blanked (finding 7); the second is a clean ~10 W reading.
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     wf("energy_uj", "11000000");
+    (void)c.sample();  // first live tick: blanked
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    wf("energy_uj", "12000000");
     const auto s = c.sample();
     DOCTEST_REQUIRE(s.cpu.package_power_w.has_value());
     CHECK(s.cpu.package_power_source == CpuPackagePowerSource::kRapl);
